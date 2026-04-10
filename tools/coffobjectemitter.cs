@@ -891,7 +891,9 @@ namespace System.Reflection.PortableExecutable
         {
             string symbolName = token.ToString("X8");
 
-            CoffSymbolHandle tokenSymbol = SymbolTableBuilder.GetOrAddCoffSymbol(symbolName, 0, (ushort)SymbolTableBuilder._clrTextSectionNumber, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 0);
+            // CLR token symbols for inline IL references use section 0 (undefined).
+            // The linker resolves them by the token value encoded in the symbol name.
+            CoffSymbolHandle tokenSymbol = SymbolTableBuilder.GetOrAddCoffSymbol(symbolName, 0, 0, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 0);
 
             new CoffRelocationEncoder(HeaderBuilder, Builder)
                 .AddTokenRelocation(offset, tokenSymbol);
@@ -1466,6 +1468,40 @@ namespace System.Reflection.PortableExecutable
 
             return index;
         }
+
+        /// <summary>
+        /// Adds a CLR token symbol for a field definition in a data section.
+        /// </summary>
+        public CoffSymbolHandle AddDataClrToken(string name, EntityHandle handle, int dataSectionNumber, out CoffSymbolHandle tokenCoffSymbol)
+        {
+            int token = MetadataTokens.GetToken(handle);
+
+            CoffSymbolHandle index = GetOrAddCoffSymbol(name, 0, (ushort)dataSectionNumber, CoffSymbolType.Null, CoffSymbolStorageClass.Static, 0);
+
+            string tokenSymbolName = token.ToString("X8");
+            if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
+            {
+                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, 0, (ushort)dataSectionNumber, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 1);
+                _coffSymbolTableBuilder.WriteByte(1);
+                _coffSymbolTableBuilder.WriteByte(0);
+                _coffSymbolTableBuilder.WriteInt32(index._value);
+                _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
+            }
+
+            return index;
+        }
+
+        /// <summary>
+        /// Adds an external (undefined) CLR token symbol for an imported member reference.
+        /// The symbol has section=0 (IMAGE_SYM_UNDEFINED) and no aux record.
+        /// </summary>
+        public void AddExternalClrToken(string name, EntityHandle handle)
+        {
+            int token = MetadataTokens.GetToken(handle);
+
+            GetOrAddCoffSymbol(name, 0, 0, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0);
+            GetOrAddCoffSymbol(token.ToString("X8"), 0, 0, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 0);
+        }
     }
 
     public enum CoffSymbolType : short
@@ -1739,12 +1775,15 @@ namespace System.Reflection.PortableExecutable
     {
         private const string CorMetaSectionName = ".cormeta";
         private const string TextSectionName = ".text$mn";
+        private const string DataSectionName = ".data";
         private const string CodeViewSymbolsSectionName = ".debug$S";
 
         private readonly CodeViewSymbolBuilder _codeViewSymbols;
         private readonly MetadataRootBuilder _metadataRootBuilder;
         private readonly BlobBuilder _ilStream;
         private readonly BlobBuilder _ilRelocs;
+        private readonly BlobBuilder _dataStream;
+        private readonly BlobBuilder _dataRelocs;
 
         public const int ClrTextSectionNumber = 1;
 
@@ -1755,6 +1794,8 @@ namespace System.Reflection.PortableExecutable
             CodeViewSymbolBuilder codeViewSymbols,
             BlobBuilder ilStream,
             BlobBuilder ilRelocs,
+            BlobBuilder dataStream = null,
+            BlobBuilder dataRelocs = null,
             Func<IEnumerable<Blob>, BlobContentId> deterministicIdProvider = null)
             : base(header, symbolTable, deterministicIdProvider)
         {
@@ -1782,12 +1823,30 @@ namespace System.Reflection.PortableExecutable
             _metadataRootBuilder = metadataRootBuilder;
             _ilStream = ilStream;
             _ilRelocs = ilRelocs;
+            _dataStream = dataStream;
+            _dataRelocs = dataRelocs;
+        }
+
+        /// <summary>
+        /// Returns the 1-based section number for the .data section, or -1 if no .data section.
+        /// </summary>
+        public int DataSectionNumber
+        {
+            get
+            {
+                // Sections: .text$mn(1), .data(2 if present), .cormeta, .debug$S
+                return _dataStream != null && _dataStream.Count > 0 ? 2 : -1;
+            }
         }
 
         protected override ImmutableArray<Section> CreateSections()
         {
             var builder = ImmutableArray.CreateBuilder<Section>();
             builder.Add(new Section(TextSectionName, SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.ContainsCode | SectionCharacteristics.Align4Bytes));
+            if (_dataStream != null && _dataStream.Count > 0)
+            {
+                builder.Add(new Section(DataSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes));
+            }
             builder.Add(new Section(CorMetaSectionName, SectionCharacteristics.LinkerInfo | SectionCharacteristics.Align1Bytes));
             if (_codeViewSymbols != null)
             {
@@ -1801,6 +1860,7 @@ namespace System.Reflection.PortableExecutable
             name switch
             {
                 TextSectionName => SerializeTextSection(location),
+                DataSectionName => _dataStream,
                 CorMetaSectionName => SerializeCorMetaSection(location),
                 CodeViewSymbolsSectionName => SerializeCodeViewSymbols(location),
                 _ => throw new ArgumentException(),
@@ -1811,6 +1871,10 @@ namespace System.Reflection.PortableExecutable
             if (name == TextSectionName)
             {
                 return _ilRelocs;
+            }
+            else if (name == DataSectionName)
+            {
+                return _dataRelocs;
             }
             else if (name == CodeViewSymbolsSectionName)
             {
