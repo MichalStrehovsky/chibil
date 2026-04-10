@@ -13,6 +13,7 @@ using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 
 class Program
 {
@@ -137,21 +138,41 @@ class Program
         int dataSectionNum = 2; // .text$mn=1, .data=2
         symtab.AddDataClrToken("$SG8556", fieldDef, dataSectionNum, out _);
 
+        // ─── CodeView debug info ──────────────────────────────────────────
+        var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
+
+        // S_OBJNAME + S_COMPILE3
+        string objPath = Path.GetFullPath("literal.obj");
+        codeviewSymbols.AddObjNameAndCompile3(objPath,
+            language: CodeViewLanguage.C,
+            machine: CodeViewMachine.Arm64,
+            feMajor: 19, feMinor: 50, feBuild: 35728,
+            beMajor: 19, beMinor: 50, beBuild: 35728,
+            "Microsoft (R) Optimizing Compiler",
+            compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
+
+        // Source file with SHA-256 checksum
+        string sourceFile = Path.GetFullPath("literal.c");
+        byte[] sourceHash = System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
-            ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, null);
+            ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
 
         // ─── Emit IL for main ─────────────────────────────────────────────
         var encoder = new RelocatableInstructionEncoder(
             new BlobBuilder(),
             new MethodRelocationBuilder(),
             new RelocatableControlFlowBuilder(),
-            null);
+            new CodeViewLineNumberBuilder());
 
+        encoder.MarkLineNumber(cvFile, 5);
         encoder.OpCode(ILOpCode.Ldc_i4_0);       // IL_0000
         encoder.OpCode(ILOpCode.Stloc_0);         // IL_0001
         encoder.OpCode(ILOpCode.Ldsflda);          // IL_0002
         encoder.Token(fieldDef);
         encoder.OpCode(ILOpCode.Stloc_1);         // IL_0007
+        encoder.MarkLineNumber(cvFile, 6);
         encoder.OpCode(ILOpCode.Ldloc_1);         // IL_0008
         encoder.OpCode(ILOpCode.Ldc_i4_1);        // IL_0009
         encoder.OpCode(ILOpCode.Conv_i8);          // IL_000A
@@ -161,14 +182,21 @@ class Program
         encoder.OpCode(ILOpCode.Add);              // IL_000E
         encoder.OpCode(ILOpCode.Ldind_i1);         // IL_000F
         encoder.OpCode(ILOpCode.Stloc_0);         // IL_0010
+        encoder.MarkLineNumber(cvFile, 7);
         encoder.OpCode(ILOpCode.Ldloc_0);         // IL_0011
         encoder.OpCode(ILOpCode.Ret);              // IL_0012
 
+        // Local variable info for S_MANSLOT
+        var localSlots = new[] {
+            new CodeViewManSlot(1, MetadataTokens.GetToken(localsSig), "c"),
+        };
+
         bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", encoder,
-            maxStack: 3, localVariablesSignature: localsSig, attributes: 0);
+            maxStack: 3, localVariablesSignature: localsSig, attributes: 0,
+            localSlots: localSlots, debugName: "main");
 
         // ─── Build COFF ───────────────────────────────────────────────────
-        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, null,
+        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
             ilStreamBuilder, ilRelocBuilder, dataStreamBuilder);
 
         // ─── Serialize ────────────────────────────────────────────────────

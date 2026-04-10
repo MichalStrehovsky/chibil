@@ -14,6 +14,7 @@ using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 
 class Program
 {
@@ -128,16 +129,33 @@ class Program
         // Add external COFF symbol for MessageBoxW BEFORE emitting IL
         symtab.AddExternalClrToken("?MessageBoxW@@$$J0YAHPEAX00H@Z", messageBoxWRef);
 
+        // ─── CodeView debug info ──────────────────────────────────────────
+        var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
+
+        string objPath = Path.GetFullPath("pinvoke.obj");
+        codeviewSymbols.AddObjNameAndCompile3(objPath,
+            language: CodeViewLanguage.C,
+            machine: CodeViewMachine.Arm64,
+            feMajor: 19, feMinor: 50, feBuild: 35728,
+            beMajor: 19, beMinor: 50, beBuild: 35728,
+            "Microsoft (R) Optimizing Compiler",
+            compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
+
+        string sourceFile = Path.GetFullPath("pinvoke.c");
+        byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
-            ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, null);
+            ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
 
         // ─── Emit IL for main ─────────────────────────────────────────────
         var encoder = new RelocatableInstructionEncoder(
             new BlobBuilder(),
             new MethodRelocationBuilder(),
             new RelocatableControlFlowBuilder(),
-            null);
+            new CodeViewLineNumberBuilder());
 
+        encoder.MarkLineNumber(cvFile, 7);
         encoder.OpCode(ILOpCode.Ldc_i4_0);       // IL_0000
         encoder.OpCode(ILOpCode.Stloc_0);         // IL_0001
         encoder.OpCode(ILOpCode.Ldc_i4_0);        // IL_0002
@@ -149,14 +167,16 @@ class Program
         encoder.OpCode(ILOpCode.Ldc_i4_0);        // IL_0008
         encoder.Call(messageBoxWRef);              // IL_0009
         encoder.OpCode(ILOpCode.Stloc_0);         // IL_000E
+        encoder.MarkLineNumber(cvFile, 8);
         encoder.OpCode(ILOpCode.Ldloc_0);         // IL_000F
         encoder.OpCode(ILOpCode.Ret);              // IL_0010
 
         bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", encoder,
-            maxStack: 4, localVariablesSignature: localsSig, attributes: 0);
+            maxStack: 4, localVariablesSignature: localsSig, attributes: 0,
+            debugName: "main");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
-        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, null,
+        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
             ilStreamBuilder, ilRelocBuilder);
 
         var output = new BlobBuilder();

@@ -64,10 +64,53 @@ namespace System.Reflection.PortableExecutable
         }
     }
 
+    public enum CodeViewChecksumType : byte
+    {
+        None = 0,
+        SHA256 = 3,
+    }
+
+    public enum CodeViewLanguage : byte
+    {
+        C = 0x00,
+    }
+
+    public enum CodeViewMachine : ushort
+    {
+        I386 = 0x0003,
+        Amd64 = 0x00D0,
+        Arm64 = 0x0104,
+    }
+
+    [Flags]
+    public enum CodeViewCompileFlags : uint
+    {
+        None = 0,
+        EditAndContinue = 0x0100,
+        NoDebugInfo = 0x0200,
+        LTCG = 0x0400,
+        NoDataAlign = 0x0800,
+        ManagedPresent = 0x1000,
+        SecurityChecks = 0x2000,
+        HotPatch = 0x4000,
+        CVTCIL = 0x8000,
+        MSILModule = 0x10000,
+    }
+
     public struct CodeViewFileHandle
     {
         internal readonly int _index;
         internal CodeViewFileHandle(int index) => _index = index;
+    }
+
+    public struct CodeViewManSlot
+    {
+        public int Slot;
+        public int TypeToken; // metadata token for the slot's type (e.g., StandaloneSig token)
+        public string Name;
+
+        public CodeViewManSlot(int slot, int typeToken, string name)
+            => (Slot, TypeToken, Name) = (slot, typeToken, name);
     }
 
     public class CodeViewSymbolBuilder
@@ -84,7 +127,12 @@ namespace System.Reflection.PortableExecutable
         private readonly BlobBuilder _relocationsBlob = new BlobBuilder();
 
         public CodeViewSymbolBuilder(CoffHeaderBuilder headerBuilder)
-            => _coffHeaderBuilder = headerBuilder;
+        {
+            _coffHeaderBuilder = headerBuilder;
+            // Convention: string table starts with an empty string at offset 0
+            _stringTable.WriteByte(0);
+            _stringTableIndex.Add("", 0);
+        }
 
         private int GetOrAddString(string s)
         {
@@ -102,19 +150,72 @@ namespace System.Reflection.PortableExecutable
 
         public CodeViewFileHandle GetOrAddFile(string name)
         {
+            return GetOrAddFile(name, CodeViewChecksumType.None, Array.Empty<byte>());
+        }
+
+        public CodeViewFileHandle GetOrAddFile(string name, CodeViewChecksumType checksumType, byte[] checksumBytes)
+        {
             if (_fileIndex.TryGetValue(name, out CodeViewFileHandle result))
                 return result;
 
             result = new CodeViewFileHandle(_fileTable.Count);
 
             _fileTable.WriteInt32(GetOrAddString(name));
-            _fileTable.WriteByte(0);
-            _fileTable.WriteByte(0);
+            _fileTable.WriteByte((byte)checksumBytes.Length);
+            _fileTable.WriteByte((byte)checksumType);
+            if (checksumBytes.Length > 0)
+                _fileTable.WriteBytes(checksumBytes);
             _fileTable.Align(4);
 
             _fileIndex.Add(name, result);
 
             return result;
+        }
+
+        /// <summary>
+        /// Adds S_OBJNAME and S_COMPILE3 records in their own 0xF1 subsection.
+        /// Call this before adding method symbols.
+        /// </summary>
+        public void AddObjNameAndCompile3(string objName, CodeViewLanguage language, CodeViewMachine machine,
+            ushort feMajor, ushort feMinor, ushort feBuild,
+            ushort beMajor, ushort beMinor, ushort beBuild,
+            string compilerVersion, CodeViewCompileFlags compileFlags = 0)
+        {
+            _symbolAndLineNumbersBlob.WriteUInt32(0xF1);
+            var sizeFixup = _symbolAndLineNumbersBlob.ReserveBytes(4);
+            int startOffset = _symbolAndLineNumbersBlob.Count;
+
+            // S_OBJNAME (0x1101): signature(4) + name(null-terminated)
+            int objNameRecLen = 2 + 4 + objName.Length + 1;
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)objNameRecLen);
+            _symbolAndLineNumbersBlob.WriteUInt16(0x1101);
+            _symbolAndLineNumbersBlob.WriteUInt32(0); // signature
+            _symbolAndLineNumbersBlob.WriteUTF8(objName);
+            _symbolAndLineNumbersBlob.WriteByte(0);
+
+            // S_COMPILE3 (0x113C): flags(4) + machine(2) + versions(8*2=16) + verString(null-terminated)
+            int compile3RecLen = 2 + 4 + 2 + 16 + compilerVersion.Length + 1;
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)compile3RecLen);
+            _symbolAndLineNumbersBlob.WriteUInt16(0x113C);
+
+            // flags: language in low byte, other flags in higher bytes
+            uint flags = (uint)language | (uint)compileFlags;
+            _symbolAndLineNumbersBlob.WriteUInt32(flags);
+
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)machine);// target machine
+            _symbolAndLineNumbersBlob.WriteUInt16(feMajor);
+            _symbolAndLineNumbersBlob.WriteUInt16(feMinor);
+            _symbolAndLineNumbersBlob.WriteUInt16(feBuild);
+            _symbolAndLineNumbersBlob.WriteUInt16(0); // FE QFE
+            _symbolAndLineNumbersBlob.WriteUInt16(beMajor);
+            _symbolAndLineNumbersBlob.WriteUInt16(beMinor);
+            _symbolAndLineNumbersBlob.WriteUInt16(beBuild);
+            _symbolAndLineNumbersBlob.WriteUInt16(0); // BE QFE
+            _symbolAndLineNumbersBlob.WriteUTF8(compilerVersion);
+            _symbolAndLineNumbersBlob.WriteByte(0);
+
+            new BlobWriter(sizeFixup).WriteInt32(_symbolAndLineNumbersBlob.Count - startOffset);
+            _symbolAndLineNumbersBlob.Align(4);
         }
 
         private void EmitSymbolsAndLineNumbersSectionReloc(CoffSymbolHandle coffSymbol)
@@ -135,7 +236,7 @@ namespace System.Reflection.PortableExecutable
                 .AddTokenRelocation(_symbolAndLineNumbersBlob.Count + 4 /* Header */, coffSymbol);
         }
 
-        public void AddMethodSymbol(string methodName, CoffSymbolHandle methodCoffSymbol, int methodCoffSymbolDelta, CoffSymbolHandle methodTokenSymbol, int codeSize /*, CodeViewLocalVariableBuilder */)
+        public void AddMethodSymbol(string methodName, CoffSymbolHandle methodCoffSymbol, int methodCoffSymbolDelta, CoffSymbolHandle methodTokenSymbol, int codeSize, IReadOnlyList<CodeViewManSlot> localSlots = null)
         {
             _symbolAndLineNumbersBlob.WriteUInt32(0xF1);
             var sizeFixup = _symbolAndLineNumbersBlob.ReserveBytes(4);
@@ -183,6 +284,25 @@ namespace System.Reflection.PortableExecutable
 
             // MAGIC
             _symbolAndLineNumbersBlob.WriteInt32(0x00100200);
+
+            // S_MANSLOT records for local variables
+            if (localSlots != null)
+            {
+                foreach (var slot in localSlots)
+                {
+                    // S_MANSLOT (0x1120): iSlot(4) + typind(4) + attr.off(4) + attr.seg(2) + attr.flags(2) + name
+                    int manSlotRecLen = 2 + 4 + 4 + 4 + 2 + 2 + slot.Name.Length + 1;
+                    _symbolAndLineNumbersBlob.WriteUInt16((ushort)manSlotRecLen);
+                    _symbolAndLineNumbersBlob.WriteUInt16(0x1120);
+                    _symbolAndLineNumbersBlob.WriteInt32(slot.Slot); // iSlot
+                    _symbolAndLineNumbersBlob.WriteInt32(slot.TypeToken); // typind (metadata token)
+                    _symbolAndLineNumbersBlob.WriteInt32(0); // attr.off
+                    _symbolAndLineNumbersBlob.WriteInt16(0); // attr.seg
+                    _symbolAndLineNumbersBlob.WriteInt16(0); // attr.flags
+                    _symbolAndLineNumbersBlob.WriteUTF8(slot.Name);
+                    _symbolAndLineNumbersBlob.WriteByte(0);
+                }
+            }
 
             // end method
             _symbolAndLineNumbersBlob.WriteUInt16(2);
@@ -1259,7 +1379,9 @@ namespace System.Reflection.PortableExecutable
             int maxStack = 8,
             StandaloneSignatureHandle localVariablesSignature = default,
             MethodBodyAttributes attributes = MethodBodyAttributes.InitLocals,
-            bool hasDynamicStackAllocation = false)
+            bool hasDynamicStackAllocation = false,
+            IReadOnlyList<CodeViewManSlot> localSlots = null,
+            string debugName = null)
         {
             if (unchecked((uint)maxStack) > ushort.MaxValue)
             {
@@ -1289,7 +1411,7 @@ namespace System.Reflection.PortableExecutable
             int bodyOffset = SerializeHeader(codeBuilder.Count, (ushort)maxStack, exceptionRegionCount, attributes, localVariablesSignature, hasDynamicStackAllocation);
 
             CoffSymbolHandle methodSymbol = SymbolTableBuilder.AddClrToken(coffSymbolName, metadataHandle, out CoffSymbolHandle tokenCoffSymbol);
-            CodeViewSymbolBuilder?.AddMethodSymbol(coffSymbolName, methodSymbol, Builder.Count - originalBuilderPosition, tokenCoffSymbol, codeBuilder.Count);
+            CodeViewSymbolBuilder?.AddMethodSymbol(debugName ?? coffSymbolName, methodSymbol, Builder.Count - originalBuilderPosition, tokenCoffSymbol, codeBuilder.Count, localSlots);
             if (lineNumberBuilder != null)
                 CodeViewSymbolBuilder?.AddLineNumbers(methodSymbol, Builder.Count - originalBuilderPosition, codeBuilder.Count, lineNumberBuilder);
 
