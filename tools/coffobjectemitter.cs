@@ -1,0 +1,1934 @@
+// This is a System.Reflection.Metadata writer to generate managed COFF OBJ files similar to
+// what C++/CLI generates with /clr:pure option.
+//
+// This will generate a blah.obj file that contains a single method.
+// You can inspect the managed content of the OBJ with ildasm (the GUI doesn't work for obj files, but
+// you can run it from the command line and specify /out= to disassemble).
+//
+// Run "link.exe /debug blah.obj /entry:MyMethod /subsystem:console" to generate an EXE file.
+//
+// There's also debug information. You can create a fake il.il file with a couple
+// irrelevant lines in it and step through the fake file in a debugger while debugging the EXE.
+//
+// You can inspect the debug info with cvdump.exe from https://github.com/Microsoft/microsoft-pdb/tree/master/cvdump.
+//
+
+#:property Nullable=disable
+#:property AllowUnsafeBlocks=true
+
+using System;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
+
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Diagnostics;
+using System.Reflection.Metadata.Ecma335;
+using System.IO;
+using System.Reflection;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        var mdBuilder = new MetadataBuilder();
+
+        var h = mdBuilder.GetOrAddString("Hello");
+
+        mdBuilder.AddTypeDefinition(TypeAttributes.Class, default, mdBuilder.GetOrAddString("<Module>"), default, MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
+
+        BlobBuilder sigBuilder = new BlobBuilder();
+        BlobEncoder sigBlobEncoder = new BlobEncoder(sigBuilder);
+        var sigEncoder = sigBlobEncoder.MethodSignature();
+        sigEncoder.Parameters(0, out var rtEnc, out var parEnc);
+        rtEnc.Type().Int32();
+
+        var mdHandle = mdBuilder.AddMethodDefinition(
+            MethodAttributes.Static | MethodAttributes.Public,
+            MethodImplAttributes.Managed,
+            h,
+            mdBuilder.GetOrAddBlob(sigBuilder),
+            0,
+            MetadataTokens.ParameterHandle(1));
+
+        mdBuilder.AddModule(0,
+            mdBuilder.GetOrAddString("blah.dll"),
+            mdBuilder.GetOrAddGuid(Guid.Empty),
+            mdBuilder.GetOrAddGuid(Guid.Empty),
+            mdBuilder.GetOrAddGuid(Guid.Empty));
+
+        var coffHeaderBuilder = new CoffHeaderBuilder(Machine.I386, 0);
+
+        var symtab = new ManagedCoffSymbolTableBuilder(ManagedCoffBuilder.ClrTextSectionNumber, ObjectFeatures.PureMsil);
+
+        var codeviewSymbols = new CodeViewSymbolBuilder(coffHeaderBuilder);
+
+        CodeViewFileHandle file1 = codeviewSymbols.GetOrAddFile("il.il");
+
+        var instructionStreamBuilder = new BlobBuilder();
+        var relocationStreamBuilder = new BlobBuilder();
+
+        var instructionStreamEncoder = new RelocatableMethodBodyStreamEncoder(instructionStreamBuilder, relocationStreamBuilder, symtab, coffHeaderBuilder, codeviewSymbols);
+
+        var encoder = new RelocatableInstructionEncoder(
+            new BlobBuilder(),
+            new MethodRelocationBuilder(),
+            new RelocatableControlFlowBuilder(),
+            new CodeViewLineNumberBuilder());
+
+        var lbl = encoder.DefineLabel();
+
+        encoder.MarkLineNumber(file1, 1);
+        encoder.LoadConstantI4(0);
+        encoder.Branch(ILOpCode.Brfalse, lbl);
+        encoder.MarkLineNumber(file1, 2);
+        encoder.Call(mdHandle);
+        encoder.OpCode(ILOpCode.Pop);
+        encoder.MarkLineNumber(file1, 3);
+        encoder.MarkLabel(lbl);
+        encoder.LoadConstantI4(0xBABE);
+        encoder.OpCode(ILOpCode.Ret);
+        
+
+        instructionStreamEncoder.AddMethodBody(mdHandle, "MyMethod", encoder);
+
+        var root = new MetadataRootBuilder(mdBuilder);
+
+        var peB = new ManagedCoffBuilder(coffHeaderBuilder, root, symtab, codeviewSymbols, instructionStreamBuilder, relocationStreamBuilder);
+
+        var o = new BlobBuilder();
+
+        peB.Serialize(o);
+
+        using var fs = File.Create("blah.obj");
+        o.WriteContentTo(fs);
+    }
+}
+
+
+namespace System.Reflection.PortableExecutable
+{
+    public class CodeViewLineNumberBuilder
+    {
+        private readonly List<LineNumberEntry> _entries = new List<LineNumberEntry>();
+
+        private struct LineNumberEntry
+        {
+            public readonly CodeViewFileHandle File { get; }
+            public readonly int CodeOffset { get; }
+            public readonly int LineNumber { get; }
+
+            public LineNumberEntry(CodeViewFileHandle file, int codeOffset, int lineNumber)
+                => (File, CodeOffset, LineNumber) = (file, codeOffset, lineNumber);
+        }
+
+        public void AddLineNumber(CodeViewFileHandle file, int codeOffset, int lineNumber)
+        {
+            _entries.Add(new LineNumberEntry(file, codeOffset, lineNumber));
+        }
+
+        public void Reset()
+        {
+            _entries.Clear();
+        }
+
+        public void Serialize(BlobBuilder builder)
+        {
+            if (_entries.Count == 0)
+                return;
+
+            int fileId = _entries[0].File._index;
+
+            builder.WriteInt32(fileId);
+            builder.WriteInt32(_entries.Count);
+            builder.WriteInt32(12 + 8 * _entries.Count);
+
+            foreach (LineNumberEntry entry in _entries)
+            {
+                if (entry.File._index != fileId)
+                    throw new NotSupportedException();
+
+                builder.WriteInt32(entry.CodeOffset);
+                builder.WriteUInt32(0x80000000 | (uint)entry.LineNumber);
+            }
+        }
+    }
+
+    public struct CodeViewFileHandle
+    {
+        internal readonly int _index;
+        internal CodeViewFileHandle(int index) => _index = index;
+    }
+
+    public class CodeViewSymbolBuilder
+    {
+        private readonly CoffHeaderBuilder _coffHeaderBuilder;
+
+        private readonly Dictionary<string, int> _stringTableIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly BlobBuilder _stringTable = new BlobBuilder();
+
+        private readonly Dictionary<string, CodeViewFileHandle> _fileIndex = new Dictionary<string, CodeViewFileHandle>(StringComparer.Ordinal);
+        private readonly BlobBuilder _fileTable = new BlobBuilder();
+
+        private readonly BlobBuilder _symbolAndLineNumbersBlob = new BlobBuilder();
+        private readonly BlobBuilder _relocationsBlob = new BlobBuilder();
+
+        public CodeViewSymbolBuilder(CoffHeaderBuilder headerBuilder)
+            => _coffHeaderBuilder = headerBuilder;
+
+        private int GetOrAddString(string s)
+        {
+            if (_stringTableIndex.TryGetValue(s, out int result))
+                return result;
+
+            result = _stringTable.Count;
+            _stringTable.WriteUTF8(s);
+            _stringTable.WriteByte(0);
+
+            _stringTableIndex.Add(s, result);
+
+            return result;
+        }
+
+        public CodeViewFileHandle GetOrAddFile(string name)
+        {
+            if (_fileIndex.TryGetValue(name, out CodeViewFileHandle result))
+                return result;
+
+            result = new CodeViewFileHandle(_fileTable.Count);
+
+            _fileTable.WriteInt32(GetOrAddString(name));
+            _fileTable.WriteByte(0);
+            _fileTable.WriteByte(0);
+            _fileTable.Align(4);
+
+            _fileIndex.Add(name, result);
+
+            return result;
+        }
+
+        private void EmitSymbolsAndLineNumbersSectionReloc(CoffSymbolHandle coffSymbol)
+        {
+            new CoffRelocationEncoder(_coffHeaderBuilder, _relocationsBlob)
+                .AddSectionRelocation(_symbolAndLineNumbersBlob.Count + 4 /* Header */, coffSymbol);
+        }
+
+        private void EmitSymbolsAndLineNumbersSectionRelativeReloc(CoffSymbolHandle coffSymbol)
+        {
+            new CoffRelocationEncoder(_coffHeaderBuilder, _relocationsBlob)
+                .AddSectionRelativeRelocation(_symbolAndLineNumbersBlob.Count + 4 /* Header */, coffSymbol);
+        }
+
+        private void EmitSymbolsAndLineNumbersTokenReloc(CoffSymbolHandle coffSymbol)
+        {
+            new CoffRelocationEncoder(_coffHeaderBuilder, _relocationsBlob)
+                .AddTokenRelocation(_symbolAndLineNumbersBlob.Count + 4 /* Header */, coffSymbol);
+        }
+
+        public void AddMethodSymbol(string methodName, CoffSymbolHandle methodCoffSymbol, int methodCoffSymbolDelta, CoffSymbolHandle methodTokenSymbol, int codeSize /*, CodeViewLocalVariableBuilder */)
+        {
+            _symbolAndLineNumbersBlob.WriteUInt32(0xF1);
+            var sizeFixup = _symbolAndLineNumbersBlob.ReserveBytes(4);
+            var startOffset = _symbolAndLineNumbersBlob.Count;
+
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)(2 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 2 + 2 + 1 + methodName.Length + 1));
+
+            _symbolAndLineNumbersBlob.WriteUInt16(0x112a);
+
+            _symbolAndLineNumbersBlob.WriteUInt32(0);
+            _symbolAndLineNumbersBlob.WriteUInt32(0);
+            _symbolAndLineNumbersBlob.WriteUInt32(0);
+
+            _symbolAndLineNumbersBlob.WriteInt32(codeSize);
+
+            _symbolAndLineNumbersBlob.WriteUInt32(0);
+            _symbolAndLineNumbersBlob.WriteUInt32(0);
+
+            EmitSymbolsAndLineNumbersTokenReloc(methodTokenSymbol);
+            _symbolAndLineNumbersBlob.WriteUInt32(0);
+
+            EmitSymbolsAndLineNumbersSectionRelativeReloc(methodCoffSymbol);
+            _symbolAndLineNumbersBlob.WriteInt32(methodCoffSymbolDelta);
+
+            EmitSymbolsAndLineNumbersSectionReloc(methodCoffSymbol);
+            _symbolAndLineNumbersBlob.WriteInt16(0);
+
+            _symbolAndLineNumbersBlob.WriteByte(1);
+
+            _symbolAndLineNumbersBlob.WriteUInt16(0);
+
+            _symbolAndLineNumbersBlob.WriteUTF8(methodName);
+            _symbolAndLineNumbersBlob.WriteByte(0);
+
+            // frameproc
+            _symbolAndLineNumbersBlob.WriteUInt16(2 + 4 + 4 + 4 + 4 + 4 + 2 + 1 + 1 + 1 + 1);
+            _symbolAndLineNumbersBlob.WriteUInt16(0x1012);
+
+            _symbolAndLineNumbersBlob.WriteInt32(0);
+            _symbolAndLineNumbersBlob.WriteInt32(0);
+            _symbolAndLineNumbersBlob.WriteInt32(0);
+            _symbolAndLineNumbersBlob.WriteInt32(0);
+            _symbolAndLineNumbersBlob.WriteInt32(0);
+            _symbolAndLineNumbersBlob.WriteInt16(0);
+
+            // MAGIC
+            _symbolAndLineNumbersBlob.WriteInt32(0x00100200);
+
+            // end method
+            _symbolAndLineNumbersBlob.WriteUInt16(2);
+            _symbolAndLineNumbersBlob.WriteUInt16(0x114F);
+
+            new BlobWriter(sizeFixup).WriteInt32(_symbolAndLineNumbersBlob.Count - startOffset);
+
+            _symbolAndLineNumbersBlob.Align(4);
+        }
+
+        public void AddLineNumbers(CoffSymbolHandle methodCoffSymbol, int methodCoffSymbolDelta, int codeSize, CodeViewLineNumberBuilder lineNumbersBlob)
+        {
+            _symbolAndLineNumbersBlob.WriteUInt32(0xF2);
+            var sizeFixup = _symbolAndLineNumbersBlob.ReserveBytes(4);
+            int startOffset = _symbolAndLineNumbersBlob.Count;
+
+            EmitSymbolsAndLineNumbersSectionRelativeReloc(methodCoffSymbol);
+            _symbolAndLineNumbersBlob.WriteInt32(methodCoffSymbolDelta);
+
+            EmitSymbolsAndLineNumbersSectionReloc(methodCoffSymbol);
+            _symbolAndLineNumbersBlob.WriteInt16(0);
+
+            _symbolAndLineNumbersBlob.WriteInt16(0);
+
+            _symbolAndLineNumbersBlob.WriteInt32(codeSize);
+
+            lineNumbersBlob.Serialize(_symbolAndLineNumbersBlob);
+
+            new BlobWriter(sizeFixup).WriteInt32(_symbolAndLineNumbersBlob.Count - startOffset);
+
+            _symbolAndLineNumbersBlob.Align(4);
+        }
+
+        internal void Serialize(BlobBuilder builder)
+        {
+            builder.WriteUInt32(4); // version
+
+            if (_symbolAndLineNumbersBlob.Count > 0)
+            {
+                builder.LinkSuffix(_symbolAndLineNumbersBlob);
+            }
+
+            if (_stringTable.Count > 0)
+            {
+                builder.WriteUInt32(0xF3); // String table
+                builder.WriteInt32(_stringTable.Count);
+                builder.LinkSuffix(_stringTable);
+                builder.Align(4);
+            }
+
+            if (_fileTable.Count > 0)
+            {
+                builder.WriteUInt32(0xF4); // File checksums
+                builder.WriteInt32(_fileTable.Count);
+                builder.LinkSuffix(_fileTable);
+                builder.Align(4);
+            }
+        }
+
+        internal void SerializeRelocations(BlobBuilder builder)
+        {
+            builder.LinkSuffix(_relocationsBlob);
+        }
+    }
+
+    public readonly struct RelocatableExceptionRegionEncoder
+    {
+        private const int TableHeaderSize = 4;
+
+        private const int SmallRegionSize =
+            sizeof(short) +  // Flags
+            sizeof(short) +  // TryOffset
+            sizeof(byte) +   // TryLength
+            sizeof(short) +  // HandlerOffset
+            sizeof(byte) +   // HandleLength
+            sizeof(int);     // ClassToken | FilterOffset
+
+        private const int FatRegionSize =
+            sizeof(int) +    // Flags
+            sizeof(int) +    // TryOffset
+            sizeof(int) +    // TryLength
+            sizeof(int) +    // HandlerOffset
+            sizeof(int) +    // HandleLength
+            sizeof(int);     // ClassToken | FilterOffset
+
+        private const int ThreeBytesMaxValue = 0xffffff;
+        internal const int MaxSmallExceptionRegions = (byte.MaxValue - TableHeaderSize) / SmallRegionSize;
+        internal const int MaxExceptionRegions = (ThreeBytesMaxValue - TableHeaderSize) / FatRegionSize;
+
+        public BlobBuilder Builder { get; }
+        public BlobBuilder RelocationBuilder { get; }
+        public CoffHeaderBuilder HeaderBuilder { get; }
+        public ManagedCoffSymbolTableBuilder SymbolTableBuilder { get; }
+        public bool HasSmallFormat { get; }
+
+        internal RelocatableExceptionRegionEncoder(BlobBuilder builder, BlobBuilder relocationBuilder, CoffHeaderBuilder headerBuilder, ManagedCoffSymbolTableBuilder symTableBuilder, bool hasSmallFormat)
+        {
+            Builder = builder;
+            RelocationBuilder = relocationBuilder;
+            HeaderBuilder = headerBuilder;
+            SymbolTableBuilder = symTableBuilder;
+            HasSmallFormat = hasSmallFormat;
+        }
+
+        public static bool IsSmallRegionCount(int exceptionRegionCount) =>
+            unchecked((uint)exceptionRegionCount) <= MaxSmallExceptionRegions;
+
+        public static bool IsSmallExceptionRegion(int startOffset, int length) =>
+            unchecked((uint)startOffset) <= ushort.MaxValue && unchecked((uint)length) <= byte.MaxValue;
+
+        internal static bool IsSmallExceptionRegionFromBounds(int startOffset, int endOffset) =>
+            IsSmallExceptionRegion(startOffset, endOffset - startOffset);
+
+        internal static int GetExceptionTableSize(int exceptionRegionCount, bool isSmallFormat) =>
+            TableHeaderSize + exceptionRegionCount * (isSmallFormat ? SmallRegionSize : FatRegionSize);
+
+        internal static bool IsExceptionRegionCountInBounds(int exceptionRegionCount) =>
+            unchecked((uint)exceptionRegionCount) <= MaxExceptionRegions;
+
+        internal static bool IsValidCatchTypeHandle(EntityHandle catchType)
+        {
+            return !catchType.IsNil &&
+                   (catchType.Kind == HandleKind.TypeDefinition ||
+                    catchType.Kind == HandleKind.TypeSpecification ||
+                    catchType.Kind == HandleKind.TypeReference);
+        }
+
+        internal static RelocatableExceptionRegionEncoder SerializeTableHeader(BlobBuilder builder, BlobBuilder relocationBuilder, CoffHeaderBuilder headerBuilder, ManagedCoffSymbolTableBuilder symTableBuilder, int exceptionRegionCount, bool hasSmallRegions)
+        {
+            Debug.Assert(exceptionRegionCount > 0);
+
+            const byte EHTableFlag = 0x01;
+            const byte FatFormatFlag = 0x40;
+
+            bool hasSmallFormat = hasSmallRegions && IsSmallRegionCount(exceptionRegionCount);
+            int dataSize = GetExceptionTableSize(exceptionRegionCount, hasSmallFormat);
+
+            builder.Align(4);
+            if (hasSmallFormat)
+            {
+                builder.WriteByte(EHTableFlag);
+                builder.WriteByte(unchecked((byte)dataSize));
+                builder.WriteInt16(0);
+            }
+            else
+            {
+                Debug.Assert(dataSize <= 0x00ffffff);
+                builder.WriteByte(EHTableFlag | FatFormatFlag);
+                builder.WriteByte(unchecked((byte)dataSize));
+                builder.WriteUInt16(unchecked((ushort)(dataSize >> 8)));
+            }
+
+            return new RelocatableExceptionRegionEncoder(builder, relocationBuilder, headerBuilder, symTableBuilder, hasSmallFormat);
+        }
+
+        public RelocatableExceptionRegionEncoder AddFinally(int tryOffset, int tryLength, int handlerOffset, int handlerLength)
+        {
+            return Add(ExceptionRegionKind.Finally, tryOffset, tryLength, handlerOffset, handlerLength, default(EntityHandle), 0);
+        }
+
+        public RelocatableExceptionRegionEncoder AddFault(int tryOffset, int tryLength, int handlerOffset, int handlerLength)
+        {
+            return Add(ExceptionRegionKind.Fault, tryOffset, tryLength, handlerOffset, handlerLength, default(EntityHandle), 0);
+        }
+
+        public RelocatableExceptionRegionEncoder AddCatch(int tryOffset, int tryLength, int handlerOffset, int handlerLength, EntityHandle catchType)
+        {
+            return Add(ExceptionRegionKind.Catch, tryOffset, tryLength, handlerOffset, handlerLength, catchType, 0);
+        }
+
+        public RelocatableExceptionRegionEncoder AddFilter(int tryOffset, int tryLength, int handlerOffset, int handlerLength, int filterOffset)
+        {
+            return Add(ExceptionRegionKind.Filter, tryOffset, tryLength, handlerOffset, handlerLength, default(EntityHandle), filterOffset);
+        }
+
+        public RelocatableExceptionRegionEncoder Add(
+            ExceptionRegionKind kind,
+            int tryOffset,
+            int tryLength,
+            int handlerOffset,
+            int handlerLength,
+            EntityHandle catchType = default(EntityHandle),
+            int filterOffset = 0)
+        {
+            if (Builder == null)
+            {
+                throw new InvalidOperationException();
+            }
+
+            if (HasSmallFormat)
+            {
+                if (unchecked((ushort)tryOffset) != tryOffset) throw new ArgumentOutOfRangeException(nameof(tryOffset));
+                if (unchecked((byte)tryLength) != tryLength) throw new ArgumentOutOfRangeException(nameof(tryLength));
+                if (unchecked((ushort)handlerOffset) != handlerOffset) throw new ArgumentOutOfRangeException(nameof(handlerOffset));
+                if (unchecked((byte)handlerLength) != handlerLength) throw new ArgumentOutOfRangeException(nameof(handlerLength));
+            }
+            else
+            {
+                if (tryOffset < 0) throw new ArgumentOutOfRangeException(nameof(tryOffset));
+                if (tryLength < 0) throw new ArgumentOutOfRangeException(nameof(tryLength));
+                if (handlerOffset < 0) throw new ArgumentOutOfRangeException(nameof(handlerOffset));
+                if (handlerLength < 0) throw new ArgumentOutOfRangeException(nameof(handlerLength));
+            }
+
+            int catchTokenOrOffset;
+            bool isToken;
+            switch (kind)
+            {
+                case ExceptionRegionKind.Catch:
+                    if (!IsValidCatchTypeHandle(catchType))
+                    {
+                        throw new ArgumentException(nameof(catchType));
+                    }
+
+                    catchTokenOrOffset = MetadataTokens.GetToken(catchType);
+                    isToken = true;
+                    break;
+
+                case ExceptionRegionKind.Filter:
+                    if (filterOffset < 0)
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(filterOffset));
+                    }
+
+                    catchTokenOrOffset = filterOffset;
+                    isToken = false;
+                    break;
+
+                case ExceptionRegionKind.Finally:
+                case ExceptionRegionKind.Fault:
+                    catchTokenOrOffset = 0;
+                    isToken = false;
+                    break;
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(kind));
+            }
+
+            AddUnchecked(kind, tryOffset, tryLength, handlerOffset, handlerLength, catchTokenOrOffset, isToken);
+            return this;
+        }
+
+        internal void AddUnchecked(
+            ExceptionRegionKind kind,
+            int tryOffset,
+            int tryLength,
+            int handlerOffset,
+            int handlerLength,
+            int catchTokenOrOffset,
+            bool isToken)
+        {
+            if (HasSmallFormat)
+            {
+                Builder.WriteUInt16((ushort)kind);
+                Builder.WriteUInt16((ushort)tryOffset);
+                Builder.WriteByte((byte)tryLength);
+                Builder.WriteUInt16((ushort)handlerOffset);
+                Builder.WriteByte((byte)handlerLength);
+            }
+            else
+            {
+                Builder.WriteInt32((int)kind);
+                Builder.WriteInt32(tryOffset);
+                Builder.WriteInt32(tryLength);
+                Builder.WriteInt32(handlerOffset);
+                Builder.WriteInt32(handlerLength);
+            }
+
+            if (isToken)
+            {
+                new ManagedCoffRelocationEncoder(HeaderBuilder, Builder, SymbolTableBuilder)
+                    .AddClrRelocation(Builder.Count, catchTokenOrOffset);
+                Builder.WriteInt32(0);
+            }
+            else
+            {
+                Builder.WriteInt32(catchTokenOrOffset);
+            }
+        }
+    }
+
+    public sealed class RelocatableControlFlowBuilder
+    {
+        private readonly struct BranchInfo
+        {
+            internal readonly int ILOffset;
+            internal readonly LabelHandle Label;
+            private readonly byte _opCode;
+
+            internal ILOpCode OpCode => (ILOpCode)_opCode;
+
+            internal BranchInfo(int ilOffset, LabelHandle label, ILOpCode opCode)
+            {
+                ILOffset = ilOffset;
+                Label = label;
+                _opCode = (byte)opCode;
+            }
+
+            internal int GetBranchDistance(ImmutableArray<int>.Builder labels, ILOpCode branchOpCode, int branchILOffset, bool isShortBranch)
+            {
+                int labelTargetOffset = labels[Label.Id - 1];
+                if (labelTargetOffset < 0)
+                {
+                    throw new InvalidOperationException(Label.Id.ToString());
+                }
+
+                int branchInstructionSize = 1 + (isShortBranch ? sizeof(sbyte) : sizeof(int));
+                int distance = labelTargetOffset - (ILOffset + branchInstructionSize);
+
+                if (isShortBranch && unchecked((sbyte)distance) != distance)
+                {
+                    // We could potentially implement algorithm that automatically fixes up branch instructions to accomodate for bigger distances (short vs long),
+                    // however an optimal algorithm would be rather complex (something like: calculate topological ordering of crossing branch instructions
+                    // and then use fixed point to eliminate cycles). If the caller doesn't care about optimal IL size they can use long branches whenever the
+                    // distance is unknown upfront. If they do they probably implement more sophisticated algorithm for IL layout optimization already.
+                    throw new InvalidOperationException();
+                }
+
+                return distance;
+            }
+        }
+
+        internal readonly struct ExceptionHandlerInfo
+        {
+            public readonly ExceptionRegionKind Kind;
+            public readonly LabelHandle TryStart, TryEnd, HandlerStart, HandlerEnd, FilterStart;
+            public readonly EntityHandle CatchType;
+
+            public ExceptionHandlerInfo(
+                ExceptionRegionKind kind,
+                LabelHandle tryStart,
+                LabelHandle tryEnd,
+                LabelHandle handlerStart,
+                LabelHandle handlerEnd,
+                LabelHandle filterStart,
+                EntityHandle catchType)
+            {
+                Kind = kind;
+                TryStart = tryStart;
+                TryEnd = tryEnd;
+                HandlerStart = handlerStart;
+                HandlerEnd = handlerEnd;
+                FilterStart = filterStart;
+                CatchType = catchType;
+            }
+        }
+
+        private readonly ImmutableArray<BranchInfo>.Builder _branches;
+        private readonly ImmutableArray<int>.Builder _labels;
+        private ImmutableArray<ExceptionHandlerInfo>.Builder _lazyExceptionHandlers;
+
+        public RelocatableControlFlowBuilder()
+        {
+            _branches = ImmutableArray.CreateBuilder<BranchInfo>();
+            _labels = ImmutableArray.CreateBuilder<int>();
+        }
+
+        internal void Clear()
+        {
+            _branches.Clear();
+            _labels.Clear();
+            _lazyExceptionHandlers?.Clear();
+        }
+
+        internal LabelHandle AddLabel()
+        {
+            _labels.Add(-1);
+            unsafe
+            {
+                int labelHandle = _labels.Count;
+                return *(LabelHandle*)&labelHandle;
+            }
+        }
+
+        internal void AddBranch(int ilOffset, LabelHandle label, ILOpCode opCode)
+        {
+            Debug.Assert(ilOffset >= 0);
+            ValidateLabel(label, nameof(label));
+            _branches.Add(new BranchInfo(ilOffset, label, opCode));
+        }
+
+        internal void MarkLabel(int ilOffset, LabelHandle label)
+        {
+            Debug.Assert(ilOffset >= 0);
+            ValidateLabel(label, nameof(label));
+            _labels[label.Id - 1] = ilOffset;
+        }
+
+        private int GetLabelOffsetChecked(LabelHandle label)
+        {
+            int offset = _labels[label.Id - 1];
+            if (offset < 0)
+            {
+                throw new InvalidOperationException(label.Id.ToString());
+            }
+
+            return offset;
+        }
+
+        private void ValidateLabel(LabelHandle label, string parameterName)
+        {
+            if (label.IsNil)
+            {
+                throw new ArgumentNullException(parameterName);
+            }
+
+            if (label.Id > _labels.Count)
+            {
+                throw new InvalidOperationException(parameterName);
+            }
+        }
+
+        public void AddFinallyRegion(LabelHandle tryStart, LabelHandle tryEnd, LabelHandle handlerStart, LabelHandle handlerEnd) =>
+            AddExceptionRegion(ExceptionRegionKind.Finally, tryStart, tryEnd, handlerStart, handlerEnd);
+
+        public void AddFaultRegion(LabelHandle tryStart, LabelHandle tryEnd, LabelHandle handlerStart, LabelHandle handlerEnd) =>
+            AddExceptionRegion(ExceptionRegionKind.Fault, tryStart, tryEnd, handlerStart, handlerEnd);
+
+        public void AddCatchRegion(LabelHandle tryStart, LabelHandle tryEnd, LabelHandle handlerStart, LabelHandle handlerEnd, EntityHandle catchType)
+        {
+            if (!RelocatableExceptionRegionEncoder.IsValidCatchTypeHandle(catchType))
+            {
+                throw new ArgumentException(nameof(catchType));
+            }
+
+            AddExceptionRegion(ExceptionRegionKind.Catch, tryStart, tryEnd, handlerStart, handlerEnd, catchType: catchType);
+        }
+
+        public void AddFilterRegion(LabelHandle tryStart, LabelHandle tryEnd, LabelHandle handlerStart, LabelHandle handlerEnd, LabelHandle filterStart)
+        {
+            ValidateLabel(filterStart, nameof(filterStart));
+            AddExceptionRegion(ExceptionRegionKind.Filter, tryStart, tryEnd, handlerStart, handlerEnd, filterStart: filterStart);
+        }
+
+        private void AddExceptionRegion(
+            ExceptionRegionKind kind,
+            LabelHandle tryStart,
+            LabelHandle tryEnd,
+            LabelHandle handlerStart,
+            LabelHandle handlerEnd,
+            LabelHandle filterStart = default(LabelHandle),
+            EntityHandle catchType = default(EntityHandle))
+        {
+            ValidateLabel(tryStart, nameof(tryStart));
+            ValidateLabel(tryEnd, nameof(tryEnd));
+            ValidateLabel(handlerStart, nameof(handlerStart));
+            ValidateLabel(handlerEnd, nameof(handlerEnd));
+
+            if (_lazyExceptionHandlers == null)
+            {
+                _lazyExceptionHandlers = ImmutableArray.CreateBuilder<ExceptionHandlerInfo>();
+            }
+
+            _lazyExceptionHandlers.Add(new ExceptionHandlerInfo(kind, tryStart, tryEnd, handlerStart, handlerEnd, filterStart, catchType));
+        }
+
+        private IEnumerable<BranchInfo> Branches => _branches;
+
+        private IEnumerable<int> Labels => _labels;
+
+        internal int BranchCount => _branches.Count;
+
+        internal int ExceptionHandlerCount => _lazyExceptionHandlers?.Count ?? 0;
+
+        internal void CopyCodeAndFixupBranches(BlobBuilder srcBuilder, BlobBuilder dstBuilder)
+        {
+            var branch = _branches[0];
+            int branchIndex = 0;
+
+            // offset within the source builder
+            int srcOffset = 0;
+
+            // current offset within the current source blob
+            int srcBlobOffset = 0;
+
+            foreach (Blob srcBlob in srcBuilder.GetBlobs())
+            {
+                byte[] srcBlobBuffer = srcBlob.GetBytes().Array;
+
+                Debug.Assert(
+                    srcBlobOffset == 0 ||
+                    srcBlobOffset == 1 && srcBlobBuffer[0] == 0xff ||
+                    srcBlobOffset == 4 && srcBlobBuffer[0] == 0xff && srcBlobBuffer[1] == 0xff && srcBlobBuffer[2] == 0xff && srcBlobBuffer[3] == 0xff);
+
+                while (true)
+                {
+                    // copy bytes preceding the next branch, or till the end of the blob:
+                    int chunkSize = Math.Min(branch.ILOffset - srcOffset, srcBlob.Length - srcBlobOffset);
+                    dstBuilder.WriteBytes(srcBlobBuffer, srcBlobOffset, chunkSize);
+                    srcOffset += chunkSize;
+                    srcBlobOffset += chunkSize;
+
+                    // there is no branch left in the blob:
+                    if (srcBlobOffset == srcBlob.Length)
+                    {
+                        srcBlobOffset = 0;
+                        break;
+                    }
+
+                    Debug.Assert(srcBlobBuffer[srcBlobOffset] == (byte)branch.OpCode);
+
+                    int operandSize = branch.OpCode.GetBranchOperandSize();
+                    bool isShortInstruction = operandSize == 1;
+
+                    // Note: the 4B operand is contiguous since we wrote it via BlobBuilder.WriteInt32()
+                    Debug.Assert(
+                        srcBlobOffset + 1 == srcBlob.Length ||
+                        (isShortInstruction ?
+                           srcBlobBuffer[srcBlobOffset + 1] == 0xff :
+                           BitConverter.ToUInt32(srcBlobBuffer, srcBlobOffset + 1) == 0xffffffff));
+
+                    // write branch opcode:
+                    dstBuilder.WriteByte(srcBlobBuffer[srcBlobOffset]);
+
+                    int branchDistance = branch.GetBranchDistance(_labels, branch.OpCode, srcOffset, isShortInstruction);
+
+                    // write branch operand:
+                    if (isShortInstruction)
+                    {
+                        dstBuilder.WriteSByte((sbyte)branchDistance);
+                    }
+                    else
+                    {
+                        dstBuilder.WriteInt32(branchDistance);
+                    }
+
+                    srcOffset += sizeof(byte) + operandSize;
+
+                    // next branch:
+                    branchIndex++;
+                    if (branchIndex == _branches.Count)
+                    {
+                        branch = new BranchInfo(int.MaxValue, label: default, opCode: default);
+                    }
+                    else
+                    {
+                        branch = _branches[branchIndex];
+                    }
+
+                    // the branch starts at the very end and its operand is in the next blob:
+                    if (srcBlobOffset == srcBlob.Length - 1)
+                    {
+                        srcBlobOffset = operandSize;
+                        break;
+                    }
+
+                    // skip fake branch instruction:
+                    srcBlobOffset += sizeof(byte) + operandSize;
+                }
+            }
+        }
+
+        internal void SerializeExceptionTable(BlobBuilder builder, BlobBuilder relocationBuilder, CoffHeaderBuilder headerBuilder, ManagedCoffSymbolTableBuilder symTableBuilder)
+        {
+            if (_lazyExceptionHandlers == null || _lazyExceptionHandlers.Count == 0)
+            {
+                return;
+            }
+
+            var regionEncoder = RelocatableExceptionRegionEncoder.SerializeTableHeader(builder, relocationBuilder, headerBuilder, symTableBuilder, _lazyExceptionHandlers.Count, HasSmallExceptionRegions());
+
+            foreach (var handler in _lazyExceptionHandlers)
+            {
+                // Note that labels have been validated when added to the handler list,
+                // they might not have been marked though.
+
+                int tryStart = GetLabelOffsetChecked(handler.TryStart);
+                int tryEnd = GetLabelOffsetChecked(handler.TryEnd);
+                int handlerStart = GetLabelOffsetChecked(handler.HandlerStart);
+                int handlerEnd = GetLabelOffsetChecked(handler.HandlerEnd);
+
+                if (tryStart > tryEnd)
+                {
+                    throw new InvalidOperationException();
+                }
+
+                if (handlerStart > handlerEnd)
+                {
+                    throw new InvalidOperationException();
+                }
+
+                int catchTokenOrOffset = handler.Kind switch
+                {
+                    ExceptionRegionKind.Catch => MetadataTokens.GetToken(handler.CatchType),
+                    ExceptionRegionKind.Filter => GetLabelOffsetChecked(handler.FilterStart),
+                    _ => 0,
+                };
+
+                regionEncoder.AddUnchecked(
+                    handler.Kind,
+                    tryStart,
+                    tryEnd - tryStart,
+                    handlerStart,
+                    handlerEnd - handlerStart,
+                    catchTokenOrOffset,
+                    handler.Kind == ExceptionRegionKind.Catch);
+            }
+        }
+
+        private bool HasSmallExceptionRegions()
+        {
+            Debug.Assert(_lazyExceptionHandlers != null);
+
+            if (!RelocatableExceptionRegionEncoder.IsSmallRegionCount(_lazyExceptionHandlers.Count))
+            {
+                return false;
+            }
+
+            foreach (var handler in _lazyExceptionHandlers)
+            {
+                if (!RelocatableExceptionRegionEncoder.IsSmallExceptionRegionFromBounds(GetLabelOffsetChecked(handler.TryStart), GetLabelOffsetChecked(handler.TryEnd)) ||
+                    !RelocatableExceptionRegionEncoder.IsSmallExceptionRegionFromBounds(GetLabelOffsetChecked(handler.HandlerStart), GetLabelOffsetChecked(handler.HandlerEnd)))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    public class MethodRelocationBuilder
+    {
+        private struct Relocation
+        {
+            public readonly int Offset;
+            public readonly int Token;
+            public Relocation(int offset, int token) => (Offset, Token) = (offset, token);
+        }
+
+        private List<Relocation> _relocations = new List<Relocation>();
+
+        public void Reset() => _relocations.Clear();
+
+        public void AddTokenRelocation(int offset, int token) => _relocations.Add(new Relocation(offset, token));
+
+        internal void Append(BlobBuilder relocationStream, int delta, CoffHeaderBuilder headerBuilder, ManagedCoffSymbolTableBuilder symbolTableBuilder)
+        {
+            var encoder = new ManagedCoffRelocationEncoder(headerBuilder, relocationStream, symbolTableBuilder);
+
+            foreach (Relocation r in _relocations)
+            {
+                encoder.AddClrRelocation(r.Offset + delta, r.Token);
+            }
+        }
+    }
+
+    public readonly struct CoffRelocationEncoder
+    {
+        public CoffHeaderBuilder HeaderBuilder { get; }
+        public BlobBuilder Builder { get; }
+
+        public CoffRelocationEncoder(CoffHeaderBuilder headerBuilder, BlobBuilder builder)
+            => (HeaderBuilder, Builder) = (headerBuilder, builder);
+
+        public void AddSectionRelocation(int offset, CoffSymbolHandle coffSymbol)
+        {
+            Builder.WriteInt32(offset);
+            Builder.WriteInt32(coffSymbol._value);
+            Builder.WriteUInt16(HeaderBuilder.Machine switch
+            {
+                Machine.I386 => 0x000A,      // IMAGE_REL_I386_SECTION
+                Machine.Amd64 => 0x000A,     // IMAGE_REL_AMD64_SECTION
+                Machine.Arm64 => 0x000D,     // IMAGE_REL_ARM64_SECTION
+                _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
+            });
+        }
+
+        public void AddSectionRelativeRelocation(int offset, CoffSymbolHandle coffSymbol)
+        {
+            Builder.WriteInt32(offset);
+            Builder.WriteInt32(coffSymbol._value);
+            Builder.WriteUInt16(HeaderBuilder.Machine switch
+            {
+                Machine.I386 => 0x000B,      // IMAGE_REL_I386_SECREL
+                Machine.Amd64 => 0x000B,     // IMAGE_REL_AMD64_SECREL
+                Machine.Arm64 => 0x0008,     // IMAGE_REL_ARM64_SECREL
+                _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
+            });
+        }
+
+        public void AddTokenRelocation(int offset, CoffSymbolHandle coffSymbol)
+        {
+            Builder.WriteInt32(offset);
+            Builder.WriteInt32(coffSymbol._value);
+            Builder.WriteUInt16(HeaderBuilder.Machine switch
+            {
+                Machine.I386 => 0x000C,      // IMAGE_REL_I386_TOKEN
+                Machine.Amd64 => 0x000D,     // IMAGE_REL_AMD64_TOKEN
+                Machine.Arm64 => 0x000C,     // IMAGE_REL_ARM64_TOKEN
+                _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
+            });
+        }
+    }
+
+    public readonly struct ManagedCoffRelocationEncoder
+    {
+        public CoffHeaderBuilder HeaderBuilder { get; }
+        public BlobBuilder Builder { get; }
+        public ManagedCoffSymbolTableBuilder SymbolTableBuilder { get; }
+
+        public ManagedCoffRelocationEncoder(CoffHeaderBuilder headerBuilder, BlobBuilder builder, ManagedCoffSymbolTableBuilder symbolTableBuilder)
+            => (HeaderBuilder, Builder, SymbolTableBuilder) = (headerBuilder, builder, symbolTableBuilder);
+
+        public void AddClrRelocation(int offset, int token)
+        {
+            string symbolName = token.ToString("X8");
+
+            CoffSymbolHandle tokenSymbol = SymbolTableBuilder.GetOrAddCoffSymbol(symbolName, 0, (ushort)SymbolTableBuilder._clrTextSectionNumber, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 0);
+
+            new CoffRelocationEncoder(HeaderBuilder, Builder)
+                .AddTokenRelocation(offset, tokenSymbol);
+        }
+    }
+
+    public readonly struct RelocatableInstructionEncoder
+    {
+        public BlobBuilder CodeBuilder { get; }
+        public MethodRelocationBuilder RelocationBuilder { get; }
+        public RelocatableControlFlowBuilder ControlFlowBuilder { get; }
+        public CodeViewLineNumberBuilder LineNumberBuilder { get; }
+
+        public RelocatableInstructionEncoder(BlobBuilder codeBuilder, MethodRelocationBuilder relocationBuilder = null, RelocatableControlFlowBuilder controlFlowBuilder = null, CodeViewLineNumberBuilder lineNumberBuilder = null)
+        {
+            if (codeBuilder == null)
+            {
+                throw new ArgumentNullException();
+            }
+
+            CodeBuilder = codeBuilder;
+            RelocationBuilder = relocationBuilder;
+            ControlFlowBuilder = controlFlowBuilder;
+            LineNumberBuilder = lineNumberBuilder;
+        }
+
+        public int Offset => CodeBuilder.Count;
+
+        public void OpCode(ILOpCode code)
+        {
+            if (unchecked((byte)code) == (ushort)code)
+            {
+                CodeBuilder.WriteByte((byte)code);
+            }
+            else
+            {
+                CodeBuilder.WriteUInt16BE((ushort)code);
+            }
+        }
+
+        public void Token(EntityHandle handle)
+        {
+            Token(MetadataTokens.GetToken(handle));
+        }
+
+        public void Token(int token)
+        {
+            GetRelocationBuilder().AddTokenRelocation(CodeBuilder.Count, token);
+            CodeBuilder.WriteInt32(0);
+        }
+
+        public void LoadString(UserStringHandle handle)
+        {
+            OpCode(ILOpCode.Ldstr);
+            Token(MetadataTokens.GetToken(handle));
+        }
+
+        public void Call(EntityHandle methodHandle)
+        {
+            if (methodHandle.Kind != HandleKind.MethodDefinition &&
+                methodHandle.Kind != HandleKind.MethodSpecification &&
+                methodHandle.Kind != HandleKind.MemberReference)
+            {
+                throw new ArgumentException(nameof(methodHandle));
+            }
+
+            OpCode(ILOpCode.Call);
+            Token(methodHandle);
+        }
+
+        public void Call(MethodDefinitionHandle methodHandle)
+        {
+            OpCode(ILOpCode.Call);
+            Token(methodHandle);
+        }
+
+        public void Call(MethodSpecificationHandle methodHandle)
+        {
+            OpCode(ILOpCode.Call);
+            Token(methodHandle);
+        }
+
+        public void Call(MemberReferenceHandle methodHandle)
+        {
+            OpCode(ILOpCode.Call);
+            Token(methodHandle);
+        }
+
+        public void CallIndirect(StandaloneSignatureHandle signature)
+        {
+            OpCode(ILOpCode.Calli);
+            Token(signature);
+        }
+
+        public void LoadConstantI4(int value)
+        {
+            ILOpCode code;
+            switch (value)
+            {
+                case -1: code = ILOpCode.Ldc_i4_m1; break;
+                case 0: code = ILOpCode.Ldc_i4_0; break;
+                case 1: code = ILOpCode.Ldc_i4_1; break;
+                case 2: code = ILOpCode.Ldc_i4_2; break;
+                case 3: code = ILOpCode.Ldc_i4_3; break;
+                case 4: code = ILOpCode.Ldc_i4_4; break;
+                case 5: code = ILOpCode.Ldc_i4_5; break;
+                case 6: code = ILOpCode.Ldc_i4_6; break;
+                case 7: code = ILOpCode.Ldc_i4_7; break;
+                case 8: code = ILOpCode.Ldc_i4_8; break;
+
+                default:
+                    if (unchecked((sbyte)value == value))
+                    {
+                        OpCode(ILOpCode.Ldc_i4_s);
+                        CodeBuilder.WriteSByte((sbyte)value);
+                    }
+                    else
+                    {
+                        OpCode(ILOpCode.Ldc_i4);
+                        CodeBuilder.WriteInt32(value);
+                    }
+
+                    return;
+            }
+
+            OpCode(code);
+        }
+
+        public void LoadConstantI8(long value)
+        {
+            OpCode(ILOpCode.Ldc_i8);
+            CodeBuilder.WriteInt64(value);
+        }
+
+        public void LoadConstantR4(float value)
+        {
+            OpCode(ILOpCode.Ldc_r4);
+            CodeBuilder.WriteSingle(value);
+        }
+
+        public void LoadConstantR8(double value)
+        {
+            OpCode(ILOpCode.Ldc_r8);
+            CodeBuilder.WriteDouble(value);
+        }
+
+        public void LoadLocal(int slotIndex)
+        {
+            switch (slotIndex)
+            {
+                case 0: OpCode(ILOpCode.Ldloc_0); break;
+                case 1: OpCode(ILOpCode.Ldloc_1); break;
+                case 2: OpCode(ILOpCode.Ldloc_2); break;
+                case 3: OpCode(ILOpCode.Ldloc_3); break;
+
+                default:
+                    if (unchecked((uint)slotIndex) <= byte.MaxValue)
+                    {
+                        OpCode(ILOpCode.Ldloc_s);
+                        CodeBuilder.WriteByte((byte)slotIndex);
+                    }
+                    else if (slotIndex > 0)
+                    {
+                        OpCode(ILOpCode.Ldloc);
+                        CodeBuilder.WriteInt32(slotIndex);
+                    }
+                    else
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(slotIndex));
+                    }
+
+                    break;
+            }
+        }
+
+        public void StoreLocal(int slotIndex)
+        {
+            switch (slotIndex)
+            {
+                case 0: OpCode(ILOpCode.Stloc_0); break;
+                case 1: OpCode(ILOpCode.Stloc_1); break;
+                case 2: OpCode(ILOpCode.Stloc_2); break;
+                case 3: OpCode(ILOpCode.Stloc_3); break;
+
+                default:
+                    if (unchecked((uint)slotIndex) <= byte.MaxValue)
+                    {
+                        OpCode(ILOpCode.Stloc_s);
+                        CodeBuilder.WriteByte((byte)slotIndex);
+                    }
+                    else if (slotIndex > 0)
+                    {
+                        OpCode(ILOpCode.Stloc);
+                        CodeBuilder.WriteInt32(slotIndex);
+                    }
+                    else
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(slotIndex));
+                    }
+
+                    break;
+            }
+        }
+
+        public void LoadLocalAddress(int slotIndex)
+        {
+            if (unchecked((uint)slotIndex) <= byte.MaxValue)
+            {
+                OpCode(ILOpCode.Ldloca_s);
+                CodeBuilder.WriteByte((byte)slotIndex);
+            }
+            else if (slotIndex > 0)
+            {
+                OpCode(ILOpCode.Ldloca);
+                CodeBuilder.WriteInt32(slotIndex);
+            }
+            else
+            {
+                throw new ArgumentOutOfRangeException(nameof(slotIndex));
+            }
+        }
+
+        public void LoadArgument(int argumentIndex)
+        {
+            switch (argumentIndex)
+            {
+                case 0: OpCode(ILOpCode.Ldarg_0); break;
+                case 1: OpCode(ILOpCode.Ldarg_1); break;
+                case 2: OpCode(ILOpCode.Ldarg_2); break;
+                case 3: OpCode(ILOpCode.Ldarg_3); break;
+
+                default:
+                    if (unchecked((uint)argumentIndex) <= byte.MaxValue)
+                    {
+                        OpCode(ILOpCode.Ldarg_s);
+                        CodeBuilder.WriteByte((byte)argumentIndex);
+                    }
+                    else if (argumentIndex > 0)
+                    {
+                        OpCode(ILOpCode.Ldarg);
+                        CodeBuilder.WriteInt32(argumentIndex);
+                    }
+                    else
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(argumentIndex));
+                    }
+
+                    break;
+            }
+        }
+
+        public void LoadArgumentAddress(int argumentIndex)
+        {
+            if (unchecked((uint)argumentIndex) <= byte.MaxValue)
+            {
+                OpCode(ILOpCode.Ldarga_s);
+                CodeBuilder.WriteByte((byte)argumentIndex);
+            }
+            else if (argumentIndex > 0)
+            {
+                OpCode(ILOpCode.Ldarga);
+                CodeBuilder.WriteInt32(argumentIndex);
+            }
+            else
+            {
+                throw new ArgumentOutOfRangeException(nameof(argumentIndex));
+            }
+        }
+
+        public void StoreArgument(int argumentIndex)
+        {
+            if (unchecked((uint)argumentIndex) <= byte.MaxValue)
+            {
+                OpCode(ILOpCode.Starg_s);
+                CodeBuilder.WriteByte((byte)argumentIndex);
+            }
+            else if (argumentIndex > 0)
+            {
+                OpCode(ILOpCode.Starg);
+                CodeBuilder.WriteInt32(argumentIndex);
+            }
+            else
+            {
+                throw new ArgumentOutOfRangeException(nameof(argumentIndex));
+            }
+        }
+
+        public LabelHandle DefineLabel()
+        {
+            return GetBranchBuilder().AddLabel();
+        }
+
+        public void Branch(ILOpCode code, LabelHandle label)
+        {
+            // throws if code is not a branch:
+            int size = code.GetBranchOperandSize();
+
+            GetBranchBuilder().AddBranch(Offset, label, code);
+            OpCode(code);
+
+            // -1 points in the middle of the branch instruction and is thus invalid.
+            // We want to produce invalid IL so that if the caller doesn't patch the branches
+            // the branch instructions will be invalid in an obvious way.
+            if (size == 1)
+            {
+                CodeBuilder.WriteSByte(-1);
+            }
+            else
+            {
+                Debug.Assert(size == 4);
+                CodeBuilder.WriteInt32(-1);
+            }
+        }
+
+        public void MarkLabel(LabelHandle label)
+        {
+            GetBranchBuilder().MarkLabel(Offset, label);
+        }
+
+        public void MarkLineNumber(CodeViewFileHandle fileId, int lineNumber)
+        {
+            GetLineNumberBuilder().AddLineNumber(fileId, CodeBuilder.Count, lineNumber);
+        }
+        private RelocatableControlFlowBuilder GetBranchBuilder()
+        {
+            if (ControlFlowBuilder == null)
+            {
+                throw new InvalidOperationException();
+            }
+
+            return ControlFlowBuilder;
+        }
+
+        private MethodRelocationBuilder GetRelocationBuilder() => RelocationBuilder ?? throw new InvalidOperationException();
+        private CodeViewLineNumberBuilder GetLineNumberBuilder() => LineNumberBuilder ?? throw new InvalidOperationException();
+    }
+
+    public readonly struct RelocatableMethodBodyStreamEncoder
+    {
+        public BlobBuilder Builder { get; }
+
+        public BlobBuilder RelocationBuilder { get; }
+
+        public ManagedCoffSymbolTableBuilder SymbolTableBuilder { get; }
+
+        public CoffHeaderBuilder HeaderBuilder { get; }
+
+        public CodeViewSymbolBuilder CodeViewSymbolBuilder { get; }
+
+        public RelocatableMethodBodyStreamEncoder(BlobBuilder bodyStreamBuilder, BlobBuilder relocationStreamBuilder, ManagedCoffSymbolTableBuilder symTabBuilder, CoffHeaderBuilder headerBuilder, CodeViewSymbolBuilder codeViewSymbolBuilder)
+        {
+            Builder = bodyStreamBuilder;
+            RelocationBuilder = relocationStreamBuilder;
+            SymbolTableBuilder = symTabBuilder;
+            HeaderBuilder = headerBuilder;
+            CodeViewSymbolBuilder = codeViewSymbolBuilder;
+        }
+
+        public int AddMethodBody(
+            MethodDefinitionHandle metadataHandle,
+            string coffSymbolName,
+            RelocatableInstructionEncoder instructionEncoder,
+            int maxStack = 8,
+            StandaloneSignatureHandle localVariablesSignature = default,
+            MethodBodyAttributes attributes = MethodBodyAttributes.InitLocals,
+            bool hasDynamicStackAllocation = false)
+        {
+            if (unchecked((uint)maxStack) > ushort.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxStack));
+            }
+
+            // The branch fixup code expects the operands of branch instructions in the code builder to be contiguous.
+            // That's true when we emit thru InstructionEncoder. Taking it as a parameter instead of separate
+            // code and flow builder parameters ensures they match each other.
+            var codeBuilder = instructionEncoder.CodeBuilder;
+            var flowBuilder = instructionEncoder.ControlFlowBuilder;
+            var relocBuilder = instructionEncoder.RelocationBuilder;
+            var lineNumberBuilder = instructionEncoder.LineNumberBuilder;
+
+            if (codeBuilder == null)
+            {
+                throw new ArgumentNullException(nameof(instructionEncoder));
+            }
+
+            int exceptionRegionCount = flowBuilder?.ExceptionHandlerCount ?? 0;
+            if (!RelocatableExceptionRegionEncoder.IsExceptionRegionCountInBounds(exceptionRegionCount))
+            {
+                throw new ArgumentOutOfRangeException(nameof(instructionEncoder));
+            }
+
+            int originalBuilderPosition = Builder.Count;
+            int bodyOffset = SerializeHeader(codeBuilder.Count, (ushort)maxStack, exceptionRegionCount, attributes, localVariablesSignature, hasDynamicStackAllocation);
+
+            CoffSymbolHandle methodSymbol = SymbolTableBuilder.AddClrToken(coffSymbolName, metadataHandle, out CoffSymbolHandle tokenCoffSymbol);
+            CodeViewSymbolBuilder?.AddMethodSymbol(coffSymbolName, methodSymbol, Builder.Count - originalBuilderPosition, tokenCoffSymbol, codeBuilder.Count);
+            if (lineNumberBuilder != null)
+                CodeViewSymbolBuilder?.AddLineNumbers(methodSymbol, Builder.Count - originalBuilderPosition, codeBuilder.Count, lineNumberBuilder);
+
+            relocBuilder?.Append(RelocationBuilder, Builder.Count, HeaderBuilder, SymbolTableBuilder);
+
+            if (flowBuilder?.BranchCount > 0)
+            {
+                flowBuilder.CopyCodeAndFixupBranches(codeBuilder, Builder);
+            }
+            else
+            {
+                codeBuilder.WriteContentTo(Builder);
+            }
+
+            flowBuilder?.SerializeExceptionTable(Builder, RelocationBuilder, HeaderBuilder, SymbolTableBuilder);
+
+            return bodyOffset;
+        }
+
+        private int SerializeHeader(
+            int codeSize,
+            ushort maxStack,
+            int exceptionRegionCount,
+            MethodBodyAttributes attributes,
+            StandaloneSignatureHandle localVariablesSignature,
+            bool hasDynamicStackAllocation)
+        {
+            const int TinyFormat = 2;
+            const int FatFormat = 3;
+            const int MoreSections = 8;
+            const byte InitLocals = 0x10;
+
+            bool initLocals = (attributes & MethodBodyAttributes.InitLocals) != 0;
+
+            bool isTiny = codeSize < 64 &&
+                          maxStack <= 8 &&
+                          localVariablesSignature.IsNil && (!hasDynamicStackAllocation || !initLocals) &&
+                          exceptionRegionCount == 0;
+
+            int offset;
+            if (isTiny)
+            {
+                offset = Builder.Count;
+                Builder.WriteByte((byte)((codeSize << 2) | TinyFormat));
+            }
+            else
+            {
+                Builder.Align(4);
+
+                offset = Builder.Count;
+
+                ushort flags = (3 << 12) | FatFormat;
+                if (exceptionRegionCount > 0)
+                {
+                    flags |= MoreSections;
+                }
+
+                if (initLocals)
+                {
+                    flags |= InitLocals;
+                }
+
+                Builder.WriteUInt16((ushort)((int)attributes | flags));
+                Builder.WriteUInt16(maxStack);
+                Builder.WriteInt32(codeSize);
+
+                if (!localVariablesSignature.IsNil)
+                {
+                    new ManagedCoffRelocationEncoder(HeaderBuilder, RelocationBuilder, SymbolTableBuilder)
+                        .AddClrRelocation(Builder.Count, MetadataTokens.GetToken(localVariablesSignature));
+                }
+                Builder.WriteInt32(0);
+                
+            }
+
+            return offset;
+        }
+    }
+
+    [Flags]
+    public enum ObjectFeatures : ushort
+    {
+        None,
+        PureMsil = 2,
+        SafeMsil = 4,
+    }
+
+    public class CoffSymbolTableBuilder
+    {
+        protected Dictionary<string, CoffSymbolHandle> _coffSymbols = new Dictionary<string, CoffSymbolHandle>(StringComparer.Ordinal);
+        protected BlobBuilder _coffStringTableBuilder = new BlobBuilder();
+        protected BlobBuilder _coffSymbolTableBuilder = new BlobBuilder();
+
+        private const int SymbolSize = 18;
+
+        public int Count => _coffSymbolTableBuilder.Count / SymbolSize;
+
+        public CoffSymbolTableBuilder() { }
+
+        public CoffSymbolTableBuilder(ObjectFeatures objectFeatures)
+        {
+            GetOrAddCoffSymbol("@feat.00", (ushort)objectFeatures, 0xFFFF, CoffSymbolType.Null, CoffSymbolStorageClass.Static, 0);
+        }
+
+        public CoffSymbolHandle GetOrAddCoffSymbol(string name, uint value, ushort sectionNumber, CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols)
+        {
+            if (_coffSymbols.TryGetValue(name, out CoffSymbolHandle result))
+            {
+                return result;
+            }
+
+            result = new CoffSymbolHandle(Count);
+
+            if (name.Length <= 8)
+            {
+                CoffBuilder.WritePaddedName(_coffSymbolTableBuilder, name);
+            }
+            else
+            {
+                _coffSymbolTableBuilder.WriteUInt32(0);
+                _coffSymbolTableBuilder.WriteInt32(_coffStringTableBuilder.Count + 4);
+                _coffStringTableBuilder.WriteUTF8(name);
+                _coffStringTableBuilder.WriteByte(0);
+            }
+
+            _coffSymbolTableBuilder.WriteUInt32(value);
+            _coffSymbolTableBuilder.WriteUInt16(sectionNumber);
+            _coffSymbolTableBuilder.WriteUInt16((ushort)type);
+            _coffSymbolTableBuilder.WriteByte((byte)storageClass);
+            _coffSymbolTableBuilder.WriteByte(numberOfAuxSymbols);
+
+            _coffSymbols.Add(name, result);
+
+            return result;
+        }
+
+        public void Serialize(BlobBuilder builder)
+        {
+            builder.LinkSuffix(_coffSymbolTableBuilder);
+            builder.WriteInt32(_coffStringTableBuilder.Count + 4);
+            builder.LinkSuffix(_coffStringTableBuilder);
+        }
+    }
+
+    public struct CoffSymbolHandle
+    {
+        internal readonly int _value;
+        internal CoffSymbolHandle(int value) => _value = value;
+    }
+
+    public class ManagedCoffSymbolTableBuilder : CoffSymbolTableBuilder
+    {
+        internal readonly int _clrTextSectionNumber;
+
+        public ManagedCoffSymbolTableBuilder(int clrTextSectionNumber, ObjectFeatures objectFeatures)
+            : base(objectFeatures)
+        {
+            _clrTextSectionNumber = clrTextSectionNumber;
+        }
+
+        public CoffSymbolHandle AddClrToken(string name, EntityHandle handle, out CoffSymbolHandle tokenCoffSymbol)
+        {
+            int token = MetadataTokens.GetToken(handle);
+
+            CoffSymbolHandle index = GetOrAddCoffSymbol(name, 0, (ushort)_clrTextSectionNumber, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0);
+
+            string tokenSymbolName = token.ToString("X8");
+            if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
+            {
+                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, 0, (ushort)_clrTextSectionNumber, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 1);
+                _coffSymbolTableBuilder.WriteByte(1);
+                _coffSymbolTableBuilder.WriteByte(0);
+                _coffSymbolTableBuilder.WriteInt32(index._value);
+                _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
+            }
+
+            return index;
+        }
+    }
+
+    public enum CoffSymbolType : short
+    {
+        Null = 0x00,
+        Function = 0x20,
+    }
+
+    public enum CoffSymbolStorageClass : byte
+    {
+        External = 2,
+        Static = 3,
+        ClrToken = 107,
+    }
+
+    public sealed class CoffHeaderBuilder
+    {
+        public Machine Machine { get; }
+        public Characteristics ImageCharacteristics { get; }
+
+        public CoffHeaderBuilder(Machine machine, Characteristics characteristics)
+        {
+            Machine = machine;
+            ImageCharacteristics = characteristics;
+        }
+    }
+
+    public abstract class CoffBuilder
+    {
+        public CoffHeaderBuilder Header { get; }
+
+        public CoffSymbolTableBuilder SymbolTableBuilder { get; }
+
+        public Func<IEnumerable<Blob>, BlobContentId> IdProvider { get; }
+        public bool IsDeterministic { get; }
+
+        private readonly Lazy<ImmutableArray<Section>> _lazySections;
+
+        protected readonly struct Section
+        {
+            public readonly string Name;
+            public readonly SectionCharacteristics Characteristics;
+
+            public Section(string name, SectionCharacteristics characteristics)
+            {
+                if (name == null)
+                {
+                    throw new ArgumentNullException(nameof(name));
+                }
+
+                Name = name;
+                Characteristics = characteristics;
+            }
+        }
+
+        private readonly struct SerializedSection
+        {
+            public readonly BlobBuilder Builder;
+            public readonly BlobBuilder Relocations;
+
+            public readonly string Name;
+            public readonly SectionCharacteristics Characteristics;
+            public readonly int RelativeVirtualAddress;
+            public readonly int SizeOfRawData;
+            public readonly int PointerToRawData;
+
+            public SerializedSection(BlobBuilder builder, BlobBuilder relocations, string name, SectionCharacteristics characteristics, int relativeVirtualAddress, int sizeOfRawData, int pointerToRawData)
+            {
+                Name = name;
+                Characteristics = characteristics;
+                Builder = builder;
+                Relocations = relocations;
+                RelativeVirtualAddress = relativeVirtualAddress;
+                SizeOfRawData = sizeOfRawData;
+                PointerToRawData = pointerToRawData;
+            }
+
+            public int VirtualSize => Builder.Count;
+        }
+
+        protected CoffBuilder(CoffHeaderBuilder header, CoffSymbolTableBuilder symbolTable, Func<IEnumerable<Blob>, BlobContentId> deterministicIdProvider)
+        {
+            if (header == null)
+            {
+                throw new ArgumentNullException(nameof(header));
+            }
+
+            IdProvider = deterministicIdProvider ?? BlobContentId.GetTimeBasedProvider();
+            IsDeterministic = deterministicIdProvider != null;
+            Header = header;
+            SymbolTableBuilder = symbolTable;
+            _lazySections = new Lazy<ImmutableArray<Section>>(CreateSections);
+
+        }
+
+        protected ImmutableArray<Section> GetSections()
+        {
+            var sections = _lazySections.Value;
+            if (sections.IsDefault)
+            {
+                throw new InvalidOperationException();
+            }
+
+            return sections;
+        }
+
+        protected abstract ImmutableArray<Section> CreateSections();
+
+        protected abstract BlobBuilder SerializeSection(string name, SectionLocation location);
+
+        protected abstract BlobBuilder SerializeRelocations(string name, SectionLocation location);
+
+        public BlobContentId Serialize(BlobBuilder builder)
+        {
+            // Define and serialize sections in two steps.
+            // We need to know about all sections before serializing them.
+            var serializedSections = SerializeSections();
+
+            Blob stampFixup;
+            Blob symTableFixup;
+            WriteCoffHeader(builder, serializedSections, out stampFixup, (uint)(SymbolTableBuilder?.Count ?? 0), out symTableFixup);
+            WriteSectionHeaders(builder, serializedSections);
+            builder.Align(4);
+
+            foreach (var section in serializedSections)
+            {
+                builder.LinkSuffix(section.Builder);
+                builder.Align(4);
+                if (section.Relocations != null)
+                {
+                    builder.LinkSuffix(section.Relocations);
+                    builder.Align(4);
+                }
+            }
+
+            var symTableFixupWriter = new BlobWriter(symTableFixup);
+            symTableFixupWriter.WriteInt32(builder.Count);
+
+            SymbolTableBuilder?.Serialize(builder);
+
+            var contentId = IdProvider(builder.GetBlobs());
+
+            // patch timestamp in COFF header:
+            var stampWriter = new BlobWriter(stampFixup);
+            stampWriter.WriteUInt32(contentId.Stamp);
+            Debug.Assert(stampWriter.RemainingBytes == 0);
+
+            return contentId;
+        }
+
+        internal static int Align(int position, int alignment)
+        {
+            Debug.Assert(position >= 0 && alignment > 0);
+
+            int result = position & ~(alignment - 1);
+            if (result == position)
+            {
+                return result;
+            }
+
+            return result + alignment;
+        }
+
+        private ImmutableArray<SerializedSection> SerializeSections()
+        {
+            var sections = GetSections();
+            var result = ImmutableArray.CreateBuilder<SerializedSection>(sections.Length);
+            int sizeOfPeHeaders = 20 + (40 * sections.Length);
+
+            var nextPointer = Align(sizeOfPeHeaders, 4);
+
+            foreach (var section in sections)
+            {
+                var builder = SerializeSection(section.Name, new SectionLocation(0, nextPointer));
+                var relocs = SerializeRelocations(section.Name, new SectionLocation(0, nextPointer));
+
+                var serialized = new SerializedSection(
+                    builder,
+                    relocs,
+                    section.Name,
+                    section.Characteristics,
+                    relativeVirtualAddress: 0,
+                    sizeOfRawData: Align(builder.Count, 4),
+                    pointerToRawData: nextPointer);
+
+                result.Add(serialized);
+
+                nextPointer = serialized.PointerToRawData + serialized.SizeOfRawData;
+                if (relocs != null)
+                    nextPointer += Align(relocs.Count, 4);
+            }
+
+            return result.MoveToImmutable();
+        }
+
+        private void WriteCoffHeader(BlobBuilder builder, ImmutableArray<SerializedSection> sections, out Blob stampFixup, uint numSymbols, out Blob blobSymTableFixup)
+        {
+            // Machine
+            builder.WriteUInt16((ushort)(Header.Machine == 0 ? Machine.I386 : Header.Machine));
+
+            // NumberOfSections
+            builder.WriteUInt16((ushort)sections.Length);
+
+            // TimeDateStamp:
+            stampFixup = builder.ReserveBytes(sizeof(uint));
+
+            // PointerToSymbolTable:
+            // The file pointer to the COFF symbol table, or zero if no COFF symbol table is present.
+            // This value should be zero for a PE image.
+            blobSymTableFixup = builder.ReserveBytes(sizeof(uint));
+
+            // NumberOfSymbols:
+            // The number of entries in the symbol table. This data can be used to locate the string table,
+            // which immediately follows the symbol table. This value should be zero for a PE image.
+            builder.WriteUInt32(numSymbols);
+
+            // SizeOfOptionalHeader:
+            // The size of the optional header, which is required for executable files but not for object files.
+            // This value should be zero for an object file.
+            builder.WriteUInt16(0);
+
+            // Characteristics
+            builder.WriteUInt16((ushort)Header.ImageCharacteristics);
+        }
+
+        private void WriteSectionHeaders(BlobBuilder builder, ImmutableArray<SerializedSection> serializedSections)
+        {
+            foreach (var serializedSection in serializedSections)
+            {
+                WriteSectionHeader(builder, serializedSection);
+            }
+        }
+
+        internal static void WritePaddedName(BlobBuilder builder, string name)
+        {
+            for (int j = 0, m = name.Length; j < 8; j++)
+            {
+                if (j < m)
+                {
+                    builder.WriteByte((byte)name[j]);
+                }
+                else
+                {
+                    builder.WriteByte(0);
+                }
+            }
+        }
+
+        private static void WriteSectionHeader(BlobBuilder builder, SerializedSection serializedSection)
+        {
+            //if (serializedSection.VirtualSize == 0)
+            //{
+            //    return;
+            //}
+
+            WritePaddedName(builder, serializedSection.Name);
+
+            builder.WriteUInt32(0); // VirtualSize: should be 0 for object files
+            builder.WriteUInt32((uint)serializedSection.RelativeVirtualAddress);
+            builder.WriteUInt32((uint)serializedSection.SizeOfRawData);
+            builder.WriteUInt32((uint)serializedSection.PointerToRawData);
+            builder.WriteInt32(serializedSection.Relocations != null ? serializedSection.SizeOfRawData + serializedSection.PointerToRawData : 0); // PointerToRelocations
+            builder.WriteUInt32(0); // PointerToLinenumbers
+            builder.WriteUInt16(serializedSection.Relocations != null ? checked((ushort)(serializedSection.Relocations.Count / 10)) : (ushort)0); // NumberOfRelocations
+            builder.WriteUInt16(0); // NumberOfLinenumbers
+            builder.WriteUInt32((uint)serializedSection.Characteristics);
+        }
+    }
+
+    public class ManagedCoffBuilder : CoffBuilder
+    {
+        private const string CorMetaSectionName = ".cormeta";
+        private const string TextSectionName = ".text$mn";
+        private const string CodeViewSymbolsSectionName = ".debug$S";
+
+        private readonly CodeViewSymbolBuilder _codeViewSymbols;
+        private readonly MetadataRootBuilder _metadataRootBuilder;
+        private readonly BlobBuilder _ilStream;
+        private readonly BlobBuilder _ilRelocs;
+
+        public const int ClrTextSectionNumber = 1;
+
+        public ManagedCoffBuilder(
+            CoffHeaderBuilder header,
+            MetadataRootBuilder metadataRootBuilder,
+            ManagedCoffSymbolTableBuilder symbolTable,
+            CodeViewSymbolBuilder codeViewSymbols,
+            BlobBuilder ilStream,
+            BlobBuilder ilRelocs,
+            Func<IEnumerable<Blob>, BlobContentId> deterministicIdProvider = null)
+            : base(header, symbolTable, deterministicIdProvider)
+        {
+            if (header == null)
+            {
+                throw new ArgumentNullException(nameof(header));
+            }
+
+            if (metadataRootBuilder == null)
+            {
+                throw new ArgumentNullException(nameof(metadataRootBuilder));
+            }
+
+            if (ilStream == null)
+            {
+                throw new ArgumentNullException(nameof(ilStream));
+            }
+
+            if (symbolTable._clrTextSectionNumber != ClrTextSectionNumber)
+            {
+                throw new ArgumentException();
+            }
+
+            _codeViewSymbols = codeViewSymbols;
+            _metadataRootBuilder = metadataRootBuilder;
+            _ilStream = ilStream;
+            _ilRelocs = ilRelocs;
+        }
+
+        protected override ImmutableArray<Section> CreateSections()
+        {
+            var builder = ImmutableArray.CreateBuilder<Section>();
+            builder.Add(new Section(TextSectionName, SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.ContainsCode | SectionCharacteristics.Align4Bytes));
+            builder.Add(new Section(CorMetaSectionName, SectionCharacteristics.LinkerInfo | SectionCharacteristics.Align1Bytes));
+            if (_codeViewSymbols != null)
+            {
+                builder.Add(new Section(CodeViewSymbolsSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemDiscardable | SectionCharacteristics.Align1Bytes | SectionCharacteristics.MemRead));
+            }
+
+            return builder.ToImmutable();
+        }
+
+        protected override BlobBuilder SerializeSection(string name, SectionLocation location) =>
+            name switch
+            {
+                TextSectionName => SerializeTextSection(location),
+                CorMetaSectionName => SerializeCorMetaSection(location),
+                CodeViewSymbolsSectionName => SerializeCodeViewSymbols(location),
+                _ => throw new ArgumentException(),
+            };
+
+        protected override BlobBuilder SerializeRelocations(string name, SectionLocation location)
+        {
+            if (name == TextSectionName)
+            {
+                return _ilRelocs;
+            }
+            else if (name == CodeViewSymbolsSectionName)
+            {
+                BlobBuilder builder = new BlobBuilder();
+                _codeViewSymbols.SerializeRelocations(builder);
+                return builder;
+            }
+
+            return null;
+        }
+
+        private BlobBuilder SerializeTextSection(SectionLocation location)
+        {
+            return _ilStream;
+        }
+
+        private BlobBuilder SerializeCorMetaSection(SectionLocation location)
+        {
+            var metadataBuilder = new BlobBuilder();
+            _metadataRootBuilder.Serialize(metadataBuilder, 0, 0);
+            return metadataBuilder;
+        }
+
+        private BlobBuilder SerializeCodeViewSymbols(SectionLocation location)
+        {
+            var builder = new BlobBuilder();
+            _codeViewSymbols.Serialize(builder);
+            return builder;
+        }
+    }
+}
