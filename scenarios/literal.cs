@@ -59,32 +59,50 @@ class Program
             MetadataTokens.MethodDefinitionHandle(1));
 
         // ─── TypeDef #2: $ArrayType$$$BY05D (sequential, sealed, size=6) ──
-        var arrayTypeDef = md.AddTypeDefinition(
+        var arrayType5D = md.AddTypeDefinition(
             TypeAttributes.NotPublic | TypeAttributes.SequentialLayout | TypeAttributes.Class | TypeAttributes.Sealed | TypeAttributes.AnsiClass,
             default,
             md.GetOrAddString("$ArrayType$$$BY05D"),
             valueTypeRef,
-            MetadataTokens.FieldDefinitionHandle(2), // no fields of its own, but must be > last field of <Module>
+            MetadataTokens.FieldDefinitionHandle(3), // no fields of its own
             MetadataTokens.MethodDefinitionHandle(2)); // no methods
 
-        md.AddTypeLayout(arrayTypeDef, 0, 6);
-
-        // ─── CustomAttribute: NativeCppClassAttribute on $ArrayType$$$BY05D
-        md.AddCustomAttribute(arrayTypeDef, nativeCppCtorRef,
+        md.AddTypeLayout(arrayType5D, 0, 6);
+        md.AddCustomAttribute(arrayType5D, nativeCppCtorRef,
             md.GetOrAddBlob(new byte[] { 0x01, 0x00, 0x00, 0x00 }));
 
-        // ─── FieldDef: ?A0x56407d0c.unnamed-global-0 on <Module> ──────────
-        // Field signature: valuetype $ArrayType$$$BY05D
-        var fieldSigBuilder = new BlobBuilder();
-        new BlobEncoder(fieldSigBuilder).Field().Type().Type(arrayTypeDef, isValueType: true);
+        // ─── TypeDef #3: $ArrayType$$$BY06D (sequential, sealed, size=7) ──
+        var arrayType6D = md.AddTypeDefinition(
+            TypeAttributes.NotPublic | TypeAttributes.SequentialLayout | TypeAttributes.Class | TypeAttributes.Sealed | TypeAttributes.AnsiClass,
+            default,
+            md.GetOrAddString("$ArrayType$$$BY06D"),
+            valueTypeRef,
+            MetadataTokens.FieldDefinitionHandle(3), // no fields of its own
+            MetadataTokens.MethodDefinitionHandle(2)); // no methods
 
-        var fieldDef = md.AddFieldDefinition(
+        md.AddTypeLayout(arrayType6D, 0, 7);
+        md.AddCustomAttribute(arrayType6D, nativeCppCtorRef,
+            md.GetOrAddBlob(new byte[] { 0x01, 0x00, 0x00, 0x00 }));
+
+        // ─── FieldDef #1: ?A0x56407d0c.unnamed-global-0 ("Hello\0") ───────
+        var field1SigBuilder = new BlobBuilder();
+        new BlobEncoder(field1SigBuilder).Field().Type().Type(arrayType5D, isValueType: true);
+
+        var field1 = md.AddFieldDefinition(
             FieldAttributes.Assembly | FieldAttributes.Static | FieldAttributes.HasFieldRVA,
             md.GetOrAddString("?A0x56407d0c.unnamed-global-0"),
-            md.GetOrAddBlob(fieldSigBuilder));
+            md.GetOrAddBlob(field1SigBuilder));
+        md.AddFieldRelativeVirtualAddress(field1, 0);
 
-        // Field RVA = 0 in obj file (resolved by linker via COFF relocation)
-        md.AddFieldRelativeVirtualAddress(fieldDef, 0);
+        // ─── FieldDef #2: ?A0x56407d0c.unnamed-global-1 ("World!\0") ──────
+        var field2SigBuilder = new BlobBuilder();
+        new BlobEncoder(field2SigBuilder).Field().Type().Type(arrayType6D, isValueType: true);
+
+        var field2 = md.AddFieldDefinition(
+            FieldAttributes.Assembly | FieldAttributes.Static | FieldAttributes.HasFieldRVA,
+            md.GetOrAddString("?A0x56407d0c.unnamed-global-1"),
+            md.GetOrAddBlob(field2SigBuilder));
+        md.AddFieldRelativeVirtualAddress(field2, 0);
 
         // ─── MethodDef: main ──────────────────────────────────────────────
         var methodSigBuilder = new BlobBuilder();
@@ -100,19 +118,26 @@ class Program
             0,
             MetadataTokens.ParameterHandle(1));
 
-        // ─── StandaloneSig: locals (int32, int8 modopt(IsSignUnspecifiedByte)*) ─
+        // ─── StandaloneSig: locals (int32, int8 modopt(IsSignUnspecifiedByte)* d, int8 modopt(IsSignUnspecifiedByte)* c)
         var localsSigBuilder = new BlobBuilder();
-        var localsSigEncoder = new BlobEncoder(localsSigBuilder).LocalVariableSignature(2);
+        var localsSigEncoder = new BlobEncoder(localsSigBuilder).LocalVariableSignature(3);
 
         // Local 0: int32
         localsSigEncoder.AddVariable().Type().Int32();
 
-        // Local 1: int8 modopt(IsSignUnspecifiedByte)*
+        // Local 1: int8 modopt(IsSignUnspecifiedByte)* (d)
         var local1Enc = localsSigEncoder.AddVariable().Type();
         local1Enc.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
         local1Enc.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
         local1Enc.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isSignUnspecifiedByteRef));
         local1Enc.Builder.WriteByte((byte)SignatureTypeCode.SByte);
+
+        // Local 2: int8 modopt(IsSignUnspecifiedByte)* (c)
+        var local2Enc = localsSigEncoder.AddVariable().Type();
+        local2Enc.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        local2Enc.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        local2Enc.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isSignUnspecifiedByteRef));
+        local2Enc.Builder.WriteByte((byte)SignatureTypeCode.SByte);
 
         var localsSig = md.AddStandaloneSignature(md.GetOrAddBlob(localsSigBuilder));
 
@@ -130,13 +155,14 @@ class Program
         var ilRelocBuilder = new BlobBuilder();
         var dataStreamBuilder = new BlobBuilder();
 
-        // ─── .data section: "Hello\0" ─────────────────────────────────────
-        dataStreamBuilder.WriteBytes(new byte[] { 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x00 });
+        // ─── .data section: "Hello\0" + padding + "World!\0" = 15 bytes ──
+        dataStreamBuilder.WriteBytes(new byte[] { 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x00 }); // "Hello\0" at offset 0
+        dataStreamBuilder.WriteBytes(new byte[] { 0x00, 0x00 }); // padding to 8-byte alignment
+        dataStreamBuilder.WriteBytes(new byte[] { 0x57, 0x6F, 0x72, 0x6C, 0x64, 0x21, 0x00 }); // "World!\0" at offset 8
 
-        // Create COFF symbol for the field data in .data section BEFORE emitting IL
-        // (so the 04000001 token symbol gets the correct section number)
-        int dataSectionNum = 2; // .text$mn=1, .data=2
-        symtab.AddDataClrToken("$SG8556", fieldDef, dataSectionNum, out _);
+        // Create COFF symbols for both field data entries BEFORE emitting IL
+        symtab.AddDataClrToken("$SG8557", field1, 2, 0, out _);
+        symtab.AddDataClrToken("$SG8558", field2, 2, 8, out _);
 
         // ─── CodeView debug info ──────────────────────────────────────────
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
@@ -170,29 +196,43 @@ class Program
         encoder.OpCode(ILOpCode.Ldc_i4_0);       // IL_0000
         encoder.OpCode(ILOpCode.Stloc_0);         // IL_0001
         encoder.OpCode(ILOpCode.Ldsflda);          // IL_0002
-        encoder.Token(fieldDef);
-        encoder.OpCode(ILOpCode.Stloc_1);         // IL_0007
+        encoder.Token(field1);
+        encoder.OpCode(ILOpCode.Stloc_2);         // IL_0007: c
         encoder.MarkLineNumber(cvFile, 6);
-        encoder.OpCode(ILOpCode.Ldloc_1);         // IL_0008
-        encoder.OpCode(ILOpCode.Ldc_i4_1);        // IL_0009
-        encoder.OpCode(ILOpCode.Conv_i8);          // IL_000A
-        encoder.OpCode(ILOpCode.Ldc_i4_0);        // IL_000B
-        encoder.OpCode(ILOpCode.Conv_i8);          // IL_000C
-        encoder.OpCode(ILOpCode.Mul);              // IL_000D
-        encoder.OpCode(ILOpCode.Add);              // IL_000E
-        encoder.OpCode(ILOpCode.Ldind_i1);         // IL_000F
-        encoder.OpCode(ILOpCode.Stloc_0);         // IL_0010
+        encoder.OpCode(ILOpCode.Ldsflda);          // IL_0008
+        encoder.Token(field2);
+        encoder.OpCode(ILOpCode.Stloc_1);         // IL_000D: d
         encoder.MarkLineNumber(cvFile, 7);
-        encoder.OpCode(ILOpCode.Ldloc_0);         // IL_0011
-        encoder.OpCode(ILOpCode.Ret);              // IL_0012
+        encoder.OpCode(ILOpCode.Ldloc_2);         // IL_000E
+        encoder.OpCode(ILOpCode.Ldc_i4_1);        // IL_000F
+        encoder.OpCode(ILOpCode.Conv_i8);          // IL_0010
+        encoder.OpCode(ILOpCode.Ldc_i4_0);        // IL_0011
+        encoder.OpCode(ILOpCode.Conv_i8);          // IL_0012
+        encoder.OpCode(ILOpCode.Mul);              // IL_0013
+        encoder.OpCode(ILOpCode.Add);              // IL_0014
+        encoder.OpCode(ILOpCode.Ldind_i1);         // IL_0015
+        encoder.OpCode(ILOpCode.Ldloc_1);         // IL_0016
+        encoder.OpCode(ILOpCode.Ldc_i4_1);        // IL_0017
+        encoder.OpCode(ILOpCode.Conv_i8);          // IL_0018
+        encoder.OpCode(ILOpCode.Ldc_i4_0);        // IL_0019
+        encoder.OpCode(ILOpCode.Conv_i8);          // IL_001A
+        encoder.OpCode(ILOpCode.Mul);              // IL_001B
+        encoder.OpCode(ILOpCode.Add);              // IL_001C
+        encoder.OpCode(ILOpCode.Ldind_i1);         // IL_001D
+        encoder.OpCode(ILOpCode.Add);              // IL_001E
+        encoder.OpCode(ILOpCode.Stloc_0);         // IL_001F
+        encoder.MarkLineNumber(cvFile, 8);
+        encoder.OpCode(ILOpCode.Ldloc_0);         // IL_0020
+        encoder.OpCode(ILOpCode.Ret);              // IL_0021
 
         // Local variable info for S_MANSLOT
         var localSlots = new[] {
-            new CodeViewManSlot(1, MetadataTokens.GetToken(localsSig), "c"),
+            new CodeViewManSlot(1, MetadataTokens.GetToken(localsSig), "d"),
+            new CodeViewManSlot(2, MetadataTokens.GetToken(localsSig), "c"),
         };
 
         bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", encoder,
-            maxStack: 3, localVariablesSignature: localsSig, attributes: 0,
+            maxStack: 4, localVariablesSignature: localsSig, attributes: 0,
             localSlots: localSlots, debugName: "main");
 
         // ─── Build COFF ───────────────────────────────────────────────────

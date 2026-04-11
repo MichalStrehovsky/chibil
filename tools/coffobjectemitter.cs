@@ -18,6 +18,56 @@ using System.Reflection;
 
 namespace System.Reflection.PortableExecutable
 {
+    /// <summary>
+    /// Builds a .CRTMA$XCC section containing function pointers (as CLR token relocations)
+    /// for module initializer functions. At link time, these are merged into the CRTMA table
+    /// that the CRT module constructor iterates to call initialization functions.
+    /// </summary>
+    public class InitializerListSectionBuilder
+    {
+        private readonly CoffHeaderBuilder _coffHeaderBuilder;
+        private readonly ManagedCoffSymbolTableBuilder _symbolTableBuilder;
+        private readonly List<EntityHandle> _initializers = new List<EntityHandle>();
+
+        // Each slot is a pointer-sized entry. Currently hardcoded to 8 bytes (64-bit).
+        // TODO: verify with an x86 build whether this should be 4 bytes for 32-bit targets.
+        private const int SlotSize = 8;
+
+        public InitializerListSectionBuilder(CoffHeaderBuilder coffHeaderBuilder, ManagedCoffSymbolTableBuilder symbolTableBuilder)
+        {
+            _coffHeaderBuilder = coffHeaderBuilder;
+            _symbolTableBuilder = symbolTableBuilder;
+        }
+
+        public void AddInitializer(EntityHandle methodHandle)
+        {
+            _initializers.Add(methodHandle);
+        }
+
+        public bool HasInitializers => _initializers.Count > 0;
+
+        internal void Serialize(BlobBuilder builder)
+        {
+            foreach (var handle in _initializers)
+            {
+                for (int i = 0; i < SlotSize; i++)
+                    builder.WriteByte(0);
+            }
+        }
+
+        internal void SerializeRelocations(BlobBuilder builder)
+        {
+            for (int i = 0; i < _initializers.Count; i++)
+            {
+                int token = MetadataTokens.GetToken(_initializers[i]);
+                var tokenSymbol = _symbolTableBuilder.GetOrAddCoffSymbol(
+                    token.ToString("X8"), 0, 0, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 0);
+                new CoffRelocationEncoder(_coffHeaderBuilder, builder)
+                    .AddTokenRelocation(i * SlotSize, tokenSymbol);
+            }
+        }
+    }
+
     public class CodeViewLineNumberBuilder
     {
         private readonly List<LineNumberEntry> _entries = new List<LineNumberEntry>();
@@ -1464,7 +1514,7 @@ namespace System.Reflection.PortableExecutable
 
             int bodyOffset = SerializeHeader(codeBuilder.Count, (ushort)maxStack, exceptionRegionCount, attributes, localVariablesSignature, hasDynamicStackAllocation);
 
-            CoffSymbolHandle methodSymbol = SymbolTableBuilder.AddClrToken(coffSymbolName, metadataHandle, bodyOffset, out CoffSymbolHandle tokenCoffSymbol);
+            CoffSymbolHandle methodSymbol = SymbolTableBuilder.AddFunctionClrToken(coffSymbolName, metadataHandle, bodyOffset, out CoffSymbolHandle tokenCoffSymbol);
             int methodCoffSymbolDelta = Builder.Count - bodyOffset;
             CodeViewSymbolBuilder?.AddMethodSymbol(debugName ?? coffSymbolName, methodSymbol, methodCoffSymbolDelta, tokenCoffSymbol, codeBuilder.Count, localSlots, localScopes);
             if (lineNumberBuilder != null)
@@ -1571,6 +1621,24 @@ namespace System.Reflection.PortableExecutable
             GetOrAddCoffSymbol("@feat.00", (ushort)objectFeatures, 0xFFFF, CoffSymbolType.Null, CoffSymbolStorageClass.Static, 0);
         }
 
+        private Dictionary<string, int> _stringTableEntries = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Gets or adds a string to the COFF string table and returns its offset
+        /// (including the 4-byte size prefix). Used for long section names.
+        /// </summary>
+        public int GetOrAddStringTableEntry(string name)
+        {
+            if (_stringTableEntries.TryGetValue(name, out int offset))
+                return offset;
+
+            offset = _coffStringTableBuilder.Count + 4; // +4 for the size prefix
+            _coffStringTableBuilder.WriteUTF8(name);
+            _coffStringTableBuilder.WriteByte(0);
+            _stringTableEntries.Add(name, offset);
+            return offset;
+        }
+
         public CoffSymbolHandle GetOrAddCoffSymbol(string name, uint value, ushort sectionNumber, CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols)
         {
             if (_coffSymbols.TryGetValue(name, out CoffSymbolHandle result))
@@ -1587,9 +1655,7 @@ namespace System.Reflection.PortableExecutable
             else
             {
                 _coffSymbolTableBuilder.WriteUInt32(0);
-                _coffSymbolTableBuilder.WriteInt32(_coffStringTableBuilder.Count + 4);
-                _coffStringTableBuilder.WriteUTF8(name);
-                _coffStringTableBuilder.WriteByte(0);
+                _coffSymbolTableBuilder.WriteInt32(GetOrAddStringTableEntry(name));
             }
 
             _coffSymbolTableBuilder.WriteUInt32(value);
@@ -1627,7 +1693,7 @@ namespace System.Reflection.PortableExecutable
             _clrTextSectionNumber = clrTextSectionNumber;
         }
 
-        public CoffSymbolHandle AddClrToken(string name, EntityHandle handle, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol)
+        public CoffSymbolHandle AddFunctionClrToken(string name, EntityHandle handle, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol)
         {
             int token = MetadataTokens.GetToken(handle);
 
@@ -1649,16 +1715,16 @@ namespace System.Reflection.PortableExecutable
         /// <summary>
         /// Adds a CLR token symbol for a field definition in a data section.
         /// </summary>
-        public CoffSymbolHandle AddDataClrToken(string name, EntityHandle handle, int dataSectionNumber, out CoffSymbolHandle tokenCoffSymbol)
+        public CoffSymbolHandle AddDataClrToken(string name, EntityHandle handle, int dataSectionNumber, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol)
         {
             int token = MetadataTokens.GetToken(handle);
 
-            CoffSymbolHandle index = GetOrAddCoffSymbol(name, 0, (ushort)dataSectionNumber, CoffSymbolType.Null, CoffSymbolStorageClass.Static, 0);
+            CoffSymbolHandle index = GetOrAddCoffSymbol(name, (uint)sectionOffset, (ushort)dataSectionNumber, CoffSymbolType.Null, CoffSymbolStorageClass.Static, 0);
 
             string tokenSymbolName = token.ToString("X8");
             if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
             {
-                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, 0, (ushort)dataSectionNumber, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 1);
+                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, (uint)sectionOffset, (ushort)dataSectionNumber, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 1);
                 _coffSymbolTableBuilder.WriteByte(1);
                 _coffSymbolTableBuilder.WriteByte(0);
                 _coffSymbolTableBuilder.WriteInt32(index._value);
@@ -1927,14 +1993,19 @@ namespace System.Reflection.PortableExecutable
             }
         }
 
-        private static void WriteSectionHeader(BlobBuilder builder, SerializedSection serializedSection)
+        private void WriteSectionHeader(BlobBuilder builder, SerializedSection serializedSection)
         {
-            //if (serializedSection.VirtualSize == 0)
-            //{
-            //    return;
-            //}
-
-            WritePaddedName(builder, serializedSection.Name);
+            if (serializedSection.Name.Length <= 8)
+            {
+                WritePaddedName(builder, serializedSection.Name);
+            }
+            else
+            {
+                // Long section names: write "/<offset>" where offset is into the COFF string table
+                int stringOffset = SymbolTableBuilder.GetOrAddStringTableEntry(serializedSection.Name);
+                string offsetStr = "/" + stringOffset.ToString();
+                WritePaddedName(builder, offsetStr);
+            }
 
             builder.WriteUInt32(0); // VirtualSize: should be 0 for object files
             builder.WriteUInt32((uint)serializedSection.RelativeVirtualAddress);
@@ -1953,6 +2024,8 @@ namespace System.Reflection.PortableExecutable
         private const string CorMetaSectionName = ".cormeta";
         private const string TextSectionName = ".text$mn";
         private const string DataSectionName = ".data";
+        private const string RDataSectionName = ".rdata";
+        private const string CrtmaSectionName = ".CRTMA$XCC";
         private const string CodeViewSymbolsSectionName = ".debug$S";
 
         private readonly CodeViewSymbolBuilder _codeViewSymbols;
@@ -1961,6 +2034,8 @@ namespace System.Reflection.PortableExecutable
         private readonly BlobBuilder _ilRelocs;
         private readonly BlobBuilder _dataStream;
         private readonly BlobBuilder _dataRelocs;
+        private readonly BlobBuilder _rdataStream;
+        private readonly InitializerListSectionBuilder _initializerList;
 
         public const int ClrTextSectionNumber = 1;
 
@@ -1973,6 +2048,8 @@ namespace System.Reflection.PortableExecutable
             BlobBuilder ilRelocs,
             BlobBuilder dataStream = null,
             BlobBuilder dataRelocs = null,
+            BlobBuilder rdataStream = null,
+            InitializerListSectionBuilder initializerList = null,
             Func<IEnumerable<Blob>, BlobContentId> deterministicIdProvider = null)
             : base(header, symbolTable, deterministicIdProvider)
         {
@@ -2002,24 +2079,48 @@ namespace System.Reflection.PortableExecutable
             _ilRelocs = ilRelocs;
             _dataStream = dataStream;
             _dataRelocs = dataRelocs;
+            _rdataStream = rdataStream;
+            _initializerList = initializerList;
+        }
+
+        /// <summary>
+        /// Returns the 1-based section number for a given section, computed from the section list.
+        /// Returns -1 if the section is not present.
+        /// </summary>
+        public int GetSectionNumber(string sectionName)
+        {
+            var sections = GetSections();
+            for (int i = 0; i < sections.Length; i++)
+            {
+                if (sections[i].Name == sectionName)
+                    return i + 1;
+            }
+            return -1;
         }
 
         /// <summary>
         /// Returns the 1-based section number for the .data section, or -1 if no .data section.
         /// </summary>
-        public int DataSectionNumber
-        {
-            get
-            {
-                // Sections: .text$mn(1), .data(2 if present), .cormeta, .debug$S
-                return _dataStream != null && _dataStream.Count > 0 ? 2 : -1;
-            }
-        }
+        public int DataSectionNumber => GetSectionNumber(DataSectionName);
+
+        /// <summary>
+        /// Returns the 1-based section number for the .rdata section, or -1 if not present.
+        /// </summary>
+        public int RDataSectionNumber => GetSectionNumber(RDataSectionName);
+
+        /// <summary>
+        /// Returns the 1-based section number for the .CRTMA$XCC section, or -1 if not present.
+        /// </summary>
+        public int CrtmaSectionNumber => GetSectionNumber(CrtmaSectionName);
 
         protected override ImmutableArray<Section> CreateSections()
         {
             var builder = ImmutableArray.CreateBuilder<Section>();
             builder.Add(new Section(TextSectionName, SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.ContainsCode | SectionCharacteristics.Align4Bytes));
+            if (_rdataStream != null && _rdataStream.Count > 0)
+            {
+                builder.Add(new Section(RDataSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes));
+            }
             if (_dataStream != null && _dataStream.Count > 0)
             {
                 builder.Add(new Section(DataSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes));
@@ -2029,6 +2130,10 @@ namespace System.Reflection.PortableExecutable
             {
                 builder.Add(new Section(CodeViewSymbolsSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemDiscardable | SectionCharacteristics.Align1Bytes | SectionCharacteristics.MemRead));
             }
+            if (_initializerList != null && _initializerList.HasInitializers)
+            {
+                builder.Add(new Section(CrtmaSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align8Bytes));
+            }
 
             return builder.ToImmutable();
         }
@@ -2037,9 +2142,11 @@ namespace System.Reflection.PortableExecutable
             name switch
             {
                 TextSectionName => SerializeTextSection(location),
+                RDataSectionName => _rdataStream,
                 DataSectionName => _dataStream,
                 CorMetaSectionName => SerializeCorMetaSection(location),
                 CodeViewSymbolsSectionName => SerializeCodeViewSymbols(location),
+                CrtmaSectionName => SerializeCrtmaSection(),
                 _ => throw new ArgumentException(),
             };
 
@@ -2052,6 +2159,12 @@ namespace System.Reflection.PortableExecutable
             else if (name == DataSectionName)
             {
                 return _dataRelocs;
+            }
+            else if (name == CrtmaSectionName)
+            {
+                var b = new BlobBuilder();
+                _initializerList.SerializeRelocations(b);
+                return b;
             }
             else if (name == CodeViewSymbolsSectionName)
             {
@@ -2079,6 +2192,13 @@ namespace System.Reflection.PortableExecutable
         {
             var builder = new BlobBuilder();
             _codeViewSymbols.Serialize(builder);
+            return builder;
+        }
+
+        private BlobBuilder SerializeCrtmaSection()
+        {
+            var builder = new BlobBuilder();
+            _initializerList.Serialize(builder);
             return builder;
         }
     }

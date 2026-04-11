@@ -3,5 +3,6 @@
 int main()
 {
     char* c = "Hello";
-    return c[0];
+    char* d = "World!";
+    return c[0] + d[0];
 }
