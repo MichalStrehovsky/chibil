@@ -449,10 +449,9 @@ class Program
 
                     Console.WriteLine();
 
-                    // Advance past this method body (align to 4 for fat headers)
+                    // Advance past this method body, align to 4 for the next fat header
                     ilOffset += body.Size;
-                    // Fat method bodies start aligned to 4, but the next body after
-                    // a tiny body doesn't need alignment.  The emitter aligns before fat headers.
+                    ilOffset = (ilOffset + 3) & ~3;
                 }
             }
         }

@@ -106,11 +106,23 @@ namespace System.Reflection.PortableExecutable
     public struct CodeViewManSlot
     {
         public int Slot;
-        public int TypeToken; // metadata token for the slot's type (e.g., StandaloneSig token)
+        public int TypeToken;
         public string Name;
 
         public CodeViewManSlot(int slot, int typeToken, string name)
             => (Slot, TypeToken, Name) = (slot, typeToken, name);
+    }
+
+    /// <summary>
+    /// Represents a lexical block scope (S_BLOCK32) containing local variable slots
+    /// and optionally nested child scopes.
+    /// </summary>
+    public class CodeViewLocalScope
+    {
+        public int CodeOffset { get; set; }
+        public int CodeLength { get; set; }
+        public List<CodeViewManSlot> Slots { get; } = new List<CodeViewManSlot>();
+        public List<CodeViewLocalScope> Children { get; } = new List<CodeViewLocalScope>();
     }
 
     public class CodeViewSymbolBuilder
@@ -236,7 +248,9 @@ namespace System.Reflection.PortableExecutable
                 .AddTokenRelocation(_symbolAndLineNumbersBlob.Count + 4 /* Header */, coffSymbol);
         }
 
-        public void AddMethodSymbol(string methodName, CoffSymbolHandle methodCoffSymbol, int methodCoffSymbolDelta, CoffSymbolHandle methodTokenSymbol, int codeSize, IReadOnlyList<CodeViewManSlot> localSlots = null)
+        public void AddMethodSymbol(string methodName, CoffSymbolHandle methodCoffSymbol, int methodCoffSymbolDelta, CoffSymbolHandle methodTokenSymbol, int codeSize,
+            IReadOnlyList<CodeViewManSlot> localSlots = null,
+            IReadOnlyList<CodeViewLocalScope> localScopes = null)
         {
             _symbolAndLineNumbersBlob.WriteUInt32(0xF1);
             var sizeFixup = _symbolAndLineNumbersBlob.ReserveBytes(4);
@@ -285,23 +299,18 @@ namespace System.Reflection.PortableExecutable
             // MAGIC
             _symbolAndLineNumbersBlob.WriteInt32(0x00100200);
 
-            // S_MANSLOT records for local variables
+            // S_MANSLOT records for local variables (function-level)
             if (localSlots != null)
             {
                 foreach (var slot in localSlots)
-                {
-                    // S_MANSLOT (0x1120): iSlot(4) + typind(4) + attr.off(4) + attr.seg(2) + attr.flags(2) + name
-                    int manSlotRecLen = 2 + 4 + 4 + 4 + 2 + 2 + slot.Name.Length + 1;
-                    _symbolAndLineNumbersBlob.WriteUInt16((ushort)manSlotRecLen);
-                    _symbolAndLineNumbersBlob.WriteUInt16(0x1120);
-                    _symbolAndLineNumbersBlob.WriteInt32(slot.Slot); // iSlot
-                    _symbolAndLineNumbersBlob.WriteInt32(slot.TypeToken); // typind (metadata token)
-                    _symbolAndLineNumbersBlob.WriteInt32(0); // attr.off
-                    _symbolAndLineNumbersBlob.WriteInt16(0); // attr.seg
-                    _symbolAndLineNumbersBlob.WriteInt16(0); // attr.flags
-                    _symbolAndLineNumbersBlob.WriteUTF8(slot.Name);
-                    _symbolAndLineNumbersBlob.WriteByte(0);
-                }
+                    EmitManSlot(slot);
+            }
+
+            // S_BLOCK32 + S_MANSLOT + S_END for nested lexical scopes
+            if (localScopes != null)
+            {
+                foreach (var scope in localScopes)
+                    EmitLocalScope(scope, methodCoffSymbol, methodCoffSymbolDelta);
             }
 
             // end method
@@ -311,6 +320,51 @@ namespace System.Reflection.PortableExecutable
             new BlobWriter(sizeFixup).WriteInt32(_symbolAndLineNumbersBlob.Count - startOffset);
 
             _symbolAndLineNumbersBlob.Align(4);
+        }
+
+        private void EmitManSlot(CodeViewManSlot slot)
+        {
+            int manSlotRecLen = 2 + 4 + 4 + 4 + 2 + 2 + slot.Name.Length + 1;
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)manSlotRecLen);
+            _symbolAndLineNumbersBlob.WriteUInt16(0x1120); // S_MANSLOT
+            _symbolAndLineNumbersBlob.WriteInt32(slot.Slot);
+            _symbolAndLineNumbersBlob.WriteInt32(slot.TypeToken);
+            _symbolAndLineNumbersBlob.WriteInt32(0); // attr.off
+            _symbolAndLineNumbersBlob.WriteInt16(0); // attr.seg
+            _symbolAndLineNumbersBlob.WriteUInt16(0); // attr.flags
+            _symbolAndLineNumbersBlob.WriteUTF8(slot.Name);
+            _symbolAndLineNumbersBlob.WriteByte(0);
+        }
+
+        private void EmitLocalScope(CodeViewLocalScope scope, CoffSymbolHandle methodCoffSymbol, int methodCoffSymbolDelta)
+        {
+            // S_BLOCK32 (0x1103): pParent(4) + pEnd(4) + len(4) + off(4) + seg(2) + name(null-term)
+            int blockRecLen = 2 + 4 + 4 + 4 + 4 + 2 + 1;
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)blockRecLen);
+            _symbolAndLineNumbersBlob.WriteUInt16(0x1103); // S_BLOCK32
+            _symbolAndLineNumbersBlob.WriteInt32(0); // pParent (fixup by linker)
+            _symbolAndLineNumbersBlob.WriteInt32(0); // pEnd (fixup by linker)
+            _symbolAndLineNumbersBlob.WriteInt32(scope.CodeLength); // len
+
+            EmitSymbolsAndLineNumbersSectionRelativeReloc(methodCoffSymbol);
+            _symbolAndLineNumbersBlob.WriteInt32(methodCoffSymbolDelta + scope.CodeOffset); // off
+
+            EmitSymbolsAndLineNumbersSectionReloc(methodCoffSymbol);
+            _symbolAndLineNumbersBlob.WriteInt16(0); // seg
+
+            _symbolAndLineNumbersBlob.WriteByte(0); // name (empty)
+
+            // Emit slots within this scope
+            foreach (var slot in scope.Slots)
+                EmitManSlot(slot);
+
+            // Emit nested child scopes
+            foreach (var child in scope.Children)
+                EmitLocalScope(child, methodCoffSymbol, methodCoffSymbolDelta);
+
+            // S_END
+            _symbolAndLineNumbersBlob.WriteUInt16(2);
+            _symbolAndLineNumbersBlob.WriteUInt16(0x0006); // S_END
         }
 
         public void AddLineNumbers(CoffSymbolHandle methodCoffSymbol, int methodCoffSymbolDelta, int codeSize, CodeViewLineNumberBuilder lineNumbersBlob)
@@ -1381,6 +1435,7 @@ namespace System.Reflection.PortableExecutable
             MethodBodyAttributes attributes = MethodBodyAttributes.InitLocals,
             bool hasDynamicStackAllocation = false,
             IReadOnlyList<CodeViewManSlot> localSlots = null,
+            IReadOnlyList<CodeViewLocalScope> localScopes = null,
             string debugName = null)
         {
             if (unchecked((uint)maxStack) > ushort.MaxValue)
@@ -1407,13 +1462,13 @@ namespace System.Reflection.PortableExecutable
                 throw new ArgumentOutOfRangeException(nameof(instructionEncoder));
             }
 
-            int originalBuilderPosition = Builder.Count;
             int bodyOffset = SerializeHeader(codeBuilder.Count, (ushort)maxStack, exceptionRegionCount, attributes, localVariablesSignature, hasDynamicStackAllocation);
 
-            CoffSymbolHandle methodSymbol = SymbolTableBuilder.AddClrToken(coffSymbolName, metadataHandle, out CoffSymbolHandle tokenCoffSymbol);
-            CodeViewSymbolBuilder?.AddMethodSymbol(debugName ?? coffSymbolName, methodSymbol, Builder.Count - originalBuilderPosition, tokenCoffSymbol, codeBuilder.Count, localSlots);
+            CoffSymbolHandle methodSymbol = SymbolTableBuilder.AddClrToken(coffSymbolName, metadataHandle, bodyOffset, out CoffSymbolHandle tokenCoffSymbol);
+            int methodCoffSymbolDelta = Builder.Count - bodyOffset;
+            CodeViewSymbolBuilder?.AddMethodSymbol(debugName ?? coffSymbolName, methodSymbol, methodCoffSymbolDelta, tokenCoffSymbol, codeBuilder.Count, localSlots, localScopes);
             if (lineNumberBuilder != null)
-                CodeViewSymbolBuilder?.AddLineNumbers(methodSymbol, Builder.Count - originalBuilderPosition, codeBuilder.Count, lineNumberBuilder);
+                CodeViewSymbolBuilder?.AddLineNumbers(methodSymbol, methodCoffSymbolDelta, codeBuilder.Count, lineNumberBuilder);
 
             relocBuilder?.Append(RelocationBuilder, Builder.Count, HeaderBuilder, SymbolTableBuilder);
 
@@ -1572,16 +1627,16 @@ namespace System.Reflection.PortableExecutable
             _clrTextSectionNumber = clrTextSectionNumber;
         }
 
-        public CoffSymbolHandle AddClrToken(string name, EntityHandle handle, out CoffSymbolHandle tokenCoffSymbol)
+        public CoffSymbolHandle AddClrToken(string name, EntityHandle handle, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol)
         {
             int token = MetadataTokens.GetToken(handle);
 
-            CoffSymbolHandle index = GetOrAddCoffSymbol(name, 0, (ushort)_clrTextSectionNumber, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0);
+            CoffSymbolHandle index = GetOrAddCoffSymbol(name, (uint)sectionOffset, (ushort)_clrTextSectionNumber, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0);
 
             string tokenSymbolName = token.ToString("X8");
             if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
             {
-                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, 0, (ushort)_clrTextSectionNumber, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 1);
+                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, (uint)sectionOffset, (ushort)_clrTextSectionNumber, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 1);
                 _coffSymbolTableBuilder.WriteByte(1);
                 _coffSymbolTableBuilder.WriteByte(0);
                 _coffSymbolTableBuilder.WriteInt32(index._value);
