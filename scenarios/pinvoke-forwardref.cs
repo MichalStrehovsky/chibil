@@ -19,6 +19,14 @@ using System.Security.Cryptography;
 
 class Program
 {
+    const Machine machine = Machine.I386;
+
+    static readonly byte[] mscorlibHash = machine == Machine.I386
+        ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
+        : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
+
+    static readonly CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : CodeViewMachine.Arm64;
+
     static void Main(string[] args)
     {
         var md = new MetadataBuilder();
@@ -30,14 +38,12 @@ class Program
             default,
             md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default,
-            md.GetOrAddBlob(new byte[] {
-                0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC,
-                0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49,
-                0x13, 0xC1, 0x99, 0xCE }));
+            md.GetOrAddBlob(mscorlibHash));
 
         // ─── TypeRefs ─────────────────────────────────────────────────────
-        var callConvCdeclRef = md.AddTypeReference(mscorlibRef,
-            md.GetOrAddString("System.Runtime.CompilerServices"), md.GetOrAddString("CallConvCdecl"));
+        string callConvName = machine == Machine.I386 ? "CallConvStdcall" : "CallConvCdecl";
+        var callConvRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"), md.GetOrAddString(callConvName));
         var decoratedNameAttrRef = md.AddTypeReference(mscorlibRef,
             md.GetOrAddString("System.Runtime.CompilerServices"), md.GetOrAddString("DecoratedNameAttribute"));
 
@@ -79,7 +85,7 @@ class Program
 
         // Return type: CMOD_OPT CallConvCdecl I4
         msgBoxRetEnc.Type().Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-        msgBoxRetEnc.Type().Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(callConvCdeclRef));
+        msgBoxRetEnc.Type().Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(callConvRef));
         msgBoxRetEnc.Type().Builder.WriteByte((byte)SignatureTypeCode.Int32);
 
         // Param 1: Ptr ValueClass Mine
@@ -108,8 +114,10 @@ class Program
         // ─── CustomAttribute: DecoratedNameAttribute on MessageBoxW ───────
         var customAttrValueBuilder = new BlobBuilder();
         customAttrValueBuilder.WriteUInt16(0x0001);
-        string decoratedName = "?MessageBoxW@@$$J0YAHPEAUMine@@PEAX1H@Z";
-        customAttrValueBuilder.WriteSerializedString(decoratedName);
+        string messageBoxWDecoratedName = machine == Machine.I386
+            ? "?MessageBoxW@@$$J216YGHPAUMine@@PAX1H@Z"
+            : "?MessageBoxW@@$$J0YAHPEAUMine@@PEAX1H@Z";
+        customAttrValueBuilder.WriteSerializedString(messageBoxWDecoratedName);
         customAttrValueBuilder.WriteUInt16(0x0000);
 
         md.AddCustomAttribute(messageBoxWRef, decNameCtorRef,
@@ -128,20 +136,20 @@ class Program
             default, default);
 
         // ─── COFF structure ───────────────────────────────────────────────
-        var coffHeader = new CoffHeaderBuilder(Machine.Arm64, 0);
+        var coffHeader = new CoffHeaderBuilder(machine, 0);
         var symtab = new ManagedCoffSymbolTableBuilder(ManagedCoffBuilder.ClrTextSectionNumber, ObjectFeatures.PureMsil);
 
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
 
-        symtab.AddExternalClrToken("?MessageBoxW@@$$J0YAHPEAUMine@@PEAX1H@Z", messageBoxWRef);
+        symtab.AddExternalClrToken(messageBoxWDecoratedName, messageBoxWRef);
 
         // ─── CodeView debug info ──────────────────────────────────────────
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
         string objPath = Path.GetFullPath("pinvoke-forwardref.obj");
         codeviewSymbols.AddObjNameAndCompile3(objPath,
             language: CodeViewLanguage.C,
-            machine: CodeViewMachine.Arm64,
+            machine: cvMachine,
             feMajor: 19, feMinor: 50, feBuild: 35728,
             beMajor: 19, beMinor: 50, beBuild: 35728,
             "Microsoft (R) Optimizing Compiler",
@@ -165,11 +173,11 @@ class Program
         encoder.OpCode(ILOpCode.Ldc_i4_0);
         encoder.OpCode(ILOpCode.Stloc_0);
         encoder.OpCode(ILOpCode.Ldc_i4_0);
-        encoder.OpCode(ILOpCode.Conv_i8);
+        if (machine != Machine.I386) encoder.OpCode(ILOpCode.Conv_i8);
         encoder.OpCode(ILOpCode.Ldc_i4_0);
-        encoder.OpCode(ILOpCode.Conv_i8);
+        if (machine != Machine.I386) encoder.OpCode(ILOpCode.Conv_i8);
         encoder.OpCode(ILOpCode.Ldc_i4_0);
-        encoder.OpCode(ILOpCode.Conv_i8);
+        if (machine != Machine.I386) encoder.OpCode(ILOpCode.Conv_i8);
         encoder.OpCode(ILOpCode.Ldc_i4_0);
         encoder.Call(messageBoxWRef);
         encoder.OpCode(ILOpCode.Stloc_0);
@@ -194,3 +202,5 @@ class Program
         Console.WriteLine("pinvoke-forwardref.obj created");
     }
 }
+
+

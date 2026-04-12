@@ -17,6 +17,14 @@ using System.Security.Cryptography;
 
 class Program
 {
+    const Machine machine = Machine.I386;
+
+    static readonly byte[] mscorlibHash = machine == Machine.I386
+        ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
+        : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
+
+    static readonly CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : CodeViewMachine.Arm64;
+
     static void Main(string[] args)
     {
         var md = new MetadataBuilder();
@@ -28,10 +36,7 @@ class Program
             default,
             md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default,
-            md.GetOrAddBlob(new byte[] {
-                0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC,
-                0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49,
-                0x13, 0xC1, 0x99, 0xCE }));
+            md.GetOrAddBlob(mscorlibHash));
 
         // ─── TypeRefs (only what's needed) ────────────────────────────────
         var valueTypeRef = md.AddTypeReference(mscorlibRef, md.GetOrAddString("System"), md.GetOrAddString("ValueType"));
@@ -148,7 +153,7 @@ class Program
             default, default);
 
         // ─── COFF structure ───────────────────────────────────────────────
-        var coffHeader = new CoffHeaderBuilder(Machine.Arm64, 0);
+        var coffHeader = new CoffHeaderBuilder(machine, 0);
         var symtab = new ManagedCoffSymbolTableBuilder(ManagedCoffBuilder.ClrTextSectionNumber, ObjectFeatures.PureMsil);
 
         var ilStreamBuilder = new BlobBuilder();
@@ -171,7 +176,7 @@ class Program
         string objPath = Path.GetFullPath("literal.obj");
         codeviewSymbols.AddObjNameAndCompile3(objPath,
             language: CodeViewLanguage.C,
-            machine: CodeViewMachine.Arm64,
+            machine: cvMachine,
             feMajor: 19, feMinor: 50, feBuild: 35728,
             beMajor: 19, beMinor: 50, beBuild: 35728,
             "Microsoft (R) Optimizing Compiler",
@@ -203,27 +208,27 @@ class Program
         encoder.Token(field2);
         encoder.OpCode(ILOpCode.Stloc_1);         // IL_000D: d
         encoder.MarkLineNumber(cvFile, 7);
-        encoder.OpCode(ILOpCode.Ldloc_2);         // IL_000E
-        encoder.OpCode(ILOpCode.Ldc_i4_1);        // IL_000F
-        encoder.OpCode(ILOpCode.Conv_i8);          // IL_0010
-        encoder.OpCode(ILOpCode.Ldc_i4_0);        // IL_0011
-        encoder.OpCode(ILOpCode.Conv_i8);          // IL_0012
-        encoder.OpCode(ILOpCode.Mul);              // IL_0013
-        encoder.OpCode(ILOpCode.Add);              // IL_0014
-        encoder.OpCode(ILOpCode.Ldind_i1);         // IL_0015
-        encoder.OpCode(ILOpCode.Ldloc_1);         // IL_0016
-        encoder.OpCode(ILOpCode.Ldc_i4_1);        // IL_0017
-        encoder.OpCode(ILOpCode.Conv_i8);          // IL_0018
-        encoder.OpCode(ILOpCode.Ldc_i4_0);        // IL_0019
-        encoder.OpCode(ILOpCode.Conv_i8);          // IL_001A
-        encoder.OpCode(ILOpCode.Mul);              // IL_001B
-        encoder.OpCode(ILOpCode.Add);              // IL_001C
-        encoder.OpCode(ILOpCode.Ldind_i1);         // IL_001D
-        encoder.OpCode(ILOpCode.Add);              // IL_001E
-        encoder.OpCode(ILOpCode.Stloc_0);         // IL_001F
+        encoder.OpCode(ILOpCode.Ldloc_2);
+        encoder.OpCode(ILOpCode.Ldc_i4_1);
+        if (machine != Machine.I386) encoder.OpCode(ILOpCode.Conv_i8);
+        encoder.OpCode(ILOpCode.Ldc_i4_0);
+        if (machine != Machine.I386) encoder.OpCode(ILOpCode.Conv_i8);
+        encoder.OpCode(ILOpCode.Mul);
+        encoder.OpCode(ILOpCode.Add);
+        encoder.OpCode(ILOpCode.Ldind_i1);
+        encoder.OpCode(ILOpCode.Ldloc_1);
+        encoder.OpCode(ILOpCode.Ldc_i4_1);
+        if (machine != Machine.I386) encoder.OpCode(ILOpCode.Conv_i8);
+        encoder.OpCode(ILOpCode.Ldc_i4_0);
+        if (machine != Machine.I386) encoder.OpCode(ILOpCode.Conv_i8);
+        encoder.OpCode(ILOpCode.Mul);
+        encoder.OpCode(ILOpCode.Add);
+        encoder.OpCode(ILOpCode.Ldind_i1);
+        encoder.OpCode(ILOpCode.Add);
+        encoder.OpCode(ILOpCode.Stloc_0);
         encoder.MarkLineNumber(cvFile, 8);
-        encoder.OpCode(ILOpCode.Ldloc_0);         // IL_0020
-        encoder.OpCode(ILOpCode.Ret);              // IL_0021
+        encoder.OpCode(ILOpCode.Ldloc_0);
+        encoder.OpCode(ILOpCode.Ret);
 
         // Local variable info for S_MANSLOT
         var localSlots = new[] {
@@ -249,3 +254,4 @@ class Program
         Console.WriteLine("literal.obj created");
     }
 }
+
