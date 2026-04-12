@@ -29,9 +29,8 @@ namespace System.Reflection.PortableExecutable
         private readonly ManagedCoffSymbolTableBuilder _symbolTableBuilder;
         private readonly List<EntityHandle> _initializers = new List<EntityHandle>();
 
-        // Each slot is a pointer-sized entry. Currently hardcoded to 8 bytes (64-bit).
-        // TODO: verify with an x86 build whether this should be 4 bytes for 32-bit targets.
-        private const int SlotSize = 8;
+        // Each slot is pointer-sized: 4 bytes on x86, 8 bytes on 64-bit targets.
+        private int SlotSize => _coffHeaderBuilder.Machine == Machine.I386 ? 4 : 8;
 
         public InitializerListSectionBuilder(CoffHeaderBuilder coffHeaderBuilder, ManagedCoffSymbolTableBuilder symbolTableBuilder)
         {
@@ -2132,7 +2131,8 @@ namespace System.Reflection.PortableExecutable
             }
             if (_initializerList != null && _initializerList.HasInitializers)
             {
-                builder.Add(new Section(CrtmaSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align8Bytes));
+                var crtmaAlign = Header.Machine == Machine.I386 ? SectionCharacteristics.Align4Bytes : SectionCharacteristics.Align8Bytes;
+                builder.Add(new Section(CrtmaSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | crtmaAlign));
             }
 
             return builder.ToImmutable();

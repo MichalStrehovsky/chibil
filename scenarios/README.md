@@ -45,6 +45,15 @@ For scenarios that reference external functions (e.g., `pinvoke.c` uses `Message
 link.exe /debug /entry:main /subsystem:console /libpath:... user32.lib foo.obj
 ```
 
+For scenarios with global variable initializers (e.g., `init.cc`), link with `minicrt.obj` which provides a module constructor that iterates the `.CRTMA` table:
+
+```
+cl /c /Zl /clr:pure minicrt.cc
+link.exe /debug /entry:main /subsystem:console init.obj minicrt.obj /include:?.cctor@@$$FYMXXZ
+```
+
+**⚠️ Important:** Never overwrite the MSVC-generated `.obj`, `.exe`, or `.pdb` files. Our emitters write to the same filename — always back up or restore the MSVC files after running emitters. The `.cs` files should output to a different name (e.g., `foo_ours.exe`) for comparison.
+
 ## How to create a new scenario
 
 ### 1. Write the C file
@@ -135,10 +144,34 @@ MSVC emits `S_MANSLOT` with `fIsParam=1` for function parameters (e.g., `pS` in 
 When a function has multiple `{ }` blocks with their own local variables (like `struct.c`), we emit `S_BLOCK32` + `S_END` records to create nested scopes. This ensures that local variable names are correctly scoped in the PDB — without scoping, the debugger wouldn't know which `m` is which in overlapping blocks.
 
 ### Method body alignment
-Fat method bodies (those with locals, maxStack > 8, or exception handlers) require 4-byte alignment. The emitter handles this automatically. When multiple methods are in the same `.text$mn` section, the COFF symbol for each method must have the correct `Value` (offset within the section) — the emitter sets this via `AddClrToken`.
+Fat method bodies (those with locals, maxStack > 8, or exception handlers) require 4-byte alignment. The emitter handles this automatically. When multiple methods are in the same `.text$mn` section, the COFF symbol for each method must have the correct `Value` (offset within the section) — the emitter sets this via `AddFunctionClrToken`.
 
 ### COFF symbol ordering matters
 `AddDataClrToken` and `AddExternalClrToken` must be called **before** emitting IL that references the same metadata tokens. This is because IL token references create CLR token COFF symbols via `GetOrAddCoffSymbol`, which caches by name. If the IL emission creates the symbol first (at section 0), the later `AddDataClrToken` call is a no-op — it gets the cached version. Pre-registering the symbol ensures the correct section number is used.
+
+### Architecture parameterization (x86 vs ARM64)
+Each `.cs` file has a `const Machine machine = Machine.I386;` at the top. Changing this to `Machine.Arm64` produces ARM64 object files. The following things differ between architectures:
+
+| Aspect | x86 | ARM64 |
+|--------|-----|-------|
+| mscorlib hash | `32 CD 81 47...` | `28 DC 37 8B...` |
+| Pointer arithmetic IL | no `conv.i8` | `conv.i8` after integer constants |
+| Calling convention (pinvoke) | `CallConvStdcall` | `CallConvCdecl` |
+| Decorated names (pinvoke) | `PAX`, `J216YGH` | `PEAX`, `J0YAH` |
+| CRTMA slot size | 4 bytes | 8 bytes |
+| CRTMA section alignment | Align4Bytes | Align8Bytes |
+| `<alignment member>` field (struct) | not emitted | emitted |
+
+The `const` allows the C# compiler to dead-code-eliminate the unused branch, so only one architecture's code is compiled.
+
+### .CRTMA section and global variable initializers
+The `init.cc` scenario demonstrates global variables with initializers (e.g., `char* str = "Hello!"`). The MSVC compiler generates:
+1. An initializer function `??__Estr` that sets `str = &"Hello!"`
+2. A `.CRTMA$XCC` section containing a function pointer (CLR token relocation) to `??__Estr`
+3. The `.CRTMA$XCC` data is merged alphabetically by the linker with `.CRTMA$XCA` (start sentinel) and `.CRTMA$XCZ` (end sentinel) from `minicrt.obj`
+4. The module constructor (`.cctor` in `minicrt.obj`) iterates this table and calls each non-null function pointer
+
+**Critical:** The `.CRTMA$XCC` section alignment must match pointer size (4 bytes on x86, 8 bytes on ARM64). Incorrect alignment inserts padding gaps that break the table iteration.
 
 ## Tools reference
 
@@ -147,6 +180,11 @@ Fat method bodies (those with locals, maxStack > 8, or exception handlers) requi
 | `coffobjdumper.cs` | `tools/` | Dump IL, metadata tokens, COFF symbols, and `.debug$S` from `.obj` files |
 | `coffobjectemitter.cs` | `tools/` | Library for emitting managed COFF `.obj` files |
 | `cvdump.exe` | `references/microsoft-pdb/cvdump/` | Microsoft's CodeView/PDB dumper |
+| `dumpbin.exe` | MSVC toolset | COFF/PE dumper (headers, symbols, sections, relocations) |
 | `ildasm.exe` | Windows SDK | .NET IL disassembler |
 | `link.exe` | MSVC toolset | Microsoft linker |
 | `cl.exe` | MSVC toolset | Microsoft C/C++ compiler |
+
+### Linker paths
+- x86: `C:\Program Files\Microsoft Visual Studio\...\bin\Hostx86\x86\link.exe`
+- ARM64: `C:\Program Files\Microsoft Visual Studio\...\bin\Hostx64\arm64\link.exe`

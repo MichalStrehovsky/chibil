@@ -171,21 +171,6 @@ class Program
             0,
             MetadataTokens.ParameterHandle(1));
 
-        // ─── Method #3: .cctor (module constructor — empty) ───────────────
-        var cctorSig = new BlobBuilder();
-        new BlobEncoder(cctorSig).MethodSignature()
-            .Parameters(0, out var cctorRet, out var cctorPar);
-        cctorRet.Void();
-
-        var cctorMethod = md.AddMethodDefinition(
-            MethodAttributes.Assembly | MethodAttributes.Static |
-            MethodAttributes.SpecialName | MethodAttributes.RTSpecialName,
-            MethodImplAttributes.IL | MethodImplAttributes.Managed,
-            md.GetOrAddString(".cctor"),
-            md.GetOrAddBlob(cctorSig),
-            0,
-            MetadataTokens.ParameterHandle(1));
-
         // ─── StandaloneSig: locals (int32) for main ───────────────────────
         var mainLocalsSig = new BlobBuilder();
         new BlobEncoder(mainLocalsSig).LocalVariableSignature(1)
@@ -265,7 +250,7 @@ class Program
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
-            enc.MarkLineNumber(cvFile, 7);
+            enc.MarkLineNumber(cvFile, 8);
             enc.OpCode(ILOpCode.Ldc_i4_0);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.MarkLineNumber(cvFile, 8);
@@ -285,19 +270,6 @@ class Program
             bodyEncoder.AddMethodBody(mainMethod, "?main@@$$HYMHXZ", enc,
                 maxStack: 3, localVariablesSignature: mainLocalsSigHandle, attributes: 0,
                 debugName: "main");
-        }
-
-        // ─── Emit IL for .cctor (empty module constructor) ────────────────
-        {
-            var enc = new RelocatableInstructionEncoder(
-                new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
-
-            enc.MarkLineNumber(cvFile, 21);
-            enc.OpCode(ILOpCode.Ret);
-
-            bodyEncoder.AddMethodBody(cctorMethod, "?.cctor@@$$FYMXXZ", enc,
-                maxStack: 0, debugName: ".cctor");
         }
 
         // ─── Serialize ────────────────────────────────────────────────────
