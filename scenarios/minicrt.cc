@@ -1,4 +1,4 @@
-// Compile with: cl /c /Zl /clr:pure minicrt.cc
+// Compile with: cl /c /Z7 /Zl /clr:pure minicrt.cc
 
 // Allow __identifier
 #pragma warning(disable:4483)
