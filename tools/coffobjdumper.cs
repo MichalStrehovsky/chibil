@@ -152,6 +152,22 @@ class CoffFile
             coff.Symbols = Array.Empty<CoffSymbol>();
         }
 
+        // Resolve long section names (format: /NNN where NNN is offset into string table)
+        if (coff.Header.PointerToSymbolTable > 0)
+        {
+            int stringTableOffset = (int)coff.Header.PointerToSymbolTable + (int)coff.Header.NumberOfSymbols * SymbolSize;
+            for (int i = 0; i < coff.Sections.Length; i++)
+            {
+                if (coff.Sections[i].Name.StartsWith("/") && int.TryParse(coff.Sections[i].Name[1..], out int strOff))
+                {
+                    int strStart = stringTableOffset + strOff;
+                    int strEnd = Array.IndexOf(data, (byte)0, strStart);
+                    if (strEnd > strStart)
+                        coff.Sections[i].Name = Encoding.UTF8.GetString(data, strStart, strEnd - strStart);
+                }
+            }
+        }
+
         return coff;
     }
 
@@ -363,13 +379,36 @@ class Program
             return 1;
         }
 
-        // Find .text$mn section for IL method bodies
-        var textSection = coff.FindSection(".text$mn");
-        if (textSection == null)
+        // Collect all .text$mn and .text$di sections for IL method bodies
+        // MSVC COMDAT objs have each method in its own section; our emitter merges them into one
+        var textSections = new List<CoffSectionHeader>();
+        for (int i = 0; i < coff.Sections.Length; i++)
+        {
+            if (coff.Sections[i].Name == ".text$mn" || coff.Sections[i].Name == ".text$di")
+                textSections.Add(coff.Sections[i]);
+        }
+
+        if (textSections.Count == 0)
         {
             Console.Error.WriteLine("No .text$mn section found.");
             return 1;
         }
+
+        // Concatenate patched IL data from all text sections
+        var ilDataBuilder = new List<byte>();
+        int totalTokenRelocs = 0;
+        foreach (var ts in textSections)
+        {
+            byte[] patched = coff.GetPatchedSectionData(ts);
+            totalTokenRelocs += coff.BuildTokenRelocationMap(ts).Count;
+            // Align to 4 before appending (fat headers require 4-byte alignment)
+            while (ilDataBuilder.Count % 4 != 0) ilDataBuilder.Add(0);
+            ilDataBuilder.AddRange(patched);
+        }
+        byte[] ilData = ilDataBuilder.ToArray();
+
+        Console.WriteLine($".text sections: {textSections.Count} ({ilData.Length} bytes, {totalTokenRelocs} token relocations applied)");
+        Console.WriteLine();
 
         // Read metadata
         var metadataBytes = coff.GetSectionData(cormetaSection.Value).ToArray();
@@ -382,14 +421,7 @@ class Program
             }
         }
 
-        // Get patched IL data (token relocations applied)
-        byte[] ilData = coff.GetPatchedSectionData(textSection.Value);
-
-        Console.WriteLine($".text$mn section: {ilData.Length} bytes (with {coff.BuildTokenRelocationMap(textSection.Value).Count} token relocations applied)");
-        Console.WriteLine();
-
-        // Parse method bodies sequentially from .text$mn
-        // Methods in metadata have RVA=0 in .obj files; bodies are sequential in .text$mn
+        // Parse method bodies sequentially from the concatenated text sections
         int ilOffset = 0;
         foreach (var methodHandle in reader.MethodDefinitions)
         {
