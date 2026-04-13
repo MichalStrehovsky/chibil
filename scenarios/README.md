@@ -22,8 +22,6 @@ Each scenario has:
 | `foo.pdb` | MSVC-linked PDB (reference) |
 | `foo.cs` | C# emitter that produces `foo.obj` (can be executed with `dotnet run foo.cs` |
 
-The `blah.cs` scenario is a standalone test of the emitter library and doesn't correspond to a C file.
-
 ## How the MSVC reference files are produced
 
 ```
