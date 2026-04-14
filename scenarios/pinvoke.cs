@@ -5,9 +5,6 @@
 // Run: dotnet run pinvoke.cs
 // Link: link.exe /entry:main /subsystem:console /libpath:... user32.lib pinvoke.obj
 
-#:property Nullable=disable
-#:property AllowUnsafeBlocks=true
-
 using System;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;

@@ -14,9 +14,6 @@
 // (Note: the MSVC obj name should NOT be overwritten — our output goes to init.obj,
 //  but the MSVC reference is backed up as init_msvc.obj)
 
-#:property Nullable=disable
-#:property AllowUnsafeBlocks=true
-
 using System;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
@@ -209,7 +206,7 @@ class Program
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
-        string sourceFile = Path.GetFullPath("init.cc");
+        string sourceFile = Path.GetFullPath("init.c");
         byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
         CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
 

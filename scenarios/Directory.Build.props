@@ -1,5 +1,14 @@
 <Project>
 
+  <PropertyGroup>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(FileBasedProgram)' == 'true'">
+    <DefineConstants>$(DefineConstants);FILE_BASED_PROGRAM</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <Compile Include="..\tools\coffobjectemitter.cs" />
   </ItemGroup>
