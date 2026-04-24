@@ -5,6 +5,7 @@
 // Properties Nullable=disable and AllowUnsafeBlocks=true are set in Directory.Build.props
 
 using System;
+using System.Buffers.Binary;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 
@@ -753,19 +754,34 @@ namespace System.Reflection.PortableExecutable
             }
         }
 
+        private readonly struct SwitchInfo
+        {
+            internal readonly int ILOffset;
+            internal readonly ImmutableArray<LabelHandle> Labels;
+
+            internal SwitchInfo(int ilOffset, ImmutableArray<LabelHandle> labels)
+            {
+                ILOffset = ilOffset;
+                Labels = labels;
+            }
+        }
+
         private readonly ImmutableArray<BranchInfo>.Builder _branches;
+        private readonly ImmutableArray<SwitchInfo>.Builder _switches;
         private readonly ImmutableArray<int>.Builder _labels;
         private ImmutableArray<ExceptionHandlerInfo>.Builder _lazyExceptionHandlers;
 
         public RelocatableControlFlowBuilder()
         {
             _branches = ImmutableArray.CreateBuilder<BranchInfo>();
+            _switches = ImmutableArray.CreateBuilder<SwitchInfo>();
             _labels = ImmutableArray.CreateBuilder<int>();
         }
 
         internal void Clear()
         {
             _branches.Clear();
+            _switches.Clear();
             _labels.Clear();
             _lazyExceptionHandlers?.Clear();
         }
@@ -786,6 +802,17 @@ namespace System.Reflection.PortableExecutable
             ValidateLabel(label, nameof(label));
             _branches.Add(new BranchInfo(ilOffset, label, opCode));
         }
+
+        internal void AddSwitch(int ilOffset, ImmutableArray<LabelHandle> labels)
+        {
+            Debug.Assert(ilOffset >= 0);
+            Debug.Assert(labels.Length > 0);
+            foreach (var label in labels)
+                ValidateLabel(label, nameof(labels));
+            _switches.Add(new SwitchInfo(ilOffset, labels));
+        }
+
+        internal bool HasFixups => _branches.Count > 0 || _switches.Count > 0;
 
         internal void MarkLabel(int ilOffset, LabelHandle label)
         {
@@ -956,6 +983,57 @@ namespace System.Reflection.PortableExecutable
                     srcBlobOffset += sizeof(byte) + operandSize;
                 }
             }
+        }
+
+        /// <summary>
+        /// Copies code and fixes up both branch and switch instruction operands.
+        /// Flattens the source to a byte array to avoid blob-boundary complexity
+        /// when switch instructions span chunks.
+        /// </summary>
+        internal void CopyCodeAndFixupBranchesAndSwitches(BlobBuilder srcBuilder, BlobBuilder dstBuilder)
+        {
+            if (_switches.Count == 0)
+            {
+                CopyCodeAndFixupBranches(srcBuilder, dstBuilder);
+                return;
+            }
+
+            byte[] code = srcBuilder.ToArray();
+
+            // Fix up branches
+            foreach (var branch in _branches)
+            {
+                int operandSize = branch.OpCode.GetBranchOperandSize();
+                bool isShort = operandSize == 1;
+                int distance = branch.GetBranchDistance(_labels, branch.OpCode, branch.ILOffset, isShort);
+                int operandOffset = branch.ILOffset + 1; // skip opcode byte
+                if (isShort)
+                    code[operandOffset] = (byte)(sbyte)distance;
+                else
+                    BinaryPrimitives.WriteInt32LittleEndian(code.AsSpan(operandOffset), distance);
+            }
+
+            // Fix up switches
+            foreach (var sw in _switches)
+            {
+                int countOffset = sw.ILOffset + 1; // skip switch opcode byte
+                int n = BinaryPrimitives.ReadInt32LittleEndian(code.AsSpan(countOffset));
+                Debug.Assert(n == sw.Labels.Length);
+
+                int switchEndOffset = sw.ILOffset + 1 + 4 + n * 4;
+                for (int i = 0; i < n; i++)
+                {
+                    int targetLabel = _labels[sw.Labels[i].Id - 1];
+                    if (targetLabel < 0)
+                        throw new InvalidOperationException(sw.Labels[i].Id.ToString());
+
+                    int delta = targetLabel - switchEndOffset;
+                    int deltaOffset = countOffset + 4 + i * 4;
+                    BinaryPrimitives.WriteInt32LittleEndian(code.AsSpan(deltaOffset), delta);
+                }
+            }
+
+            dstBuilder.WriteBytes(code);
         }
 
         internal void SerializeExceptionTable(BlobBuilder builder, BlobBuilder relocationBuilder, CoffHeaderBuilder headerBuilder, ManagedCoffSymbolTableBuilder symTableBuilder)
@@ -1431,6 +1509,18 @@ namespace System.Reflection.PortableExecutable
             }
         }
 
+        public void Switch(params LabelHandle[] labels)
+        {
+            if (labels == null || labels.Length == 0)
+                throw new ArgumentException("Switch requires at least one label.", nameof(labels));
+
+            GetBranchBuilder().AddSwitch(Offset, labels.ToImmutableArray());
+            OpCode(ILOpCode.Switch);
+            CodeBuilder.WriteInt32(labels.Length);
+            foreach (var _ in labels)
+                CodeBuilder.WriteInt32(-1); // placeholder deltas, patched during fixup
+        }
+
         public void MarkLabel(LabelHandle label)
         {
             GetBranchBuilder().MarkLabel(Offset, label);
@@ -1521,9 +1611,9 @@ namespace System.Reflection.PortableExecutable
 
             relocBuilder?.Append(RelocationBuilder, Builder.Count, HeaderBuilder, SymbolTableBuilder);
 
-            if (flowBuilder?.BranchCount > 0)
+            if (flowBuilder?.HasFixups == true)
             {
-                flowBuilder.CopyCodeAndFixupBranches(codeBuilder, Builder);
+                flowBuilder.CopyCodeAndFixupBranchesAndSwitches(codeBuilder, Builder);
             }
             else
             {

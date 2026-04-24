@@ -135,26 +135,7 @@ public class SwitchTest
             }
 
             // switch (case0, case1, case2, case2)
-            enc.OpCode(ILOpCode.Switch);
-            enc.CodeBuilder.WriteInt32(4);  // count
-
-            // Switch deltas are calculated from the end of the switch instruction
-            // End of switch = current + 4 + 4*4 = current + 20
-            // We need to use labels for proper offset calculation
-            // Since the RelocatableControlFlowBuilder doesn't directly support switch, write raw deltas
-            // For x86: switch at offset 1, end at 1+1+4+16=22=0x16
-            //   case0=0x18, delta=0x18-0x16=2
-            //   case1=0x1D, delta=7
-            //   case2=0x22, delta=12
-            // For arm64: switch at offset 0x0B, end at 0x0B+1+4+16=0x20
-            //   case0=0x22, delta=2
-            //   case1=0x27, delta=7
-            //   case2=0x2C, delta=12
-            // Same deltas in both cases!
-            enc.CodeBuilder.WriteInt32(2);   // -> case0
-            enc.CodeBuilder.WriteInt32(7);   // -> case1
-            enc.CodeBuilder.WriteInt32(12);  // -> case2
-            enc.CodeBuilder.WriteInt32(12);  // -> case2 (fall-through)
+            enc.Switch(lbl_case0, lbl_case1, lbl_case2, lbl_case2);
 
             enc.Branch(ILOpCode.Br_s, lbl_default);
 
