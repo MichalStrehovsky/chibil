@@ -13,6 +13,7 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
+using System.Collections.Immutable;
 using System.Text;
 
 // ─── COFF structures ──────────────────────────────────────────────────────────
@@ -628,6 +629,7 @@ static class ObjDumper
 
         var boilerplate = GetBoilerplateTypes(reader);
         var methodLocations = coff.FindMethodBodyLocations();
+        var sigProvider = new SignatureTypeProvider(reader);
 
         foreach (var methodHandle in reader.MethodDefinitions)
         {
@@ -646,6 +648,7 @@ static class ObjDumper
                 method.Attributes.HasFlag(MethodAttributes.Abstract))
             {
                 sb.AppendLine($"{NormalizeName(fullName)} (Flags=0x{(ushort)method.Attributes:X4}, Impl=0x{(ushort)method.ImplAttributes:X4})");
+                sb.AppendLine($"  Sig: {FormatMethodSignature(method, sigProvider)}");
                 sb.AppendLine("  (no body)");
                 continue;
             }
@@ -654,6 +657,7 @@ static class ObjDumper
             if (!methodLocations.TryGetValue(token, out var loc))
             {
                 sb.AppendLine($"{NormalizeName(fullName)} (Flags=0x{(ushort)method.Attributes:X4}, Impl=0x{(ushort)method.ImplAttributes:X4})");
+                sb.AppendLine($"  Sig: {FormatMethodSignature(method, sigProvider)}");
                 sb.AppendLine("  (body not found in symbol table)");
                 continue;
             }
@@ -677,7 +681,15 @@ static class ObjDumper
                     string locals = body.LocalSignature.IsNil ? "none" : "yes";
                     byte[] ilBytes = body.GetILBytes();
                     sb.AppendLine($"{NormalizeName(fullName)} (Flags=0x{(ushort)method.Attributes:X4}, Impl=0x{(ushort)method.ImplAttributes:X4})");
+                    sb.AppendLine($"  Sig: {FormatMethodSignature(method, sigProvider)}");
                     sb.AppendLine($"  CodeSize={ilBytes.Length}, Locals={locals}");
+
+                    if (!body.LocalSignature.IsNil)
+                    {
+                        var localSig = reader.GetStandaloneSignature(body.LocalSignature);
+                        var localTypes = localSig.DecodeLocalSignature(sigProvider, null);
+                        sb.AppendLine($"  LocalSig: ({string.Join(", ", localTypes)})");
+                    }
 
                     DumpIL(sb, reader, ilBytes);
 
@@ -1558,6 +1570,96 @@ static class ObjDumper
 
             default:
                 return OperandType.Unknown;
+        }
+    }
+
+    // ─── Signature decoding ───────────────────────────────────────────────
+
+    static string FormatMethodSignature(MethodDefinition method, SignatureTypeProvider sigProvider)
+    {
+        try
+        {
+            var methodSig = method.DecodeSignature(sigProvider, null);
+            string retType = methodSig.ReturnType;
+            string paramTypes = string.Join(", ", methodSig.ParameterTypes);
+            return $"{retType}({paramTypes})";
+        }
+        catch
+        {
+            return "?";
+        }
+    }
+
+    class SignatureTypeProvider : ISignatureTypeProvider<string, object>
+    {
+        private readonly MetadataReader _reader;
+        public SignatureTypeProvider(MetadataReader reader) => _reader = reader;
+
+        public string GetPrimitiveType(PrimitiveTypeCode typeCode) => typeCode switch
+        {
+            PrimitiveTypeCode.Void => "void",
+            PrimitiveTypeCode.Boolean => "bool",
+            PrimitiveTypeCode.SByte => "int8",
+            PrimitiveTypeCode.Byte => "uint8",
+            PrimitiveTypeCode.Int16 => "int16",
+            PrimitiveTypeCode.UInt16 => "uint16",
+            PrimitiveTypeCode.Int32 => "int32",
+            PrimitiveTypeCode.UInt32 => "uint32",
+            PrimitiveTypeCode.Int64 => "int64",
+            PrimitiveTypeCode.UInt64 => "uint64",
+            PrimitiveTypeCode.Single => "float32",
+            PrimitiveTypeCode.Double => "float64",
+            PrimitiveTypeCode.IntPtr => "native int",
+            PrimitiveTypeCode.UIntPtr => "native uint",
+            PrimitiveTypeCode.String => "string",
+            PrimitiveTypeCode.Object => "object",
+            PrimitiveTypeCode.TypedReference => "typedref",
+            PrimitiveTypeCode.Char => "char",
+            _ => $"primitive({typeCode})"
+        };
+
+        public string GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind)
+        {
+            var td = reader.GetTypeDefinition(handle);
+            string name = reader.GetString(td.Name);
+            return $"ValueType {NormalizeName(name)}";
+        }
+
+        public string GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind)
+        {
+            var tr = reader.GetTypeReference(handle);
+            string name = reader.GetString(tr.Name);
+            return NormalizeName(name);
+        }
+
+        public string GetPointerType(string elementType) => $"Ptr {elementType}";
+        public string GetByReferenceType(string elementType) => $"ByRef {elementType}";
+
+        public string GetModifiedType(string modifier, string unmodifiedType, bool isRequired)
+        {
+            string prefix = isRequired ? "modreq" : "modopt";
+            string shortMod = modifier;
+            if (shortMod.Contains('.')) shortMod = shortMod.Substring(shortMod.LastIndexOf('.') + 1);
+            return $"{prefix}({shortMod}) {unmodifiedType}";
+        }
+
+        public string GetPinnedType(string elementType) => $"pinned {elementType}";
+        public string GetSZArrayType(string elementType) => $"{elementType}[]";
+        public string GetArrayType(string elementType, ArrayShape shape) => $"{elementType}[{shape.Rank}]";
+        public string GetGenericInstantiation(string genericType, ImmutableArray<string> typeArguments) =>
+            $"{genericType}<{string.Join(", ", typeArguments)}>";
+        public string GetGenericMethodParameter(object genericContext, int index) => $"!!{index}";
+        public string GetGenericTypeParameter(object genericContext, int index) => $"!{index}";
+
+        public string GetFunctionPointerType(MethodSignature<string> signature)
+        {
+            string args = string.Join(", ", signature.ParameterTypes);
+            return $"FnPtr {signature.ReturnType}({args})";
+        }
+
+        public string GetTypeFromSpecification(MetadataReader reader, object genericContext, TypeSpecificationHandle handle, byte rawTypeKind)
+        {
+            return reader.GetTypeSpecification(handle).DecodeSignature(this, genericContext);
         }
     }
 }
