@@ -561,6 +561,11 @@ static class ObjDumper
 
             sb.AppendLine($"{NormalizeName(fullName)} (Flags=0x{(ushort)fieldDef.Attributes:X4})");
 
+            // Field signature (type)
+            var sigProvider = new SignatureTypeProvider(reader);
+            string fieldType = fieldDef.DecodeSignature(sigProvider, null);
+            sb.AppendLine($"  FieldSig: {fieldType}");
+
             // RVA data
             if (fieldDef.Attributes.HasFlag(FieldAttributes.HasFieldRVA))
             {
