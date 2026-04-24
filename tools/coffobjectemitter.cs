@@ -468,7 +468,32 @@ namespace System.Reflection.PortableExecutable
 
         internal void SerializeRelocations(BlobBuilder builder)
         {
-            builder.LinkSuffix(_relocationsBlob);
+            // Workaround for dotnet/runtime#127246: BlobBuilder.LinkSuffix drops
+            // frozen chunks when the destination builder is empty.  The bug is in
+            // the `if (!isEmpty)` guard inside LinkSuffix – when the destination
+            // has Count == 0 it skips chain relinking, so the destination's
+            // _nextOrPrevious stays as a self-pointer and any frozen chunks the
+            // suffix accumulated via Expand are silently lost.
+            //
+            // This method is always called with a fresh (empty) BlobBuilder
+            // created in ManagedCoffBuilder.SerializeRelocations.  When the cast
+            // scenario has ≥6 methods, _relocationsBlob exceeds the default 256-
+            // byte chunk size and Expand splits it into two chunks.  The empty-
+            // destination LinkSuffix then keeps only the head chunk, losing the
+            // first ~256 bytes of relocation data.  Because BlobBuilder.Count is
+            // still correct (PreviousLength is updated before the guard), the
+            // section-layout arithmetic and COFF header remain internally
+            // consistent, but ToArray / GetBlobs yields fewer bytes than Count.
+            // The shortfall shifts every subsequent byte in the file leftward,
+            // so the symbol-table offset recorded in the COFF header now points
+            // past the real data into a block of trailing zeroes – which the
+            // ObjDumper reports as "body not found in symbol table".
+            //
+            // Flattening via ToArray avoids the bug entirely: ToArray iterates
+            // the chunk chain (which is still intact on the source builder) and
+            // produces a correct contiguous copy; WriteBytes then appends it to
+            // the destination in a single, chunk-boundary-safe write.
+            builder.WriteBytes(_relocationsBlob.ToArray());
         }
     }
 
