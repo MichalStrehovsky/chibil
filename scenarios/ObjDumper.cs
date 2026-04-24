@@ -566,6 +566,18 @@ static class ObjDumper
             string fieldType = fieldDef.DecodeSignature(sigProvider, null);
             sb.AppendLine($"  FieldSig: {fieldType}");
 
+            // ExplicitLayout field offset
+            if (!declaringType.IsNil)
+            {
+                var typeAttrs = reader.GetTypeDefinition(declaringType).Attributes;
+                if ((typeAttrs & TypeAttributes.LayoutMask) == TypeAttributes.ExplicitLayout)
+                {
+                    int fieldOffset = fieldDef.GetOffset();
+                    if (fieldOffset >= 0)
+                        sb.AppendLine($"  Offset: {fieldOffset}");
+                }
+            }
+
             // RVA data
             if (fieldDef.Attributes.HasFlag(FieldAttributes.HasFieldRVA))
             {
@@ -654,6 +666,8 @@ static class ObjDumper
             {
                 sb.AppendLine($"{NormalizeName(fullName)} (Flags=0x{(ushort)method.Attributes:X4}, Impl=0x{(ushort)method.ImplAttributes:X4})");
                 sb.AppendLine($"  Sig: {FormatMethodSignature(method, sigProvider)}");
+                var paramsLine1 = FormatParamsLine(reader, method);
+                if (paramsLine1 != null) sb.AppendLine(paramsLine1);
                 sb.AppendLine("  (no body)");
                 continue;
             }
@@ -663,6 +677,8 @@ static class ObjDumper
             {
                 sb.AppendLine($"{NormalizeName(fullName)} (Flags=0x{(ushort)method.Attributes:X4}, Impl=0x{(ushort)method.ImplAttributes:X4})");
                 sb.AppendLine($"  Sig: {FormatMethodSignature(method, sigProvider)}");
+                var paramsLine2 = FormatParamsLine(reader, method);
+                if (paramsLine2 != null) sb.AppendLine(paramsLine2);
                 sb.AppendLine("  (body not found in symbol table)");
                 continue;
             }
@@ -687,6 +703,8 @@ static class ObjDumper
                     byte[] ilBytes = body.GetILBytes();
                     sb.AppendLine($"{NormalizeName(fullName)} (Flags=0x{(ushort)method.Attributes:X4}, Impl=0x{(ushort)method.ImplAttributes:X4})");
                     sb.AppendLine($"  Sig: {FormatMethodSignature(method, sigProvider)}");
+                    var paramsLine3 = FormatParamsLine(reader, method);
+                    if (paramsLine3 != null) sb.AppendLine(paramsLine3);
                     sb.AppendLine($"  CodeSize={ilBytes.Length}, Locals={locals}");
 
                     if (!body.LocalSignature.IsNil)
@@ -805,6 +823,19 @@ static class ObjDumper
             case OperandType.InlineSig:
             {
                 int token = ReadInt32(il, ref offset);
+                try
+                {
+                    var sigHandle = MetadataTokens.StandaloneSignatureHandle(token & 0x00FFFFFF);
+                    if (!sigHandle.IsNil)
+                    {
+                        var sig = reader.GetStandaloneSignature(sigHandle);
+                        var sigProvider = new SignatureTypeProvider(reader);
+                        var decoded = sig.DecodeMethodSignature(sigProvider, null);
+                        string args = string.Join(", ", decoded.ParameterTypes);
+                        return $"{decoded.ReturnType}({args})";
+                    }
+                }
+                catch { }
                 return FormatToken(reader, token);
             }
 
@@ -1579,6 +1610,21 @@ static class ObjDumper
     }
 
     // ─── Signature decoding ───────────────────────────────────────────────
+
+    static string FormatParamsLine(MetadataReader reader, MethodDefinition method)
+    {
+        var parameters = method.GetParameters();
+        var parts = new List<string>();
+        foreach (var paramHandle in parameters)
+        {
+            var param = reader.GetParameter(paramHandle);
+            if (param.SequenceNumber < 1) continue;
+            string paramName = reader.GetString(param.Name);
+            parts.Add($"{param.SequenceNumber}:{paramName}");
+        }
+        if (parts.Count == 0) return null;
+        return $"  Params: ({string.Join(", ", parts)})";
+    }
 
     static string FormatMethodSignature(MethodDefinition method, SignatureTypeProvider sigProvider)
     {
