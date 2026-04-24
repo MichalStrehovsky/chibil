@@ -184,8 +184,8 @@ namespace System.Reflection.PortableExecutable
         private readonly Dictionary<string, CodeViewFileHandle> _fileIndex = new Dictionary<string, CodeViewFileHandle>(StringComparer.Ordinal);
         private readonly BlobBuilder _fileTable = new BlobBuilder();
 
-        private readonly BlobBuilder _symbolAndLineNumbersBlob = new BlobBuilder();
-        private readonly BlobBuilder _relocationsBlob = new BlobBuilder();
+        private readonly BlobBuilder _symbolAndLineNumbersBlob = new BlobBuilder(4096);
+        private readonly BlobBuilder _relocationsBlob = new BlobBuilder(4096);
 
         public CodeViewSymbolBuilder(CoffHeaderBuilder headerBuilder)
         {
@@ -1607,31 +1607,31 @@ namespace System.Reflection.PortableExecutable
     {
         protected Dictionary<string, CoffSymbolHandle> _coffSymbols = new Dictionary<string, CoffSymbolHandle>(StringComparer.Ordinal);
         protected BlobBuilder _coffStringTableBuilder = new BlobBuilder();
-        protected BlobBuilder _coffSymbolTableBuilder = new BlobBuilder();
+        protected System.IO.MemoryStream _coffSymbolStream = new System.IO.MemoryStream();
+        private System.IO.BinaryWriter _coffSymbolWriter;
 
         private const int SymbolSize = 18;
 
-        public int Count => _coffSymbolTableBuilder.Count / SymbolSize;
+        public int Count => (int)_coffSymbolStream.Length / SymbolSize;
 
-        public CoffSymbolTableBuilder() { }
+        public CoffSymbolTableBuilder()
+        {
+            _coffSymbolWriter = new System.IO.BinaryWriter(_coffSymbolStream);
+        }
 
-        public CoffSymbolTableBuilder(ObjectFeatures objectFeatures)
+        public CoffSymbolTableBuilder(ObjectFeatures objectFeatures) : this()
         {
             GetOrAddCoffSymbol("@feat.00", (ushort)objectFeatures, 0xFFFF, CoffSymbolType.Null, CoffSymbolStorageClass.Static, 0);
         }
 
         private Dictionary<string, int> _stringTableEntries = new Dictionary<string, int>(StringComparer.Ordinal);
 
-        /// <summary>
-        /// Gets or adds a string to the COFF string table and returns its offset
-        /// (including the 4-byte size prefix). Used for long section names.
-        /// </summary>
         public int GetOrAddStringTableEntry(string name)
         {
             if (_stringTableEntries.TryGetValue(name, out int offset))
                 return offset;
 
-            offset = _coffStringTableBuilder.Count + 4; // +4 for the size prefix
+            offset = _coffStringTableBuilder.Count + 4;
             _coffStringTableBuilder.WriteUTF8(name);
             _coffStringTableBuilder.WriteByte(0);
             _stringTableEntries.Add(name, offset);
@@ -1649,30 +1649,44 @@ namespace System.Reflection.PortableExecutable
 
             if (name.Length <= 8)
             {
-                CoffBuilder.WritePaddedName(_coffSymbolTableBuilder, name);
+                // Write padded 8-byte name
+                for (int j = 0; j < 8; j++)
+                    _coffSymbolWriter.Write(j < name.Length ? (byte)name[j] : (byte)0);
             }
             else
             {
-                _coffSymbolTableBuilder.WriteUInt32(0);
-                _coffSymbolTableBuilder.WriteInt32(GetOrAddStringTableEntry(name));
+                _coffSymbolWriter.Write((uint)0);
+                _coffSymbolWriter.Write(GetOrAddStringTableEntry(name));
             }
 
-            _coffSymbolTableBuilder.WriteUInt32(value);
-            _coffSymbolTableBuilder.WriteUInt16(sectionNumber);
-            _coffSymbolTableBuilder.WriteUInt16((ushort)type);
-            _coffSymbolTableBuilder.WriteByte((byte)storageClass);
-            _coffSymbolTableBuilder.WriteByte(numberOfAuxSymbols);
+            _coffSymbolWriter.Write(value);
+            _coffSymbolWriter.Write(sectionNumber);
+            _coffSymbolWriter.Write((ushort)type);
+            _coffSymbolWriter.Write((byte)storageClass);
+            _coffSymbolWriter.Write(numberOfAuxSymbols);
 
             _coffSymbols.Add(name, result);
 
             return result;
         }
 
+        internal void WriteSymbolRaw(byte[] data)
+        {
+            _coffSymbolWriter.Write(data);
+        }
+
+        internal void PadSymbolTo(int targetLength)
+        {
+            while (_coffSymbolStream.Length < targetLength)
+                _coffSymbolWriter.Write((byte)0);
+        }
+
         public void Serialize(BlobBuilder builder)
         {
-            builder.LinkSuffix(_coffSymbolTableBuilder);
+            builder.WriteBytes(_coffSymbolStream.ToArray());
             builder.WriteInt32(_coffStringTableBuilder.Count + 4);
-            builder.LinkSuffix(_coffStringTableBuilder);
+            byte[] strBytes = _coffStringTableBuilder.ToArray();
+            builder.WriteBytes(strBytes);
         }
     }
 
@@ -1702,10 +1716,9 @@ namespace System.Reflection.PortableExecutable
             if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
             {
                 tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, (uint)sectionOffset, (ushort)_clrTextSectionNumber, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 1);
-                _coffSymbolTableBuilder.WriteByte(1);
-                _coffSymbolTableBuilder.WriteByte(0);
-                _coffSymbolTableBuilder.WriteInt32(index._value);
-                _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
+                WriteSymbolRaw(new byte[] { 1, 0 });
+                WriteSymbolRaw(BitConverter.GetBytes(index._value));
+                PadSymbolTo((int)_coffSymbolStream.Length + 12);
             }
 
             return index;
@@ -1724,10 +1737,9 @@ namespace System.Reflection.PortableExecutable
             if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
             {
                 tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, (uint)sectionOffset, (ushort)dataSectionNumber, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 1);
-                _coffSymbolTableBuilder.WriteByte(1);
-                _coffSymbolTableBuilder.WriteByte(0);
-                _coffSymbolTableBuilder.WriteInt32(index._value);
-                _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
+                WriteSymbolRaw(new byte[] { 1, 0 });
+                WriteSymbolRaw(BitConverter.GetBytes(index._value));
+                PadSymbolTo((int)_coffSymbolStream.Length + 12);
             }
 
             return index;
@@ -1868,13 +1880,16 @@ namespace System.Reflection.PortableExecutable
             WriteSectionHeaders(builder, serializedSections);
             builder.Align(4);
 
+            // Flatten each section to byte arrays to avoid BlobBuilder chunk interleaving issues
             foreach (var section in serializedSections)
             {
-                builder.LinkSuffix(section.Builder);
+                byte[] sectionBytes = section.Builder.ToArray();
+                builder.WriteBytes(sectionBytes);
                 builder.Align(4);
                 if (section.Relocations != null)
                 {
-                    builder.LinkSuffix(section.Relocations);
+                    byte[] relocBytes = section.Relocations.ToArray();
+                    builder.WriteBytes(relocBytes);
                     builder.Align(4);
                 }
             }

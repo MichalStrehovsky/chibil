@@ -32,17 +32,17 @@ public class CastTest
 
         var md = new MetadataBuilder();
 
+        // ─── AssemblyRef: mscorlib ────────────────────────────────────────
         var mscorlibRef = md.AddAssemblyReference(
             md.GetOrAddString("mscorlib"), new Version(4, 0, 0, 0), default,
             md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default, md.GetOrAddBlob(mscorlibHash));
 
+        // ─── TypeDef #1: <Module> ─────────────────────────────────────────
         md.AddTypeDefinition(TypeAttributes.Class, default, md.GetOrAddString("<Module>"), default,
             MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
 
         // ─── MethodDef #1: cast_widen(int32, int32) -> int32 ──────────────
-        // In C: cast_widen(char c, short s) -> int
-        // char/short are promoted to int32 in IL params
         var cwSig = new BlobBuilder();
         new BlobEncoder(cwSig).MethodSignature()
             .Parameters(2, out var cwRetEnc, out var cwParEnc);
@@ -58,7 +58,7 @@ public class CastTest
         md.AddParameter(ParameterAttributes.None, md.GetOrAddString("c"), 1);
         md.AddParameter(ParameterAttributes.None, md.GetOrAddString("s"), 2);
 
-        // cast_widen locals: 3 (int32, int64, int32)
+        // cast_widen locals: int32 (V_0), int64 (V_1:ll), int32 (V_2:i)
         var cwLocalsSig = new BlobBuilder();
         var cwLocalsEnc = new BlobEncoder(cwLocalsSig).LocalVariableSignature(3);
         cwLocalsEnc.AddVariable().Type().Int32();   // V_0: result
@@ -87,7 +87,6 @@ public class CastTest
         var cnLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(cnLocalsSig));
 
         // ─── MethodDef #3: cast_unsigned(int32) -> int32 ──────────────────
-        // C: cast_unsigned(unsigned int u)
         var cuSig = new BlobBuilder();
         new BlobEncoder(cuSig).MethodSignature()
             .Parameters(1, out var cuRetEnc, out var cuParEnc);
@@ -101,11 +100,11 @@ public class CastTest
             MetadataTokens.ParameterHandle(4));
         md.AddParameter(ParameterAttributes.None, md.GetOrAddString("u"), 1);
 
-        // cast_unsigned locals: 3 (int32, int64, int32)
+        // cast_unsigned locals: int32 (V_0), int64 (V_1:ull), int32 (V_2:s)
         var cuLocalsSig = new BlobBuilder();
         var cuLocalsEnc = new BlobEncoder(cuLocalsSig).LocalVariableSignature(3);
         cuLocalsEnc.AddVariable().Type().Int32();   // V_0
-        cuLocalsEnc.AddVariable().Type().Int64();   // V_1: ull (unsigned long long -> int64)
+        cuLocalsEnc.AddVariable().Type().Int64();   // V_1: ull
         cuLocalsEnc.AddVariable().Type().Int32();   // V_2: s
         var cuLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(cuLocalsSig));
 
@@ -159,7 +158,7 @@ public class CastTest
         for (int i = 0; i < 2; i++) cbLocalsEnc.AddVariable().Type().Int32();
         var cbLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(cbLocalsSig));
 
-        // ─── MethodDef #6: main() -> int ──────────────────────────────────
+        // ─── MethodDef #6: main() -> int32 ────────────────────────────────
         var mainSig = new BlobBuilder();
         new BlobEncoder(mainSig).MethodSignature()
             .Parameters(0, out var mRetEnc, out var mParEnc);
@@ -176,13 +175,16 @@ public class CastTest
         new BlobEncoder(mainLocalsSig).LocalVariableSignature(1).AddVariable().Type().Int32();
         var mainLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(mainLocalsSig));
 
+        // ─── Module ───────────────────────────────────────────────────────
         md.AddModule(0, md.GetOrAddString("cast.obj"), md.GetOrAddGuid(Guid.NewGuid()), default, default);
 
+        // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
         var symtab = new ManagedCoffSymbolTableBuilder(ManagedCoffBuilder.ClrTextSectionNumber, ObjectFeatures.PureMsil);
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
 
+        // ─── CodeView debug info ──────────────────────────────────────────
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
         codeviewSymbols.AddObjNameAndCompile3("cast.obj",
             language: CodeViewLanguage.C, machine: cvMachine,
@@ -458,6 +460,7 @@ public class CastTest
                 debugName: "main");
         }
 
+        // ─── Build COFF & Serialize ───────────────────────────────────────
         var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
             ilStreamBuilder, ilRelocBuilder);
         var output = new BlobBuilder();
