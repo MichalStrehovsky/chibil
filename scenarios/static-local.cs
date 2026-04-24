@@ -141,24 +141,22 @@ public class StaticLocalTest
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
             enc.MarkLineNumber(cvFile, 13);
-            enc.OpCode(ILOpCode.Ldc_i4_0);
-            enc.OpCode(ILOpCode.Stloc_0);
+            enc.OpCode(ILOpCode.Ldc_i4_0);          // IL_0000
+            enc.OpCode(ILOpCode.Stloc_0);           // IL_0001
+            enc.Call(counterMethod);                 // IL_0002: call counter
+            enc.OpCode(ILOpCode.Pop);               // IL_0007
 
             enc.MarkLineNumber(cvFile, 14);
-            enc.Call(counterMethod);
-            enc.OpCode(ILOpCode.Pop);
+            enc.Call(counterMethod);                 // IL_0008: call counter
+            enc.OpCode(ILOpCode.Pop);               // IL_000D
 
             enc.MarkLineNumber(cvFile, 15);
-            enc.Call(counterMethod);
-            enc.OpCode(ILOpCode.Pop);
+            enc.Call(counterMethod);                 // IL_000E: call counter
+            enc.OpCode(ILOpCode.Stloc_0);           // IL_0013
 
             enc.MarkLineNumber(cvFile, 16);
-            enc.Call(counterMethod);
-            enc.OpCode(ILOpCode.Stloc_0);
-
-            enc.MarkLineNumber(cvFile, 17);
-            enc.OpCode(ILOpCode.Ldloc_0);
-            enc.OpCode(ILOpCode.Ret);
+            enc.OpCode(ILOpCode.Ldloc_0);           // IL_0014
+            enc.OpCode(ILOpCode.Ret);               // IL_0015
 
             bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", enc,
                 maxStack: 1, localVariablesSignature: mainLocalsSigHandle, attributes: 0,

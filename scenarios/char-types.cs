@@ -150,31 +150,29 @@ public class CharTypesTest
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
             enc.MarkLineNumber(cvFile, 11);
-            enc.OpCode(ILOpCode.Ldc_i4_0);
-            enc.OpCode(ILOpCode.Stloc_0);
+            enc.OpCode(ILOpCode.Ldc_i4_0);          // IL_0000
+            enc.OpCode(ILOpCode.Stloc_0);           // IL_0001
+            enc.LoadConstantI4(65);                  // IL_0002: ldc.i4.s 65 ('A')
+            enc.OpCode(ILOpCode.Stloc_3);           // IL_0004
 
             enc.MarkLineNumber(cvFile, 12);
-            enc.LoadConstantI4(65);     // 'A'
-            enc.OpCode(ILOpCode.Stloc_3);
+            enc.OpCode(ILOpCode.Ldc_i4_m1);         // IL_0005
+            enc.OpCode(ILOpCode.Stloc_2);           // IL_0006
 
             enc.MarkLineNumber(cvFile, 13);
-            enc.OpCode(ILOpCode.Ldc_i4_m1);
-            enc.OpCode(ILOpCode.Stloc_2);
+            enc.LoadConstantI4(0xFF);                // IL_0007: ldc.i4 0xFF
+            enc.OpCode(ILOpCode.Stloc_1);           // IL_000C
 
             enc.MarkLineNumber(cvFile, 14);
-            enc.LoadConstantI4(0xFF);
-            enc.OpCode(ILOpCode.Stloc_1);
+            enc.OpCode(ILOpCode.Ldloc_3);           // IL_000D
+            enc.OpCode(ILOpCode.Ldloc_2);           // IL_000E
+            enc.OpCode(ILOpCode.Ldloc_1);           // IL_000F
+            enc.Call(charFuncMethod);                // IL_0010: call char_func
+            enc.OpCode(ILOpCode.Stloc_0);           // IL_0015
 
             enc.MarkLineNumber(cvFile, 15);
-            enc.OpCode(ILOpCode.Ldloc_3);
-            enc.OpCode(ILOpCode.Ldloc_2);
-            enc.OpCode(ILOpCode.Ldloc_1);
-            enc.Call(charFuncMethod);
-            enc.OpCode(ILOpCode.Stloc_0);
-
-            enc.MarkLineNumber(cvFile, 16);
-            enc.OpCode(ILOpCode.Ldloc_0);
-            enc.OpCode(ILOpCode.Ret);
+            enc.OpCode(ILOpCode.Ldloc_0);           // IL_0016
+            enc.OpCode(ILOpCode.Ret);               // IL_0017
 
             var localSlots = new[] {
                 new CodeViewManSlot(3, MetadataTokens.GetToken(mainLocalsSigHandle), "x"),

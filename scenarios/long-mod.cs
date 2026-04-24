@@ -1,0 +1,255 @@
+using System;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
+using System.Reflection.Metadata.Ecma335;
+using System.IO;
+using System.Reflection;
+using System.Security.Cryptography;
+using Xunit;
+
+public class LongModTest
+{
+    [Theory]
+    [InlineData(Machine.I386)]
+    [InlineData(Machine.Arm64)]
+    public void Emit(Machine machine)
+    {
+        byte[] emitted = EmitObj(machine);
+        string refDir = machine == Machine.I386 ? "x86" : "arm64";
+        byte[] reference = File.ReadAllBytes(
+            Path.Combine(AppContext.BaseDirectory, "reference", "long-mod", refDir, "long-mod.obj"));
+        string emittedDump = ObjDumper.DumpForComparison(emitted);
+        string referenceDump = ObjDumper.DumpForComparison(reference);
+        Assert.Equal(referenceDump, emittedDump);
+    }
+
+    static byte[] EmitObj(Machine machine)
+    {
+        byte[] mscorlibHash = machine == Machine.I386
+            ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
+            : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
+        CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : CodeViewMachine.Arm64;
+
+        var md = new MetadataBuilder();
+
+        // ─── AssemblyRef: mscorlib ────────────────────────────────────────
+        var mscorlibRef = md.AddAssemblyReference(
+            md.GetOrAddString("mscorlib"), new Version(4, 0, 0, 0), default,
+            md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
+            default, md.GetOrAddBlob(mscorlibHash));
+
+        // ─── TypeRef: IsLong ──────────────────────────────────────────────
+        var isLongRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"), md.GetOrAddString("IsLong"));
+
+        // ─── TypeDef #1: <Module> ─────────────────────────────────────────
+        md.AddTypeDefinition(TypeAttributes.Class, default, md.GetOrAddString("<Module>"), default,
+            MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
+
+        // ─── MethodDef #1: add_long(modopt(IsLong) int32, modopt(IsLong) int32) -> modopt(IsLong) int32
+        var alSig = new BlobBuilder();
+        {
+            var enc = new BlobEncoder(alSig).MethodSignature();
+            enc.Parameters(2, out var retEnc, out var parEnc);
+            // Return: modopt(IsLong) int32
+            var retType = retEnc.Type();
+            retType.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+            retType.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isLongRef));
+            retType.Builder.WriteByte((byte)SignatureTypeCode.Int32);
+            // Param 1: modopt(IsLong) int32
+            var p1 = parEnc.AddParameter().Type();
+            p1.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+            p1.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isLongRef));
+            p1.Builder.WriteByte((byte)SignatureTypeCode.Int32);
+            // Param 2: modopt(IsLong) int32
+            var p2 = parEnc.AddParameter().Type();
+            p2.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+            p2.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isLongRef));
+            p2.Builder.WriteByte((byte)SignatureTypeCode.Int32);
+        }
+
+        var addLongMethod = md.AddMethodDefinition(
+            MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
+            MethodImplAttributes.IL | MethodImplAttributes.Managed,
+            md.GetOrAddString("add_long"), md.GetOrAddBlob(alSig), 0,
+            MetadataTokens.ParameterHandle(1));
+        md.AddParameter(ParameterAttributes.None, md.GetOrAddString("a"), 1);
+        md.AddParameter(ParameterAttributes.None, md.GetOrAddString("b"), 2);
+
+        // add_long locals: modopt(IsLong) int32
+        var alLocalsSig = new BlobBuilder();
+        var alLocalsEnc = new BlobEncoder(alLocalsSig).LocalVariableSignature(1);
+        var alLocV0 = alLocalsEnc.AddVariable().Type();
+        alLocV0.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        alLocV0.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isLongRef));
+        alLocV0.Builder.WriteByte((byte)SignatureTypeCode.Int32);
+        var alLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(alLocalsSig));
+
+        // ─── MethodDef #2: add_ulong(modopt(IsLong) uint32, modopt(IsLong) uint32) -> modopt(IsLong) uint32
+        var auSig = new BlobBuilder();
+        {
+            var enc = new BlobEncoder(auSig).MethodSignature();
+            enc.Parameters(2, out var retEnc, out var parEnc);
+            // Return: modopt(IsLong) uint32
+            var retType = retEnc.Type();
+            retType.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+            retType.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isLongRef));
+            retType.Builder.WriteByte((byte)SignatureTypeCode.UInt32);
+            // Param 1: modopt(IsLong) uint32
+            var p1 = parEnc.AddParameter().Type();
+            p1.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+            p1.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isLongRef));
+            p1.Builder.WriteByte((byte)SignatureTypeCode.UInt32);
+            // Param 2: modopt(IsLong) uint32
+            var p2 = parEnc.AddParameter().Type();
+            p2.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+            p2.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isLongRef));
+            p2.Builder.WriteByte((byte)SignatureTypeCode.UInt32);
+        }
+
+        var addUlongMethod = md.AddMethodDefinition(
+            MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
+            MethodImplAttributes.IL | MethodImplAttributes.Managed,
+            md.GetOrAddString("add_ulong"), md.GetOrAddBlob(auSig), 0,
+            MetadataTokens.ParameterHandle(3));
+        md.AddParameter(ParameterAttributes.None, md.GetOrAddString("a"), 1);
+        md.AddParameter(ParameterAttributes.None, md.GetOrAddString("b"), 2);
+
+        // add_ulong locals: modopt(IsLong) uint32
+        var auLocalsSig = new BlobBuilder();
+        var auLocalsEnc = new BlobEncoder(auLocalsSig).LocalVariableSignature(1);
+        var auLocV0 = auLocalsEnc.AddVariable().Type();
+        auLocV0.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        auLocV0.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isLongRef));
+        auLocV0.Builder.WriteByte((byte)SignatureTypeCode.UInt32);
+        var auLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(auLocalsSig));
+
+        // ─── MethodDef #3: main() -> int32 ────────────────────────────────
+        var mainSig = new BlobBuilder();
+        new BlobEncoder(mainSig).MethodSignature()
+            .Parameters(0, out var mainRet, out var mainPar);
+        mainRet.Type().Int32();
+
+        var mainMethod = md.AddMethodDefinition(
+            MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
+            MethodImplAttributes.IL | MethodImplAttributes.Managed,
+            md.GetOrAddString("main"), md.GetOrAddBlob(mainSig), 0,
+            MetadataTokens.ParameterHandle(5));
+
+        // main locals: int32, modopt(IsLong) uint32, modopt(IsLong) int32
+        var mainLocalsSig = new BlobBuilder();
+        var mainLocalsEnc = new BlobEncoder(mainLocalsSig).LocalVariableSignature(3);
+        mainLocalsEnc.AddVariable().Type().Int32();    // V_0
+        // V_1: modopt(IsLong) uint32 (y)
+        var mainLocV1 = mainLocalsEnc.AddVariable().Type();
+        mainLocV1.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        mainLocV1.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isLongRef));
+        mainLocV1.Builder.WriteByte((byte)SignatureTypeCode.UInt32);
+        // V_2: modopt(IsLong) int32 (x)
+        var mainLocV2 = mainLocalsEnc.AddVariable().Type();
+        mainLocV2.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        mainLocV2.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isLongRef));
+        mainLocV2.Builder.WriteByte((byte)SignatureTypeCode.Int32);
+        var mainLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(mainLocalsSig));
+
+        // ─── Module ───────────────────────────────────────────────────────
+        md.AddModule(0, md.GetOrAddString("long-mod.obj"), md.GetOrAddGuid(Guid.NewGuid()), default, default);
+
+        // ─── COFF structure ───────────────────────────────────────────────
+        var coffHeader = new CoffHeaderBuilder(machine, 0);
+        var symtab = new ManagedCoffSymbolTableBuilder(ManagedCoffBuilder.ClrTextSectionNumber, ObjectFeatures.PureMsil);
+        var ilStreamBuilder = new BlobBuilder();
+        var ilRelocBuilder = new BlobBuilder();
+
+        var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
+        codeviewSymbols.AddObjNameAndCompile3("long-mod.obj",
+            language: CodeViewLanguage.C, machine: cvMachine,
+            feMajor: 19, feMinor: 50, feBuild: 35728,
+            beMajor: 19, beMinor: 50, beBuild: 35728,
+            "Microsoft (R) Optimizing Compiler",
+            compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
+
+        string sourceFile = Path.Combine(AppContext.BaseDirectory, "long-mod.c");
+        byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
+        var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
+            ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
+
+        // ─── Emit IL for add_long ─────────────────────────────────────────
+        {
+            var enc = new RelocatableInstructionEncoder(
+                new BlobBuilder(), new MethodRelocationBuilder(),
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+
+            enc.OpCode(ILOpCode.Ldarg_0);
+            enc.OpCode(ILOpCode.Ldarg_1);
+            enc.OpCode(ILOpCode.Add);
+            enc.OpCode(ILOpCode.Stloc_0);
+            enc.OpCode(ILOpCode.Ldloc_0);
+            enc.OpCode(ILOpCode.Ret);
+
+            bodyEncoder.AddMethodBody(addLongMethod, "?add_long@@$$J0YMJJJ@Z", enc,
+                maxStack: 2, localVariablesSignature: alLocalsSigHandle, attributes: 0,
+                debugName: "add_long");
+        }
+
+        // ─── Emit IL for add_ulong ────────────────────────────────────────
+        {
+            var enc = new RelocatableInstructionEncoder(
+                new BlobBuilder(), new MethodRelocationBuilder(),
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+
+            enc.OpCode(ILOpCode.Ldarg_0);
+            enc.OpCode(ILOpCode.Ldarg_1);
+            enc.OpCode(ILOpCode.Add);
+            enc.OpCode(ILOpCode.Stloc_0);
+            enc.OpCode(ILOpCode.Ldloc_0);
+            enc.OpCode(ILOpCode.Ret);
+
+            bodyEncoder.AddMethodBody(addUlongMethod, "?add_ulong@@$$J0YMKKK@Z", enc,
+                maxStack: 2, localVariablesSignature: auLocalsSigHandle, attributes: 0,
+                debugName: "add_ulong");
+        }
+
+        // ─── Emit IL for main ─────────────────────────────────────────────
+        {
+            var enc = new RelocatableInstructionEncoder(
+                new BlobBuilder(), new MethodRelocationBuilder(),
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+
+            enc.OpCode(ILOpCode.Ldc_i4_0);           // IL_0000
+            enc.OpCode(ILOpCode.Stloc_0);             // IL_0001
+            enc.LoadConstantI4(10);                   // IL_0002: ldc.i4.s 10
+            enc.LoadConstantI4(20);                   // IL_0004: ldc.i4.s 20
+            enc.Call(addLongMethod);                   // IL_0006: call add_long
+            enc.OpCode(ILOpCode.Stloc_2);             // IL_000B: x
+            enc.LoadConstantI4(100);                  // IL_000C: ldc.i4.s 100
+            enc.LoadConstantI4(0xC8);                 // IL_000E: ldc.i4 200
+            enc.Call(addUlongMethod);                  // IL_0013: call add_ulong
+            enc.OpCode(ILOpCode.Stloc_1);             // IL_0018: y
+            enc.OpCode(ILOpCode.Ldloc_2);             // IL_0019
+            enc.OpCode(ILOpCode.Ldloc_1);             // IL_001A
+            enc.OpCode(ILOpCode.Add);                 // IL_001B
+            enc.OpCode(ILOpCode.Stloc_0);             // IL_001C
+            enc.OpCode(ILOpCode.Ldloc_0);             // IL_001D
+            enc.OpCode(ILOpCode.Ret);                 // IL_001E
+
+            var mainLocalSlots = new[] {
+                new CodeViewManSlot(2, MetadataTokens.GetToken(mainLocalsSigHandle), "x"),
+                new CodeViewManSlot(1, MetadataTokens.GetToken(mainLocalsSigHandle), "y"),
+            };
+
+            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", enc,
+                maxStack: 2, localVariablesSignature: mainLocalsSigHandle, attributes: 0,
+                debugName: "main", localSlots: mainLocalSlots);
+        }
+
+        // ─── Build COFF & Serialize ───────────────────────────────────────
+        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
+            ilStreamBuilder, ilRelocBuilder);
+        var output = new BlobBuilder();
+        coffBuilder.Serialize(output);
+        return output.ToArray();
+    }
+}
