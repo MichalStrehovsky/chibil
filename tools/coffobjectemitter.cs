@@ -2,8 +2,7 @@
 // what C++/CLI generates with /clr:pure option.
 //
 
-#:property Nullable=disable
-#:property AllowUnsafeBlocks=true
+// Properties Nullable=disable and AllowUnsafeBlocks=true are set in Directory.Build.props
 
 using System;
 using System.Reflection.Metadata;
@@ -122,13 +121,14 @@ namespace System.Reflection.PortableExecutable
     public enum CodeViewLanguage : byte
     {
         C = 0x00,
+        Cpp = 0x01,
     }
 
     public enum CodeViewMachine : ushort
     {
-        I386 = 0x0003,
-        Amd64 = 0x00D0,
-        Arm64 = 0x0104,
+        I386 = 0x0007,    // CV_CFL_PENTIUMIII — matches MSVC /clr:pure output
+        Amd64 = 0x00D0,   // CV_CFL_X64
+        Arm64 = 0x00F6,   // CV_CFL_ARM64
     }
 
     [Flags]

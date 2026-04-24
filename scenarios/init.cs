@@ -1,19 +1,3 @@
-// Emits init.obj — equivalent to MSVC's output for:
-//   char* str = "Hello!";
-//   int main() { return str[0]; }
-//   void __clrcall __identifier(".cctor")() { }
-//
-// This scenario demonstrates:
-//   - A global variable with a string literal initializer
-//   - A .CRTMA$XCC section containing a function pointer to the initializer
-//   - A module constructor (.cctor)
-//   - The ??__Estr initializer function that sets str = &"Hello!"
-//
-// Run: dotnet run init.cs
-// Link: link.exe /entry:main /subsystem:console init.obj
-// (Note: the MSVC obj name should NOT be overwritten — our output goes to init.obj,
-//  but the MSVC reference is backed up as init_msvc.obj)
-
 using System;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
@@ -21,19 +5,31 @@ using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
+using Xunit;
 
-class Program
+public class InitTest
 {
-    const Machine machine = Machine.I386;
-
-    static readonly byte[] mscorlibHash = machine == Machine.I386
-        ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
-        : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
-
-    static readonly CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : CodeViewMachine.Arm64;
-
-    static void Main(string[] args)
+    [Theory]
+    [InlineData(Machine.I386)]
+    [InlineData(Machine.Arm64)]
+    public void Emit(Machine machine)
     {
+        byte[] emitted = EmitObj(machine);
+        string refDir = machine == Machine.I386 ? "x86" : "arm64";
+        byte[] reference = File.ReadAllBytes(
+            Path.Combine(AppContext.BaseDirectory, "reference", "init", refDir, "init.obj"));
+        string emittedDump = ObjDumper.DumpForComparison(emitted);
+        string referenceDump = ObjDumper.DumpForComparison(reference);
+        Assert.Equal(referenceDump, emittedDump);
+    }
+
+    static byte[] EmitObj(Machine machine)
+    {
+        byte[] mscorlibHash = machine == Machine.I386
+            ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
+            : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
+        CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : CodeViewMachine.Arm64;
+
         var md = new MetadataBuilder();
 
         // ─── AssemblyRef: mscorlib ────────────────────────────────────────
@@ -197,16 +193,18 @@ class Program
 
         // ─── CodeView debug info ──────────────────────────────────────────
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
-        string objPath = Path.GetFullPath("init.obj");
+        string objPath = "init.obj";
         codeviewSymbols.AddObjNameAndCompile3(objPath,
-            language: CodeViewLanguage.C,
+            // MSVC C frontend rejects this source under /clr:pure, so it is compiled
+            // with /TP (C++ mode). The debug info language must match.
+            language: CodeViewLanguage.Cpp,
             machine: cvMachine,
             feMajor: 19, feMinor: 50, feBuild: 35728,
             beMajor: 19, beMinor: 50, beBuild: 35728,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
-        string sourceFile = Path.GetFullPath("init.c");
+        string sourceFile = Path.Combine(AppContext.BaseDirectory, "init.c");
         byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
         CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
 
@@ -238,7 +236,7 @@ class Program
             enc.OpCode(ILOpCode.Ret);
 
             bodyEncoder.AddMethodBody(estrMethod, "???__Estr@@YMXXZ@?A0xb6c09798@@$$FYMXXZ", enc,
-                maxStack: 1, debugName: "??__Estr@@YMXXZ");
+                maxStack: 1, debugName: "`dynamic initializer for 'str''");
         }
 
         // ─── Emit IL for main ─────────────────────────────────────────────
@@ -273,11 +271,7 @@ class Program
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
 
-        string outputPath = "init.obj";
-        using var fs = File.Create(outputPath);
-        output.WriteContentTo(fs);
-
-        Console.WriteLine($"{outputPath} created");
+        return output.ToArray();
     }
 }
 

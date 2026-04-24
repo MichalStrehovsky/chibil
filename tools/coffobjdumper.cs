@@ -1209,7 +1209,7 @@ class Program
                 case 0x1101: // S_OBJNAME
                     DumpObjName(payload);
                     break;
-                case 0x113D: // S_COMPILE3
+                case 0x113C: // S_COMPILE3
                     DumpCompile3(payload);
                     break;
                 case 0x112A: // S_GMANPROC
@@ -1287,10 +1287,13 @@ class Program
         string machineName = machine switch
         {
             0x00 => "8080", 0x01 => "8086", 0x02 => "80286", 0x03 => "80386",
-            0x04 => "80486", 0x05 => "Pentium", 0x06 => "PentiumPro/II",
-            0x40 => "MIPS R4000", 0x50 => "M68000", 0xA0 => "Alpha",
-            0xC0 => "PPC601", 0xD0 => "SH3/SH4", 0xE0 => "ARM",
-            0xF0 => "IA64", 0x100 => "AMD64", 0x104 => "ARM64",
+            0x04 => "80486", 0x05 => "Pentium", 0x06 => "PentiumII",
+            0x07 => "PentiumIII",
+            0x50 => "SH3", 0x53 => "SH4",
+            0x60 => "ARM3", 0x70 => "OMNI",
+            0x80 => "IA64", 0x90 => "CEE",
+            0xD0 => "x64",
+            0xF0 => "THUMB", 0xF4 => "ARMNT", 0xF6 => "ARM64",
             _ => $"0x{machine:X4}"
         };
 

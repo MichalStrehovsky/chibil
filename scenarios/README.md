@@ -1,6 +1,6 @@
 # Scenarios
 
-This directory contains small C programs compiled with MSVC's `/clr:pure` option, alongside C# programs that produce functionally equivalent COFF object files using our emitter library (`tools/coffobjectemitter.cs`).
+This directory contains small C programs compiled with MSVC's `/clr:pure` option, alongside C# emitters that produce functionally equivalent COFF object files using our emitter library (`tools/coffobjectemitter.cs`). An xUnit test suite validates that the emitted `.obj` files match the MSVC reference objects.
 
 ## Goal
 
@@ -17,16 +17,67 @@ Each scenario has:
 | File | Description |
 |------|-------------|
 | `foo.c` | Source C program (the "spec") |
-| `foo.obj` | MSVC-compiled object file (reference) |
-| `foo.exe` | MSVC-linked executable (reference) |
-| `foo.pdb` | MSVC-linked PDB (reference) |
-| `foo.cs` | C# emitter that produces `foo.obj` (can be executed with `dotnet run foo.cs` |
+| `foo.cs` | C# xUnit test that emits `foo.obj` and compares against the reference |
+| `reference/foo/x86/foo.obj` | MSVC-compiled reference object file (x86) |
+| `reference/foo/arm64/foo.obj` | MSVC-compiled reference object file (ARM64) |
 
-## How the MSVC reference files are produced
+Supporting files:
+
+| File | Description |
+|------|-------------|
+| `CoffEmitterTests.csproj` | xUnit test project |
+| `ObjDumper.cs` | Normalized COFF `.obj` dumper for test comparison |
+| `Directory.Build.props` | Shared build properties, includes `coffobjectemitter.cs` |
+
+## Running the tests
+
+```
+dotnet test CoffEmitterTests.csproj
+```
+
+Each `.cs` file is a `[Theory]` with `[InlineData(Machine.I386)]` and `[InlineData(Machine.Arm64)]`. The test emits the `.obj` in memory, dumps both the emitted and reference objects using `ObjDumper`, and asserts the dumps are identical.
+
+## What the tests compare
+
+`ObjDumper.DumpForComparison()` produces a normalized text dump covering:
+
+- **TypeDefs** — name, flags, base type, layout, custom attributes
+- **Fields** — name, flags, RVA data bytes (or resolved token references for `.CRTMA` data), custom attributes
+- **Method bodies** — flags, code size, locals (yes/no), full IL with resolved tokens
+- **Debug symbols** — S_COMPILE3 (language, machine, compiler version), S_GMANPROC (code length, proc name), S_FRAMEPROC (frame/pad/saveRegs), S_MANSLOT (slot index, variable name), S_BLOCK32 (relative offset, length)
+- **Line numbers** — per method, source filename, checksum, line-to-offset mappings
+
+## What the tests intentionally skip
+
+These are known acceptable differences between MSVC and our emitter:
+
+| What | Why |
+|------|-----|
+| TypeRefs / MemberRefs tables | MSVC emits unused boilerplate refs; we only emit what IL/signatures reference |
+| MSVC boilerplate types (`vc.cppcli.*`, `__clr_*`) | Compiler-internal helper types not needed for linking |
+| MSVC boilerplate methods (`__CxxPure*`) | CRT initialization stubs we don't emit |
+| `.debug$T` section | Build provenance metadata (LF_BUILDINFO); not needed for debugging |
+| S_OBJNAME | Contains the obj file path, which differs per environment |
+| S_BUILDINFO | References `.debug$T` type records we don't emit |
+| S_FRAMEPROC flags | `fOptSpeed` and `fSecurityChecks` bits differ between our emitter and MSVC |
+| S_MANSLOT CV_LVARFLAGS | Informational annotations (`fAddrTaken`, `fIsParam`); not used by linker or debugger |
+| S_MANSLOT typind | StandaloneSig token numbers differ due to different metadata row counts |
+| S_MANSLOT for parameters | MSVC emits `fIsParam=1` slots; parameter names come from the metadata Parameter table instead |
+| S_GMANPROC segment/offset | Section layout differs between COMDAT (MSVC) and merged (our emitter) |
+| MaxStack | MSVC uses fat headers with explicit maxstack; our emitter may use tiny headers |
+| `?A0x<hash>` prefixes | Hash depends on source file path, normalized to `?A0x*` |
+| Raw token numbers in IL | Resolved to `TableKind:Name` since row numbers differ when extra TypeRefs/MemberRefs exist |
+
+## How to create a new scenario
+
+### 1. Write the C file
+
+Keep it small. Focus on one language feature (struct, pointer, function call, string literal, etc.). Add the compile command as a comment at the top.
+
+### 2. Compile with MSVC for each architecture
 
 ```
 cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC foo.c
-link.exe /debug /entry:main /subsystem:console foo.obj
 ```
 
 Key compiler switches:
@@ -37,33 +88,7 @@ Key compiler switches:
 - `/Zl` — omit default library references
 - `/d1clrNoPureCRT` — suppress pure-mode CRT dependencies
 
-For scenarios that reference external functions (e.g., `pinvoke.c` uses `MessageBoxW`), add the import library to the link step:
-
-```
-link.exe /debug /entry:main /subsystem:console /libpath:... user32.lib foo.obj
-```
-
-For scenarios with global variable initializers (e.g., `init.cc`), link with `minicrt.obj` which provides a module constructor that iterates the `.CRTMA` table:
-
-```
-cl /c /Zl /clr:pure minicrt.cc
-link.exe /debug /entry:main /subsystem:console init.obj minicrt.obj /include:?.cctor@@$$FYMXXZ
-```
-
-**⚠️ Important:** Never overwrite the MSVC-generated `.obj`, `.exe`, or `.pdb` files. Our emitters write to the same filename — always back up or restore the MSVC files after running emitters. The `.cs` files should output to a different name (e.g., `foo_ours.exe`) for comparison.
-
-## How to create a new scenario
-
-### 1. Write the C file
-
-Keep it small. Focus on one language feature (struct, pointer, function call, string literal, etc.). Add the compile command as a comment at the top.
-
-### 2. Compile with MSVC and link
-
-```
-cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC foo.c
-link.exe /debug /entry:main /subsystem:console foo.obj
-```
+Place the resulting `.obj` files in `reference/foo/x86/` and `reference/foo/arm64/`.
 
 ### 3. Inspect the MSVC object file
 
@@ -87,9 +112,32 @@ cvdump.exe foo.obj          # debug info in the object file
 cvdump.exe -s -l foo.pdb    # symbols and lines in the PDB
 ```
 
-### 4. Write the C# emitter
+### 4. Write the C# emitter as an xUnit test
 
-Create `foo.cs` in this directory. It automatically picks up the emitter library via `Directory.Build.props`. Follow the pattern of existing scenarios:
+Create `foo.cs` in this directory following the pattern of existing scenarios:
+
+```csharp
+public class FooTest
+{
+    [Theory]
+    [InlineData(Machine.I386)]
+    [InlineData(Machine.Arm64)]
+    public void Emit(Machine machine)
+    {
+        byte[] emitted = EmitObj(machine);
+        string refDir = machine == Machine.I386 ? "x86" : "arm64";
+        byte[] reference = File.ReadAllBytes(
+            Path.Combine(AppContext.BaseDirectory, "reference", "foo", refDir, "foo.obj"));
+        string emittedDump = ObjDumper.DumpForComparison(emitted);
+        string referenceDump = ObjDumper.DumpForComparison(reference);
+        Assert.Equal(referenceDump, emittedDump);
+    }
+
+    static byte[] EmitObj(Machine machine) { /* ... */ }
+}
+```
+
+The `EmitObj` method takes `Machine` as a parameter (not a const) and returns the serialized `.obj` as a byte array. Follow the emitter guidelines:
 
 1. **Metadata** — build only the metadata tables that appear in the ILDASM output. Only add TypeRefs, MemberRefs, etc. that are actually referenced by IL, signatures, or custom attributes. Don't replicate MSVC boilerplate TypeRefs (like `CallConvStdcall`, `IsVolatile`) unless linking fails without them.
 
@@ -99,24 +147,18 @@ Create `foo.cs` in this directory. It automatically picks up the emitter library
 
 4. **Debug info** — add `CodeViewSymbolBuilder` with `S_OBJNAME`, `S_COMPILE3`, source file with SHA-256 checksum, line numbers via `MarkLineNumber`, and local variable slots via `CodeViewManSlot` and `CodeViewLocalScope`.
 
-### 5. Build and validate
+### 5. Run the tests
 
 ```
-dotnet run foo.cs
+dotnet test CoffEmitterTests.csproj
+```
+
+For manual validation, you can also link and compare:
+```
 link.exe /debug /entry:main /subsystem:console foo.obj /out:foo_ours.exe
 ildasm foo_ours.exe /out=foo_ours.il /nobar
 ildasm foo.exe /out=foo_msvc.il /nobar
 ```
-
-Compare the ILDASM outputs (ignoring MVID, timestamps, image base, assembly/module names). They should be identical.
-
-For PDB validation:
-```
-cvdump -s -l foo_ours.pdb
-cvdump -s -l foo.pdb
-```
-
-Compare the symbol records (S_GMANPROC, S_FRAMEPROC, S_MANSLOT, S_BLOCK32, S_END) and line number mappings.
 
 ## Design decisions
 
@@ -148,7 +190,7 @@ Fat method bodies (those with locals, maxStack > 8, or exception handlers) requi
 `AddDataClrToken` and `AddExternalClrToken` must be called **before** emitting IL that references the same metadata tokens. This is because IL token references create CLR token COFF symbols via `GetOrAddCoffSymbol`, which caches by name. If the IL emission creates the symbol first (at section 0), the later `AddDataClrToken` call is a no-op — it gets the cached version. Pre-registering the symbol ensures the correct section number is used.
 
 ### Architecture parameterization (x86 vs ARM64)
-Each `.cs` file has a `const Machine machine = Machine.I386;` at the top. Changing this to `Machine.Arm64` produces ARM64 object files. The following things differ between architectures:
+Each `.cs` test receives `Machine` as a parameter. The following things differ between architectures:
 
 | Aspect | x86 | ARM64 |
 |--------|-----|-------|
@@ -160,10 +202,8 @@ Each `.cs` file has a `const Machine machine = Machine.I386;` at the top. Changi
 | CRTMA section alignment | Align4Bytes | Align8Bytes |
 | `<alignment member>` field (struct) | not emitted | emitted |
 
-The `const` allows the C# compiler to dead-code-eliminate the unused branch, so only one architecture's code is compiled.
-
 ### .CRTMA section and global variable initializers
-The `init.cc` scenario demonstrates global variables with initializers (e.g., `char* str = "Hello!"`). The MSVC compiler generates:
+The `init.c` scenario demonstrates global variables with initializers (e.g., `char* str = "Hello!"`). The MSVC compiler generates:
 1. An initializer function `??__Estr` that sets `str = &"Hello!"`
 2. A `.CRTMA$XCC` section containing a function pointer (CLR token relocation) to `??__Estr`
 3. The `.CRTMA$XCC` data is merged alphabetically by the linker with `.CRTMA$XCA` (start sentinel) and `.CRTMA$XCZ` (end sentinel) from `minicrt.obj`
@@ -177,6 +217,7 @@ The `init.cc` scenario demonstrates global variables with initializers (e.g., `c
 |------|----------|---------|
 | `coffobjdumper.cs` | `tools/` | Dump IL, metadata tokens, COFF symbols, and `.debug$S` from `.obj` files |
 | `coffobjectemitter.cs` | `tools/` | Library for emitting managed COFF `.obj` files |
+| `ObjDumper.cs` | `scenarios/` | Normalized `.obj` dumper for test comparison |
 | `cvdump.exe` | `references/microsoft-pdb/cvdump/` | Microsoft's CodeView/PDB dumper |
 | `dumpbin.exe` | MSVC toolset | COFF/PE dumper (headers, symbols, sections, relocations) |
 | `ildasm.exe` | Windows SDK | .NET IL disassembler |
