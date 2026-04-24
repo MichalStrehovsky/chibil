@@ -168,6 +168,256 @@ indirect call uses `calli` with a matching `StandaloneSignature`.
 
 See the `funcptr` scenario for the full pattern.
 
+## Variadic functions use VARARG calling convention with SENTINEL
+
+C variadic functions (`...`) compile to a `[VARARG]` calling convention
+in the MemberRef signature. Two separate MemberRefs are generated:
+
+1. **Declaration MemberRef** — the fixed parameters only, with `[VARARG]`
+   calling convention and `modopt(CallConvCdecl)` on the return type:
+   ```
+   CallCnvntn: [VARARG]
+   ReturnType: CMOD_OPT CallConvCdecl I4
+   1 Arguments: I4
+   ```
+
+2. **Call-site MemberRef** — includes all arguments with an
+   `ELEMENT_TYPE_SENTINEL` marker separating fixed from variadic args:
+   ```
+   CallCnvntn: [VARARG]
+   ReturnType: CMOD_OPT CallConvCdecl I4
+   4 Arguments: I4, <SENTINEL> I4, I4, I4
+   ```
+
+Both MemberRefs carry `DecoratedNameAttribute` with the mangled name.
+The `ELEMENT_TYPE_SENTINEL` (0x41) byte in the blob separates the fixed
+parameters from the varargs. This is the standard ECMA-335 vararg
+mechanism. The backend must emit distinct signatures for declaration vs
+each unique call site.
+
+```c
+int my_sum(int count, ...);
+int main() { return my_sum(3, 10, 20, 30); }
+```
+
+## The IsLong modifier distinguishes C `long` from `int`
+
+C `long` and `unsigned long` produce `modopt(IsLong)` in MSIL
+signatures, even though they are the same width as `int`/`unsigned int`
+on 32-bit Windows:
+
+| C type | MSIL signature |
+|--------|---------------|
+| `int` | `int32` |
+| `long` | `modopt(IsLong) int32` |
+| `unsigned int` | `uint32` |
+| `unsigned long` | `modopt(IsLong) uint32` |
+| `long double` | `modopt(IsLong) float64` |
+
+This requires a TypeRef to
+`System.Runtime.CompilerServices.IsLong` in the mscorlib AssemblyRef.
+The modifier appears in method signatures (params + return), local
+signatures, and field signatures.
+
+Note: `long double` maps to `modopt(IsLong) R8` (float64), not a
+special extended-precision type — MSVC treats `long double` as 64-bit
+double.
+
+## Const pointer parameters produce modopt(IsConst)
+
+The `const` qualifier on pointer targets produces `modopt(IsConst)` in
+method parameter signatures, not just in global/field contexts:
+
+```c
+int read_val(const int* p);       // Ptr modopt(IsConst) I4
+void copy(int* d, const int* s);  // Ptr I4, Ptr modopt(IsConst) I4
+```
+
+The modifier is on the pointee, not the pointer. This means
+`const int*` → `Ptr modopt(IsConst) I4`.
+
+## Const-on-pointer-itself produces modopt(IsConst) before Ptr
+
+When `const` qualifies the pointer itself (not just the pointee), the
+modifier appears *before* `Ptr` in the signature:
+
+```c
+void f(const int* const p);
+// → modopt(IsConst) Ptr modopt(IsConst) I4
+```
+
+The outer `const` (on the pointer) produces `modopt(IsConst)` before
+`Ptr`. The inner `const` (on the int) produces `modopt(IsConst)` after
+`Ptr` but before `I4`. This ordering matters for correct signature
+encoding.
+
+## Multiple modopt/modreq stack on the same type
+
+When a type has multiple qualifiers, they stack. The ordering in the
+signature blob is significant:
+
+| C type | MSIL signature |
+|--------|---------------|
+| `const char*` | `Ptr modopt(IsConst) modopt(IsSignUnspecifiedByte) I1` |
+| `const volatile int*` | `Ptr modopt(IsConst) modreq(IsVolatile) I4` |
+| `volatile int*` | `Ptr modreq(IsVolatile) I4` |
+
+For `const volatile`, the `modopt(IsConst)` appears first, then
+`modreq(IsVolatile)`, then the base type. The backend must preserve
+this ordering when generating signature blobs.
+
+## Volatile parameters produce modreq(IsVolatile) in signatures
+
+`volatile` on pointer targets produces `modreq(IsVolatile)` (not
+modopt) in parameter signatures:
+
+```c
+int read_volatile(volatile int* p);  // Ptr modreq(IsVolatile) I4
+void write_volatile(volatile int* p, int val);  // same encoding
+```
+
+Volatile local variables also get `modreq(IsVolatile)`:
+```
+LOCALSIG: modreq(IsVolatile) I4
+```
+
+## char** is Ptr Ptr modopt(IsSignUnspecifiedByte) I1
+
+The classic `main(int argc, char** argv)` signature encodes `char**` as
+nested pointer types with the `IsSignUnspecifiedByte` modifier on the
+innermost `I1`:
+
+```
+Argument #1: I4                                          // argc
+Argument #2: Ptr Ptr modopt(IsSignUnspecifiedByte) I1    // argv
+```
+
+The modifier propagates through all pointer levels — it is always on
+the leaf `I1` type, not on the pointer.
+
+## void* is Ptr Void, void return is Void
+
+`void*` parameters encode as `Ptr Void` (ELEMENT_TYPE_PTR + VOID):
+
+```c
+void* get_ptr(int* p);  // ReturnType: Ptr Void
+void set_val(int* p, int v);  // ReturnType: Void
+```
+
+`void` return encodes as just `Void` (ELEMENT_TYPE_VOID). The `Ptr Void`
+local variable signature also uses `Ptr Void`.
+
+## _Bool maps to ELEMENT_TYPE_BOOLEAN
+
+C's `_Bool` type maps directly to the CLR `Boolean` type
+(ELEMENT_TYPE_BOOLEAN, 0x02):
+
+```c
+_Bool bool_positive(_Bool val);
+// ReturnType: Boolean
+// Argument #1: Boolean
+```
+
+Locals and field signatures also use `Boolean`. This is distinct from
+`int` which uses `I4`.
+
+## Array parameters decay to Ptr — size is lost
+
+C array parameters like `int arr[10]` decay to plain pointers in the
+metadata signature — the array size is not preserved:
+
+```c
+int sum10(int arr[10]);  // Argument #1: Ptr I4 (not ValueClass)
+```
+
+The local array `int arr[10]` in the function body still generates a
+`$ArrayType$$$BY09H` TypeDef with Size:40.
+
+## 2D array parameters use Ptr to inner array TypeDef
+
+Multi-dimensional array parameters produce an interesting encoding. For
+`int arr[3][4]`, the parameter decays to a pointer to the inner
+dimension's array TypeDef:
+
+```c
+int sum_2d(int arr[3][4]);
+// Argument #1: Ptr ValueClass $ArrayType$$$BY03H
+```
+
+Where `$ArrayType$$$BY03H` (Size:16) represents `int[4]`. The outer
+dimension is lost (pointer decay). The local `int arr[3][4]` generates
+a separate TypeDef `$ArrayType$$$BY123H` (Size:48) where `12` encodes
+the total dimensions (`3*4 = 12` in hex? No — `BY123H` encodes the
+shape as `[3][4]` with size codes `12` and `3`).
+
+## $ArrayType naming convention for element types
+
+The `$ArrayType$$$BY<count><type>` naming convention uses a single
+letter for the element type. Known type codes:
+
+| Code | C type | MSIL type |
+|------|--------|-----------|
+| `D` | `char` (IsSignUnspecifiedByte) | I1 |
+| `G` | `unsigned short` / `wchar_t` | UI2 |
+| `H` | `int` | I4 |
+
+The `<count>` is the array dimension minus 1 (zero-based). So `char[6]`
+→ `$ArrayType$$$BY05D` (Size:6), `int[10]` → `$ArrayType$$$BY09H`
+(Size:40), `wchar_t[6]` → `$ArrayType$$$BY05G` (Size:12).
+
+## Wide string literals use $ArrayType with G element type
+
+Wide string literals (`L"Hello"`) produce a `$ArrayType$$$BY05G`
+TypeDef (unsigned short / wchar_t array), with `Ptr UI2` as the local
+variable type. The string data is stored in the same global field
+pattern as narrow strings.
+
+## Struct by-value in parameters uses ValueClass directly
+
+When a struct is passed by value (not by pointer), the parameter
+signature uses `ValueClass <TypeName>` directly:
+
+```c
+int sum_point(struct Point p);
+// Argument #1: ValueClass Point
+struct Point make_point(int x, int y);
+// ReturnType: ValueClass Point
+```
+
+This is distinct from `Ptr ValueClass Point` used for pointer
+parameters.
+
+## Forward-declared structs become TypeRef with null ResolutionScope
+
+A forward-declared struct (`struct Opaque;`) used only as a pointer
+parameter generates a **TypeRef** (not TypeDef) with
+`ResolutionScope: 0x00000000` (null/module scope):
+
+```
+TypeRef: Opaque
+  ResolutionScope: 0x00000000
+  TypeRefName: Opaque
+```
+
+The parameter encodes as `Ptr ValueClass Opaque` referencing this
+TypeRef. This is the same pattern used in pinvoke-forwardref, but
+applies to any forward-declared struct used as a pointer parameter,
+not just P/Invoke scenarios.
+
+## restrict qualifier is silently dropped
+
+The `__restrict` / `restrict` qualifier produces **no metadata
+encoding** — it is silently dropped. The parameter signature is
+identical to a non-restrict pointer:
+
+```c
+void copy(int* __restrict dest, const int* __restrict src, int n);
+// Argument #1: Ptr I4                   (no restrict marker)
+// Argument #2: Ptr modopt(IsConst) I4   (const preserved, restrict dropped)
+```
+
+The backend does not need to emit any modifier for `restrict`.
+
 ## Architecture differences in IL
 
 Several constructs generate different IL for x86 vs ARM64:
