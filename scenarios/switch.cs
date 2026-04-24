@@ -54,10 +54,11 @@ public class SwitchTest
             MetadataTokens.ParameterHandle(1));
         md.AddParameter(ParameterAttributes.None, md.GetOrAddString("x"), 1);
 
-        // classify locals: 2 x int32
+        // classify locals: 2 x int32 (x86), 3 x int32 (arm64: extra temp for switch bounds check)
+        int classifyLocalCount = machine == Machine.I386 ? 2 : 3;
         var cLocalsSig = new BlobBuilder();
-        var cLocalsEnc = new BlobEncoder(cLocalsSig).LocalVariableSignature(2);
-        for (int i = 0; i < 2; i++) cLocalsEnc.AddVariable().Type().Int32();
+        var cLocalsEnc = new BlobEncoder(cLocalsSig).LocalVariableSignature(classifyLocalCount);
+        for (int i = 0; i < classifyLocalCount; i++) cLocalsEnc.AddVariable().Type().Int32();
         var cLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(cLocalsSig));
 
         // ─── MethodDef #2: main() -> int ──────────────────────────────────
@@ -105,84 +106,109 @@ public class SwitchTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
-            // switch uses variable-length encoding. We emit it with branches.
-            // IL_0000: ldarg.0
-            // IL_0001: switch (IL_0018, IL_001D, IL_0022, IL_0022)
-            //   opcode(1) + count(4) + targets(4*4=16) = 21 bytes, so end = 0x0016
-            //   deltas: 0x18-0x16=2, 0x1D-0x16=7, 0x22-0x16=12, 0x22-0x16=12
-            // IL_0016: br.s IL_0027
-            // IL_0018: ldc.i4.s 10 / stloc.0 / br.s IL_0029
-            // IL_001D: ldc.i4.s 20 / stloc.0 / br.s IL_0029
-            // IL_0022: ldc.i4.s 30 / stloc.0 / br.s IL_0029
-            // IL_0027: ldc.i4.m1 / stloc.0
-            // IL_0029: ldloc.0 / stloc.1 / ldloc.1 / ret
-
-            var lbl_default = enc.DefineLabel();    // IL_0027
-            var lbl_case0 = enc.DefineLabel();      // IL_0018
-            var lbl_case1 = enc.DefineLabel();      // IL_001D
-            var lbl_case2 = enc.DefineLabel();      // IL_0022
-            var lbl_end = enc.DefineLabel();         // IL_0029
+            var lbl_default = enc.DefineLabel();
+            var lbl_case0 = enc.DefineLabel();
+            var lbl_case1 = enc.DefineLabel();
+            var lbl_case2 = enc.DefineLabel();
+            var lbl_end = enc.DefineLabel();
 
             enc.MarkLineNumber(cvFile, 7);
-            enc.OpCode(ILOpCode.Ldarg_0);           // IL_0000
 
-            // Emit switch instruction manually (raw bytes)
-            // switch opcode = 0x45, count = 4, then 4 x int32 deltas
-            // The end of the switch instruction is at IL offset = 1 + 1 + 4 + 4*4 = 22 = 0x16
-            // Targets: IL_0018 (delta=2), IL_001D (delta=7), IL_0022 (delta=12), IL_0022 (delta=12)
-            enc.OpCode(ILOpCode.Switch);             // IL_0001
-            enc.CodeBuilder.WriteInt32(4);           // count = 4
-            enc.CodeBuilder.WriteInt32(2);           // -> IL_0018
-            enc.CodeBuilder.WriteInt32(7);           // -> IL_001D
-            enc.CodeBuilder.WriteInt32(12);          // -> IL_0022
-            enc.CodeBuilder.WriteInt32(12);          // -> IL_0022
+            if (machine != Machine.I386)
+            {
+                // ARM64: bounds-check before switch
+                // ldarg.0, stloc.1, ldloc.1, ldc.i4.0, blt.s default, ldloc.1, ldc.i4.3, bgt.s default, ldloc.1, switch...
+                enc.OpCode(ILOpCode.Ldarg_0);
+                enc.OpCode(ILOpCode.Stloc_1);
+                enc.OpCode(ILOpCode.Ldloc_1);
+                enc.OpCode(ILOpCode.Ldc_i4_0);
+                enc.Branch(ILOpCode.Blt_s, lbl_default);
+                enc.OpCode(ILOpCode.Ldloc_1);
+                enc.OpCode(ILOpCode.Ldc_i4_3);
+                enc.Branch(ILOpCode.Bgt_s, lbl_default);
+                enc.OpCode(ILOpCode.Ldloc_1);
+            }
+            else
+            {
+                // x86: direct switch
+                enc.OpCode(ILOpCode.Ldarg_0);
+            }
 
-            enc.Branch(ILOpCode.Br_s, lbl_default);  // IL_0016
+            // switch (case0, case1, case2, case2)
+            enc.OpCode(ILOpCode.Switch);
+            enc.CodeBuilder.WriteInt32(4);  // count
 
-            enc.MarkLabel(lbl_case0);               // IL_0018
+            // Switch deltas are calculated from the end of the switch instruction
+            // End of switch = current + 4 + 4*4 = current + 20
+            // We need to use labels for proper offset calculation
+            // Since the RelocatableControlFlowBuilder doesn't directly support switch, write raw deltas
+            // For x86: switch at offset 1, end at 1+1+4+16=22=0x16
+            //   case0=0x18, delta=0x18-0x16=2
+            //   case1=0x1D, delta=7
+            //   case2=0x22, delta=12
+            // For arm64: switch at offset 0x0B, end at 0x0B+1+4+16=0x20
+            //   case0=0x22, delta=2
+            //   case1=0x27, delta=7
+            //   case2=0x2C, delta=12
+            // Same deltas in both cases!
+            enc.CodeBuilder.WriteInt32(2);   // -> case0
+            enc.CodeBuilder.WriteInt32(7);   // -> case1
+            enc.CodeBuilder.WriteInt32(12);  // -> case2
+            enc.CodeBuilder.WriteInt32(12);  // -> case2 (fall-through)
+
+            enc.Branch(ILOpCode.Br_s, lbl_default);
+
+            enc.MarkLabel(lbl_case0);
             enc.MarkLineNumber(cvFile, 10);
-            enc.LoadConstantI4(10);                 // IL_0018: ldc.i4.s 10
-            enc.OpCode(ILOpCode.Stloc_0);           // IL_001A
-
+            enc.LoadConstantI4(10);
+            enc.OpCode(ILOpCode.Stloc_0);
             enc.MarkLineNumber(cvFile, 11);
-            enc.Branch(ILOpCode.Br_s, lbl_end);     // IL_001B
+            enc.Branch(ILOpCode.Br_s, lbl_end);
 
-            enc.MarkLabel(lbl_case1);               // IL_001D
+            enc.MarkLabel(lbl_case1);
             enc.MarkLineNumber(cvFile, 13);
-            enc.LoadConstantI4(20);                 // IL_001D: ldc.i4.s 20
-            enc.OpCode(ILOpCode.Stloc_0);           // IL_001F
-
+            enc.LoadConstantI4(20);
+            enc.OpCode(ILOpCode.Stloc_0);
             enc.MarkLineNumber(cvFile, 14);
-            enc.Branch(ILOpCode.Br_s, lbl_end);     // IL_0020
+            enc.Branch(ILOpCode.Br_s, lbl_end);
 
-            enc.MarkLabel(lbl_case2);               // IL_0022
+            enc.MarkLabel(lbl_case2);
             enc.MarkLineNumber(cvFile, 17);
-            enc.LoadConstantI4(30);                 // IL_0022: ldc.i4.s 30
-            enc.OpCode(ILOpCode.Stloc_0);           // IL_0024
-
+            enc.LoadConstantI4(30);
+            enc.OpCode(ILOpCode.Stloc_0);
             enc.MarkLineNumber(cvFile, 18);
-            enc.Branch(ILOpCode.Br_s, lbl_end);     // IL_0025
+            enc.Branch(ILOpCode.Br_s, lbl_end);
 
-            enc.MarkLabel(lbl_default);             // IL_0027
+            enc.MarkLabel(lbl_default);
             enc.MarkLineNumber(cvFile, 20);
-            enc.OpCode(ILOpCode.Ldc_i4_m1);         // IL_0027
-            enc.OpCode(ILOpCode.Stloc_0);           // IL_0028
+            enc.OpCode(ILOpCode.Ldc_i4_m1);
+            enc.OpCode(ILOpCode.Stloc_0);
 
-            enc.MarkLabel(lbl_end);                 // IL_0029
+            enc.MarkLabel(lbl_end);
             enc.MarkLineNumber(cvFile, 23);
-            enc.OpCode(ILOpCode.Ldloc_0);           // IL_0029
-            enc.OpCode(ILOpCode.Stloc_1);           // IL_002A
+            enc.OpCode(ILOpCode.Ldloc_0);
+            if (machine != Machine.I386)
+            {
+                enc.OpCode(ILOpCode.Stloc_2);
+                enc.MarkLineNumber(cvFile, 24);
+                enc.OpCode(ILOpCode.Ldloc_2);
+            }
+            else
+            {
+                enc.OpCode(ILOpCode.Stloc_1);
+                enc.MarkLineNumber(cvFile, 24);
+                enc.OpCode(ILOpCode.Ldloc_1);
+            }
+            enc.OpCode(ILOpCode.Ret);
 
-            enc.MarkLineNumber(cvFile, 24);
-            enc.OpCode(ILOpCode.Ldloc_1);           // IL_002B
-            enc.OpCode(ILOpCode.Ret);               // IL_002C
+            int classifyMaxStack = machine == Machine.I386 ? 1 : 2;
 
             var localSlots = new[] {
                 new CodeViewManSlot(0, MetadataTokens.GetToken(cLocalsSigHandle), "result"),
             };
 
             bodyEncoder.AddMethodBody(classifyMethod, "?classify@@$$J0YMHH@Z", enc,
-                maxStack: 1, localVariablesSignature: cLocalsSigHandle, attributes: 0,
+                maxStack: classifyMaxStack, localVariablesSignature: cLocalsSigHandle, attributes: 0,
                 debugName: "classify", localSlots: localSlots);
         }
 
