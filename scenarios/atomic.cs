@@ -161,11 +161,15 @@ public class AtomicTest
             0,
             MetadataTokens.ParameterHandle(6));
 
-        // Locals for main: 2 x int32
+        // Locals for main: int32 (V_0), modreq(IsVolatile) int32 (V_1:v)
         var mainLocalsSig = new BlobBuilder();
         var mainLocalsEnc = new BlobEncoder(mainLocalsSig).LocalVariableSignature(2);
         mainLocalsEnc.AddVariable().Type().Int32();
-        mainLocalsEnc.AddVariable().Type().Int32();
+        // V_1: modreq(IsVolatile) int32
+        var mainLocV1 = mainLocalsEnc.AddVariable().Type();
+        mainLocV1.Builder.WriteByte((byte)SignatureTypeCode.RequiredModifier);
+        mainLocV1.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isVolatileRef));
+        mainLocV1.Builder.WriteByte((byte)SignatureTypeCode.Int32);
         var mainLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(mainLocalsSig));
 
         // ─── Module ───────────────────────────────────────────────────────

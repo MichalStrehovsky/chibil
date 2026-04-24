@@ -38,17 +38,26 @@ public class CastTest
             md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default, md.GetOrAddBlob(mscorlibHash));
 
+        // ─── TypeRef: IsSignUnspecifiedByte ───────────────────────────────
+        var isSignUnspecifiedByteRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"), md.GetOrAddString("IsSignUnspecifiedByte"));
+
         // ─── TypeDef #1: <Module> ─────────────────────────────────────────
         md.AddTypeDefinition(TypeAttributes.Class, default, md.GetOrAddString("<Module>"), default,
             MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
 
-        // ─── MethodDef #1: cast_widen(int32, int32) -> int32 ──────────────
+        // ─── MethodDef #1: cast_widen(modopt(IsSignUnspecifiedByte) int8, int16) -> int32 ──
         var cwSig = new BlobBuilder();
         new BlobEncoder(cwSig).MethodSignature()
             .Parameters(2, out var cwRetEnc, out var cwParEnc);
         cwRetEnc.Type().Int32();
-        cwParEnc.AddParameter().Type().Int32();
-        cwParEnc.AddParameter().Type().Int32();
+        // Param 1: modopt(IsSignUnspecifiedByte) int8 (C 'char')
+        var cwP1 = cwParEnc.AddParameter().Type();
+        cwP1.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        cwP1.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isSignUnspecifiedByteRef));
+        cwP1.Builder.WriteByte((byte)SignatureTypeCode.SByte);
+        // Param 2: int16 (C 'short')
+        cwParEnc.AddParameter().Type().Int16();
 
         var castWidenMethod = md.AddMethodDefinition(
             MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
@@ -80,18 +89,24 @@ public class CastTest
             MetadataTokens.ParameterHandle(3));
         md.AddParameter(ParameterAttributes.None, md.GetOrAddString("i"), 1);
 
-        // cast_narrow locals: 3 x int32
+        // cast_narrow locals: int32 (V_0), int16 (V_1:s), modopt(IsSignUnspecifiedByte) int8 (V_2:c)
         var cnLocalsSig = new BlobBuilder();
         var cnLocalsEnc = new BlobEncoder(cnLocalsSig).LocalVariableSignature(3);
-        for (int i = 0; i < 3; i++) cnLocalsEnc.AddVariable().Type().Int32();
+        cnLocalsEnc.AddVariable().Type().Int32();   // V_0: result
+        cnLocalsEnc.AddVariable().Type().Int16();   // V_1: s
+        // V_2: modopt(IsSignUnspecifiedByte) int8 (C 'char')
+        var cnLocV2 = cnLocalsEnc.AddVariable().Type();
+        cnLocV2.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        cnLocV2.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isSignUnspecifiedByteRef));
+        cnLocV2.Builder.WriteByte((byte)SignatureTypeCode.SByte);
         var cnLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(cnLocalsSig));
 
-        // ─── MethodDef #3: cast_unsigned(int32) -> int32 ──────────────────
+        // ─── MethodDef #3: cast_unsigned(uint32) -> int32 ──────────────────
         var cuSig = new BlobBuilder();
         new BlobEncoder(cuSig).MethodSignature()
             .Parameters(1, out var cuRetEnc, out var cuParEnc);
         cuRetEnc.Type().Int32();
-        cuParEnc.AddParameter().Type().Int32();
+        cuParEnc.AddParameter().Type().UInt32();
 
         var castUnsignedMethod = md.AddMethodDefinition(
             MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
@@ -100,12 +115,12 @@ public class CastTest
             MetadataTokens.ParameterHandle(4));
         md.AddParameter(ParameterAttributes.None, md.GetOrAddString("u"), 1);
 
-        // cast_unsigned locals: int32 (V_0), int64 (V_1:ull), int32 (V_2:s)
+        // cast_unsigned locals: int32 (V_0), uint64 (V_1:ull), int32 (V_2:s)
         var cuLocalsSig = new BlobBuilder();
         var cuLocalsEnc = new BlobEncoder(cuLocalsSig).LocalVariableSignature(3);
-        cuLocalsEnc.AddVariable().Type().Int32();   // V_0
-        cuLocalsEnc.AddVariable().Type().Int64();   // V_1: ull
-        cuLocalsEnc.AddVariable().Type().Int32();   // V_2: s
+        cuLocalsEnc.AddVariable().Type().Int32();    // V_0
+        cuLocalsEnc.AddVariable().Type().UInt64();   // V_1: ull
+        cuLocalsEnc.AddVariable().Type().Int32();    // V_2: s
         var cuLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(cuLocalsSig));
 
         // ─── MethodDef #4: cast_float(int32, float32, float64) -> int32 ───
@@ -152,10 +167,11 @@ public class CastTest
             MetadataTokens.ParameterHandle(8));
         md.AddParameter(ParameterAttributes.None, md.GetOrAddString("x"), 1);
 
-        // cast_bool locals: 2 x int32
+        // cast_bool locals: int32 (V_0), bool (V_1:b)
         var cbLocalsSig = new BlobBuilder();
         var cbLocalsEnc = new BlobEncoder(cbLocalsSig).LocalVariableSignature(2);
-        for (int i = 0; i < 2; i++) cbLocalsEnc.AddVariable().Type().Int32();
+        cbLocalsEnc.AddVariable().Type().Int32();    // V_0: result
+        cbLocalsEnc.AddVariable().Type().Boolean();  // V_1: b
         var cbLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(cbLocalsSig));
 
         // ─── MethodDef #6: main() -> int32 ────────────────────────────────

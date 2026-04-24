@@ -112,7 +112,14 @@ public class FuncptrTest
         new BlobEncoder(applySig).MethodSignature()
             .Parameters(3, out var applyRetEnc, out var applyParEnc);
         applyRetEnc.Type().Int32();
-        applyParEnc.AddParameter().Type().IntPtr();  // native int = function pointer
+        // Param 1: FnPtr int32(int32, int32)
+        var applyP1 = applyParEnc.AddParameter().Type();
+        applyP1.Builder.WriteByte((byte)SignatureTypeCode.FunctionPointer);
+        applyP1.Builder.WriteByte(0x00); // default calling convention
+        applyP1.Builder.WriteCompressedInteger(2); // 2 params
+        applyP1.Builder.WriteByte((byte)SignatureTypeCode.Int32); // return type
+        applyP1.Builder.WriteByte((byte)SignatureTypeCode.Int32); // param 1
+        applyP1.Builder.WriteByte((byte)SignatureTypeCode.Int32); // param 2
         applyParEnc.AddParameter().Type().Int32();
         applyParEnc.AddParameter().Type().Int32();
 
@@ -145,13 +152,20 @@ public class FuncptrTest
             0,
             MetadataTokens.ParameterHandle(8));
 
-        // Locals for main: 4 locals (int32, int32, int32, native int)
+        // Locals for main: 4 locals (int32, int32, int32, FnPtr int32(int32, int32))
         var mainLocalsSig = new BlobBuilder();
         var mainLocalsEnc = new BlobEncoder(mainLocalsSig).LocalVariableSignature(4);
         mainLocalsEnc.AddVariable().Type().Int32();   // slot 0: return value
         mainLocalsEnc.AddVariable().Type().Int32();   // slot 1: b
         mainLocalsEnc.AddVariable().Type().Int32();   // slot 2: a
-        mainLocalsEnc.AddVariable().Type().IntPtr();   // slot 3: fp (function pointer)
+        // slot 3: fp — FnPtr int32(int32, int32)
+        var mainLocFp = mainLocalsEnc.AddVariable().Type();
+        mainLocFp.Builder.WriteByte((byte)SignatureTypeCode.FunctionPointer);
+        mainLocFp.Builder.WriteByte(0x00); // default calling convention
+        mainLocFp.Builder.WriteCompressedInteger(2); // 2 params
+        mainLocFp.Builder.WriteByte((byte)SignatureTypeCode.Int32); // return type
+        mainLocFp.Builder.WriteByte((byte)SignatureTypeCode.Int32); // param 1
+        mainLocFp.Builder.WriteByte((byte)SignatureTypeCode.Int32); // param 2
         var mainLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(mainLocalsSig));
 
         // ─── Module ───────────────────────────────────────────────────────
