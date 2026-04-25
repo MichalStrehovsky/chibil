@@ -8,7 +8,8 @@ but are important for a future compiler backend.
 
 MSVC `/clr:pure` generates **no TypeDef** for C enum types. Enum values
 are inlined as integer constants. The parameter and local signatures use
-plain `int32` regardless of the enum type.
+plain `int32` regardless of the enum type. Verified against `enum.c`
+reference .obj: `use_enum(enum Color c)` has signature `int32(int32)`.
 
 ```c
 enum Color { RED, GREEN = 5, BLUE };
@@ -27,15 +28,15 @@ When a struct contains a nested struct or an anonymous union:
 ```c
 struct Outer {
     struct Inner { int a; int b; } inner;
-    union { int x; float y; };
     int z;
 };
 ```
 
-MSVC generates a **single TypeDef** for `Outer` with the total size (16
-bytes). There are no separate TypeDefs for `Inner` or the anonymous
-union. Member access is done entirely through offset arithmetic on the
-opaque value type (`ldloca` + constant offset + `ldind`/`stind`).
+MSVC generates a **single TypeDef** for `Outer` with the total size (12
+bytes on x86). There is no separate TypeDef for `Inner`. Member access
+is done entirely through offset arithmetic on the opaque value type
+(`ldloca` + constant offset + `ldind`/`stind`). Verified against
+`nested-struct.c` reference .obj.
 
 This means the backend does not need to generate nested TypeDefs or
 FieldDefs for struct members. The struct is an opaque bag of bytes with
@@ -47,12 +48,12 @@ a known size and alignment.
 struct Node { int val; struct Node* next; };
 ```
 
-The TypeDef for `Node` has the expected size (8 on x86, 16 on arm64).
-The `next` field does not produce a FieldDef. Access to `next` in IL is
-`ldloc.0` (pointer to Node) + `ldc.i4.4` + `add` + `ldind.i4` — just
-offset arithmetic. The pointer-to-self is not encoded in the metadata at
-all; it only exists in the method signature when `Node*` is a parameter:
-`Ptr ValueType Node`.
+The TypeDef for `Node` has size 8 on x86 (int + 4-byte pointer) and
+size 16 on arm64 (int + padding + 8-byte pointer). The `next` field
+does not produce a FieldDef. Access to `next` in IL is offset arithmetic:
+`ldloc.0` + `ldc.i4.4` + `add` + `ldind.i4`. When `Node*` appears in a
+parameter signature, it encodes as `Ptr ValueType Node`. Verified against
+`self-ref-struct.c` reference .obj.
 
 ## Char types and the IsSignUnspecifiedByte modifier
 
@@ -646,15 +647,18 @@ Several constructs generate different IL for x86 vs ARM64:
 
 | Pattern | x86 | ARM64 |
 |---------|-----|-------|
-| Pointer arithmetic constants | `ldc.i4.N` | `ldc.i4.N` + `conv.i8` |
+| Pointer index widening | `ldc.i4.N` | `ldc.i4.N` + `conv.i8` |
 | Switch instruction | Direct `switch` | Bounds-check (`blt.s`/`bgt.s`) before `switch` |
 | Struct TypeDef | No alignment member | `<alignment member>` int32 field added |
 | Local count for switch | 2 locals | 3 locals (extra temp for bounds check) |
 | CRTMA slot size | 4 bytes (Align4Bytes) | 8 bytes (Align8Bytes) |
 | mscorlib hash | `32 CD 81 47...` | `28 DC 37 8B...` |
 
-The backend needs to handle these per-architecture differences when
-generating IL.
+Note: `conv.i8` is specifically used on ARM64 to widen integer constants
+before using them as pointer offsets (because pointers are 8 bytes on
+ARM64). On x86, pointer-sized arithmetic uses 4-byte integers directly.
+However, `conv.i8` can also appear on x86 in other contexts (e.g., when
+the C code uses `long long` types).
 
 ## Unsigned operations use `.un` IL variants
 
