@@ -627,6 +627,49 @@ Thread-local storage is blocked in `/clr:pure`. The backend should reject
 TLS variables with an error, or map them to `[ThreadStatic]` fields
 (which have different semantics from native TLS).
 
+### 7. VLA and dynamic stack allocation
+chibicc supports VLAs (`int arr[n]`) which lower to `alloca`. MSVC
+rejects VLA syntax in `/BC` mode, but `_alloca()` compiles to the
+`localloc` IL instruction. The MSIL backend should:
+- Lower VLAs to `localloc` (which allocates from the IL evaluation stack)
+- `localloc` takes a byte count from the stack and returns a pointer
+- The allocated memory is automatically freed when the method returns
+- No deallocation instruction is needed
+
+See the `alloca` scenario for the `localloc` pattern.
+
+### 8. Unsupported C features in MSIL
+The following chibicc-supported features have NO MSIL equivalent and
+must be handled by the backend:
+
+| Feature | chibicc support | MSIL strategy |
+|---------|----------------|---------------|
+| `asm("...")` | NodeKind.Asm | Reject with error — no inline assembly in managed code |
+| `({...})` statement exprs | NodeKind.StmtExpr | GCC extension; lower to sequential IL with value on stack |
+| `&&label` / `goto *ptr` | NodeKind.LabelVal/GotoExpr | GCC extension; lower to switch-dispatch (no label address in IL) |
+| `_Atomic` compound assign | NodeKind.Cas/Exch | Generate `Interlocked.CompareExchange` CAS loop |
+
+### 9. Compile-time-only features
+These chibicc features resolve entirely at compile time and produce
+NO runtime artifact in MSIL:
+
+- `_Alignof(type)` → constant integer
+- `sizeof(expr)` → constant integer
+- `_Generic(expr, ...)` → selects one branch at compile time
+- `typeof(expr)` → GCC extension, resolves to a type at compile time
+- Adjacent string literal concatenation → single merged constant
+
+### 10. Alignment and packing
+`_Alignas(N)` on struct members maps to `.pack N` in the TypeDef
+ClassLayout metadata. `__attribute__((packed))` maps to `.pack 1`.
+`_Alignof` is a compile-time constant and produces no metadata.
+
+### 11. Inline functions
+The `inline` keyword is advisory in CLR — the JIT decides whether to
+inline. For `static inline` functions that are never referenced
+externally, chibicc marks them as not `IsLive` and does not emit them.
+The MSIL backend should similarly skip dead `static inline` functions.
+
 ## restrict qualifier is silently dropped
 
 The `__restrict` / `restrict` qualifier produces **no metadata
