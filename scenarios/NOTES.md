@@ -404,6 +404,228 @@ TypeRef. This is the same pattern used in pinvoke-forwardref, but
 applies to any forward-declared struct used as a pointer parameter,
 not just P/Invoke scenarios.
 
+## Name Mangling Reference
+
+This section documents the MSVC C++ decorated name format used for
+C functions compiled under `/clr:pure /BC`. This information is needed
+to generate COFF symbols that are link-compatible with MSVC objects.
+
+### Function decorated names
+
+Format: `?<name>@@$$J0YM<return><params>@Z`
+
+| Component | Meaning |
+|-----------|---------|
+| `?` | Decorated name prefix |
+| `<name>` | C function name |
+| `@@` | Scope terminator (global scope) |
+| `$$J0` | `extern "C"` linkage with C++ decoration |
+| `Y` | Calling convention prefix |
+| `M` | `__clrcall` (managed calling convention, forced by `/clr:pure`) |
+| `<return>` | Return type code |
+| `<params>` | Parameter type codes, or `X` for void (no params) |
+| `@Z` | End of parameter list and name |
+
+The `$$J0` prefix is NOT specific to `/clr:pure` — it is the standard
+MSVC marker for `extern "C"` linkage with C++ name decoration. The C
+frontend always generates `extern "C"` linkage. Under native compilation,
+C functions get undecorated names (like `_main`), but under `/clr` they
+need C++ decorated names for CLR metadata token resolution.
+
+The `YM` indicates `__clrcall` calling convention (managed). Under native
+compilation, this would be `YA` for `__cdecl` instead.
+
+Other `$$` linkage prefixes that appear in the COFF objects:
+
+| Code | Meaning |
+|------|---------|
+| `$$J0` | `extern "C"` with C++ decoration (used by C functions) |
+| `$$F` | `__clrcall` managed function with C++ linkage (used for CRT helpers like `.cctor`) |
+
+### Type codes for function signatures
+
+Primitive types:
+
+| Code | C type | MSIL signature |
+|------|--------|---------------|
+| `X` | `void` | `void` |
+| `D` | `char` | `modopt(IsSignUnspecifiedByte) int8` |
+| `C` | `signed char` | `int8` |
+| `E` | `unsigned char` | `uint8` |
+| `F` | `short` | `int16` |
+| `G` | `unsigned short` / `wchar_t` | `uint16` |
+| `H` | `int` | `int32` |
+| `I` | `unsigned int` | `uint32` |
+| `J` | `long` | `modopt(IsLong) int32` |
+| `K` | `unsigned long` | `modopt(IsLong) uint32` |
+| `M` | `float` | `float32` |
+| `N` | `double` | `float64` |
+| `_J` | `long long` | `int64` |
+| `_K` | `unsigned long long` | `uint64` |
+| `_N` | `_Bool` | `bool` |
+
+Pointer types:
+
+| Code | C type | MSIL signature |
+|------|--------|---------------|
+| `PA<type>` | `<type>*` | `Ptr <type>` |
+| `PAX` | `void*` | `Ptr Void` |
+| `PAH` | `int*` | `Ptr int32` |
+| `PAD` | `char*` | `Ptr modopt(IsSignUnspecifiedByte) int8` |
+| `PAPA<type>` | `<type>**` | `Ptr Ptr <type>` |
+| `PAU<name>@@` | `struct <name>*` | `Ptr ValueType <name>` |
+| `PEAU<name>@@` | `struct <name>*` (64-bit) | `Ptr ValueType <name>` |
+
+Struct types:
+
+| Code | C type | MSIL signature |
+|------|--------|---------------|
+| `U<name>@@` | `struct <name>` (by value) | `ValueType <name>` |
+| `?AU<name>@@` | `struct <name>` (as return type) | `ValueType <name>` |
+
+Function pointer types:
+
+| Code | C type |
+|------|--------|
+| `P6M<ret><params>@Z` | `<ret> (__clrcall*)(<params>)` |
+
+Examples:
+```
+?main@@$$J0YMHXZ                        int main(void)
+?arith@@$$J0YMHHH@Z                     int arith(int, int)
+?char_func@@$$J0YMHDCE@Z                int char_func(char, signed char, unsigned char)
+?cast_float@@$$J0YMHHMN@Z               int cast_float(int, float, double)
+?void_func@@$$J0YMXXZ                   void void_func(void)
+?longlong_ret@@$$J0YM_JXZ               long long longlong_ret(void)
+?ptr_param@@$$J0YMHPAH@Z                int ptr_param(int*)
+?voidptr_param@@$$J0YMHPAX@Z            int voidptr_param(void*)
+?dblptr_param@@$$J0YMHPAPAH@Z           int dblptr_param(int**)
+?struct_ptr@@$$J0YMHPAUPoint@@@Z         int struct_ptr(struct Point*)
+?struct_ret@@$$J0YM?AUPoint@@HH@Z        struct Point struct_ret(int, int)
+?funcptr_param@@$$J0YMHP6MHH@Z@Z        int funcptr_param(int (*)(int))
+?apply@@$$J0YMHP6MHHH@ZHH@Z             int apply(int (*)(int,int), int, int)
+```
+
+### MSVC number encoding
+
+Used for array dimensions, template arguments, and other numeric values
+in decorated names:
+
+| Value | Encoding |
+|-------|----------|
+| 0 | `A@` |
+| 1–10 | Single digit `'0'`–`'9'` (digit = value − 1) |
+| ≥ 11 | Hex nibbles `A`–`P` (where A=0, P=15), MSB first, terminated by `@` |
+
+Examples: value 1 → `0`, value 6 → `5`, value 10 → `9`, value 11 →
+`L@` (L=11), value 16 → `BA@` (B=1, A=0 → 0x10=16), value 20 →
+`BE@` (B=1, E=4 → 0x14=20), value 256 → `BAA@` (1×256+0×16+0=256).
+
+### Array TypeDef names
+
+Format: `$ArrayType$$$BY<ndims><dim1>...<dimN><elemtype>`
+
+| Component | Encoding |
+|-----------|----------|
+| `$ArrayType$$$BY` | Fixed prefix |
+| `<ndims>` | Number of dimensions, MSVC-number-encoded |
+| `<dim1>...<dimN>` | Each dimension bound, MSVC-number-encoded |
+| `<elemtype>` | Element type code (same codes as function signatures) |
+
+The number of dimensions and each bound use the MSVC number encoding
+described above. For a 1D array, ndims=1, so it encodes as `0`. For a
+2D array, ndims=2 → `1`.
+
+Examples:
+```
+$ArrayType$$$BY00H     int[1]       (ndims=1, bound=1, size=4)
+$ArrayType$$$BY05D     char[6]      (ndims=1, bound=6, size=6)
+$ArrayType$$$BY09H     int[10]      (ndims=1, bound=10, size=40)
+$ArrayType$$$BY0L@H    int[11]      (ndims=1, bound=11, size=44)
+$ArrayType$$$BY0BA@H   int[16]      (ndims=1, bound=16, size=64)
+$ArrayType$$$BY0BAA@H  int[256]     (ndims=1, bound=256, size=1024)
+$ArrayType$$$BY02G     wchar_t[3]   (ndims=1, bound=3, size=6)
+$ArrayType$$$BY04F     short[5]     (ndims=1, bound=5, size=10)
+$ArrayType$$$BY123H    int[3][4]    (ndims=2, bound1=3, bound2=4, size=48)
+$ArrayType$$$BY06$$CBD const char[7] (ndims=1, bound=7, const char element)
+```
+
+The element type for qualified types uses MSVC CV-qualifier encoding:
+`$$CB` = `const`, `$$CC` = `volatile`, `$$CD` = `const volatile`.
+
+### Translation-unit hash (`?A0x<hash>`)
+
+Static locals and anonymous globals are scoped to a translation-unit
+anonymous namespace using `?A0x<hash>`. The hash is a CRC-32 derived
+from source file paths with complex logic for reproducible builds.
+
+For the chibicc backend, we do NOT need to match MSVC's exact hash. We
+should choose a hash that avoids conflicts with MSVC objects (e.g., a
+hash of the source file contents). The hash only matters for:
+- Static local field names: `?A0x<hash>.?<var>@?1??<func>@@9@9`
+- Anonymous global field names: `?A0x<hash>.unnamed-global-N`
+- Initializer field names: `?A0x<hash>.<var>$initializer$`
+
+### Global initializer function names
+
+Dynamic initializer functions for global variables follow the pattern:
+
+- **Inner name:** `??__E<var>@@YMXXZ` — "dynamic initializer for `<var>`"
+  - `??` = special name prefix
+  - `__E` = dynamic initializer operator
+  - `<var>` = variable name
+  - `@@YMXXZ` = `void __clrcall (void)`
+
+- **Full COFF symbol:** `???__E<var>@@YMXXZ@?A0x<hash>@@$$FYMXXZ`
+  - The inner name is re-decorated as a member of the TU anonymous namespace
+  - `@?A0x<hash>@` = anonymous namespace scope
+  - `@$$F` = managed C++ linkage
+  - `YMXXZ` = `void __clrcall (void)`
+
+The `__F` variant (`??__F<var>@@YMXXZ`) is the corresponding `atexit`
+destructor, if one is needed.
+
+## Backend Implementation Gaps
+
+The following areas need implementation work beyond what the scenarios
+demonstrate:
+
+### 1. Signature builder
+The backend needs a utility that converts `CType` to the correct MSIL
+signature encoding, including all `modopt`/`modreq` modifiers. The
+mapping is documented in the type codes table above and the NOTES.md
+sections on char types, long types, and const/volatile params.
+
+### 2. Method body shape
+The x86 CodeGen uses register-based codegen with push/pop. The MSIL
+backend needs to:
+- Count locals and build a local variable signature
+- Track max stack depth for the fat header
+- Map chibicc's `Obj.Offset` (stack frame offsets) to IL local slot indices
+- Handle struct temporaries as valuetype locals
+
+### 3. Global variable strategy
+Under `/clr:pure /BC`, global initializers are rejected. The backend must
+either:
+- Use `/TP` mode for globals with initializers (generates CRTMA)
+- Generate its own initializer functions + CRTMA entries
+- Restrict to zero-initialized globals only
+
+### 4. Dense vs sparse switch
+The backend needs a heuristic to choose between IL `switch` instruction
+(for dense cases starting near 0) and a binary compare tree (for sparse
+or large-valued cases). Both patterns are demonstrated in scenarios.
+
+### 5. Struct copy strategy
+Struct assignment uses `cpblk` for large structs. The backend should use
+`cpblk` with the struct's TypeDef size. For small structs accessed
+field-by-field, `ldind`/`stind` with offsets works.
+
+### 6. TLS
+Thread-local storage is blocked in `/clr:pure`. The backend should reject
+TLS variables with an error, or map them to `[ThreadStatic]` fields
+(which have different semantics from native TLS).
+
 ## restrict qualifier is silently dropped
 
 The `__restrict` / `restrict` qualifier produces **no metadata
