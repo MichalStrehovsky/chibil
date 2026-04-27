@@ -6,7 +6,7 @@ public static class Program
     {
         try
         {
-            Driver.Run(args);
+            new Driver().Run(args);
             return 0;
         }
         catch (ChibiccException ex)

@@ -11,20 +11,20 @@ public class Driver
 {
     private enum FileType { None, C, Asm, Obj, Ar, Dso }
 
-    private static readonly CompilerOptions Options = new();
-    private static Preprocessor _preprocessor;
-    private static FileType _optX;
-    private static readonly List<string> OptInclude = new();
-    private static bool _optE, _optM, _optMD, _optMMD, _optMP, _optS, _optC, _optCc1, _optHashHashHash;
-    private static bool _optStatic, _optShared;
-    private static string _optMF, _optMT, _optO;
-    private static readonly List<string> LdExtraArgs = new();
-    private static readonly List<string> StdIncludePaths = new();
-    private static string _outputFile;
-    private static readonly List<string> InputPaths = new();
-    private static readonly List<string> Tmpfiles = new();
+    private readonly CompilerOptions Options = new();
+    private Preprocessor _preprocessor;
+    private FileType _optX;
+    private readonly List<string> OptInclude = new();
+    private bool _optE, _optM, _optMD, _optMMD, _optMP, _optS, _optC, _optCc1, _optHashHashHash;
+    private bool _optStatic, _optShared;
+    private string _optMF, _optMT, _optO;
+    private readonly List<string> LdExtraArgs = new();
+    private readonly List<string> StdIncludePaths = new();
+    private string _outputFile;
+    private readonly List<string> InputPaths = new();
+    private readonly List<string> Tmpfiles = new();
 
-    public static void Run(string[] args)
+    public void Run(string[] args)
     {
         var tokenizer = new Tokenizer(Options);
         _preprocessor = new Preprocessor(tokenizer, Options);
@@ -97,13 +97,13 @@ public class Driver
         Cleanup();
     }
 
-    private static bool TakeArg(string arg)
+    private bool TakeArg(string arg)
     {
         string[] x = { "-o", "-I", "-idirafter", "-include", "-x", "-MF", "-MT", "-Xlinker" };
         return x.Contains(arg);
     }
 
-    private static void ParseArgs(string[] args)
+    private void ParseArgs(string[] args)
     {
         // Validate that arg-taking options have an argument
         for (int i = 0; i < args.Length; i++)
@@ -176,7 +176,7 @@ public class Driver
         if (_optE) _optX = FileType.C;
     }
 
-    private static void Define(string str)
+    private void Define(string str)
     {
         int eq = str.IndexOf('=');
         if (eq >= 0)
@@ -185,13 +185,13 @@ public class Driver
             _preprocessor.DefineMacro(str, "1");
     }
 
-    private static FileType ParseOptX(string s) => s switch
+    private FileType ParseOptX(string s) => s switch
     {
         "c" => FileType.C, "assembler" => FileType.Asm, "none" => FileType.None,
         _ => throw new ChibiccException($"unknown argument for -x: {s}")
     };
 
-    private static string QuoteMakefile(string s)
+    private string QuoteMakefile(string s)
     {
         var sb = new StringBuilder();
         for (int i = 0; i < s.Length; i++)
@@ -213,7 +213,7 @@ public class Driver
         return sb.ToString();
     }
 
-    private static void AddDefaultIncludePaths(string argv0)
+    private void AddDefaultIncludePaths(string argv0)
     {
         // AppContext.BaseDirectory always gives the app's directory,
         // regardless of how it's invoked (AOT, dotnet exec, apphost, etc.)
@@ -225,7 +225,7 @@ public class Driver
         foreach (string p in Options.IncludePaths) StdIncludePaths.Add(p);
     }
 
-    private static FileType GetFileType(string filename)
+    private FileType GetFileType(string filename)
     {
         if (_optX != FileType.None) return _optX;
         if (filename.EndsWith(".a")) return FileType.Ar;
@@ -237,26 +237,26 @@ public class Driver
         return FileType.None;
     }
 
-    private static string ReplaceExtn(string tmpl, string extn)
+    private string ReplaceExtn(string tmpl, string extn)
     {
         string filename = Path.GetFileNameWithoutExtension(tmpl);
         return filename + extn;
     }
 
-    private static void Cleanup()
+    private void Cleanup()
     {
         foreach (string f in Tmpfiles)
             try { File.Delete(f); } catch { }
     }
 
-    private static string CreateTmpfile()
+    private string CreateTmpfile()
     {
         string path = Path.GetTempFileName();
         Tmpfiles.Add(path);
         return path;
     }
 
-    private static void RunSubprocess(string[] argv)
+    private void RunSubprocess(string[] argv)
     {
         if (_optHashHashHash)
             Console.Error.WriteLine(string.Join(" ", argv));
@@ -275,9 +275,9 @@ public class Driver
     /// Build a ProcessStartInfo that re-invokes this same application,
     /// handling dotnet exec, apphost, NativeAOT, and single-file publish.
     /// </summary>
-    private static ProcessStartInfo CreateSelfInvokeProcessStartInfo()
+    private ProcessStartInfo CreateSelfInvokeProcessStartInfo()
     {
-        string processPath = Environment.ProcessPath;
+        string processPath = Environment.ProcessPath!;
         string processName = Path.GetFileNameWithoutExtension(processPath);
         string mainAssembly = typeof(Program).Assembly.Location;
 
@@ -299,7 +299,7 @@ public class Driver
         return psi;
     }
 
-    private static void RunCc1(string[] origArgs, string input, string output)
+    private void RunCc1(string[] origArgs, string input, string output)
     {
         var psi = CreateSelfInvokeProcessStartInfo();
 
@@ -326,12 +326,12 @@ public class Driver
             Environment.Exit(1);
     }
 
-    private static void Assemble(string input, string output)
+    private void Assemble(string input, string output)
     {
         RunSubprocess(new[] { "as", "-c", input, "-o", output });
     }
 
-    private static void RunLinker(List<string> inputs, string output)
+    private void RunLinker(List<string> inputs, string output)
     {
         var arr = new List<string> { "ld", "-o", output, "-m", "elf_x86_64" };
         string libpath = FindLibpath();
@@ -369,7 +369,7 @@ public class Driver
         RunSubprocess(arr.ToArray());
     }
 
-    private static string FindLibpath()
+    private string FindLibpath()
     {
         if (File.Exists("/usr/lib/x86_64-linux-gnu/crti.o")) return "/usr/lib/x86_64-linux-gnu";
         if (File.Exists("/usr/lib64/crti.o")) return "/usr/lib64";
@@ -377,7 +377,7 @@ public class Driver
         return null;
     }
 
-    private static string FindGccLibpath()
+    private string FindGccLibpath()
     {
         string[] patterns = {
             "/usr/lib/gcc/x86_64-linux-gnu/*/crtbegin.o",
@@ -402,14 +402,14 @@ public class Driver
         return null;
     }
 
-    private static Token MustTokenizeFile(Tokenizer tokenizer, string path)
+    private Token MustTokenizeFile(Tokenizer tokenizer, string path)
     {
         Token tok = tokenizer.TokenizeFile(path);
         if (tok == null) Util.Error($"{path}: No such file or directory");
         return tok;
     }
 
-    private static Token AppendTokens(Token tok1, Token tok2)
+    private Token AppendTokens(Token tok1, Token tok2)
     {
         if (tok1 == null || tok1.Kind == TokenKind.Eof) return tok2;
         Token t = tok1;
@@ -418,7 +418,7 @@ public class Driver
         return tok1;
     }
 
-    private static void Cc1(Tokenizer tokenizer, Preprocessor preprocessor)
+    private void Cc1(Tokenizer tokenizer, Preprocessor preprocessor)
     {
         Token tok = null;
 
@@ -464,7 +464,7 @@ public class Driver
             File.WriteAllText(_outputFile, asm);
     }
 
-    private static void PrintTokens(Token tok)
+    private void PrintTokens(Token tok)
     {
         TextWriter output = (_optO != null && _optO != "-") ? new StreamWriter(_optO) : Console.Out;
         int line = 1;
@@ -479,7 +479,7 @@ public class Driver
         if (output != Console.Out) output.Dispose();
     }
 
-    private static void PrintDependencies(Tokenizer tokenizer)
+    private void PrintDependencies(Tokenizer tokenizer)
     {
         string path = _optMF ?? (_optMD ? ReplaceExtn(_optO ?? Options.BaseFile, ".d") : (_optO ?? "-"));
         TextWriter output = path == "-" ? Console.Out : new StreamWriter(path);
@@ -506,7 +506,7 @@ public class Driver
         if (output != Console.Out) output.Dispose();
     }
 
-    private static bool InStdIncludePath(string path)
+    private bool InStdIncludePath(string path)
     {
         foreach (string dir in StdIncludePaths)
             if (path.StartsWith(dir) && path.Length > dir.Length && path[dir.Length] == '/')
