@@ -237,6 +237,7 @@ public class PtrsubTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldarg_0);          // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);          // IL_0001
             enc.OpCode(ILOpCode.Sub);              // IL_0002
@@ -259,6 +260,7 @@ public class PtrsubTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 12);
             enc.OpCode(ILOpCode.Ldarg_0);          // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);          // IL_0001
             enc.OpCode(ILOpCode.Sub);              // IL_0002
@@ -279,6 +281,7 @@ public class PtrsubTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 13);
             enc.OpCode(ILOpCode.Ldarg_0);          // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);          // IL_0001
             enc.OpCode(ILOpCode.Sub);              // IL_0002
@@ -304,6 +307,7 @@ public class PtrsubTest
             var lbl_zero = enc.DefineLabel();
             var lbl_done = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 14);
             enc.OpCode(ILOpCode.Ldarg_0);              // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);              // IL_0001
             enc.Branch(ILOpCode.Bge_un_s, lbl_zero);  // IL_0002
@@ -330,6 +334,7 @@ public class PtrsubTest
             var lbl_zero = enc.DefineLabel();
             var lbl_done = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Ldarg_0);              // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);              // IL_0001
             enc.Branch(ILOpCode.Bne_un_s, lbl_zero);  // IL_0002
@@ -353,6 +358,7 @@ public class PtrsubTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 20);
             enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0001
 
@@ -404,6 +410,7 @@ public class PtrsubTest
             enc.OpCode(ILOpCode.Add);                  // add
 
             enc.OpCode(ILOpCode.Stloc_0);             // stloc.0
+            enc.MarkLineNumber(cvFile, 23);
             enc.OpCode(ILOpCode.Ldloc_0);             // ldloc.0
             enc.OpCode(ILOpCode.Ret);                  // ret
 

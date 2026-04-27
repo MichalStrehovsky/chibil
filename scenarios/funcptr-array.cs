@@ -4,6 +4,7 @@ using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using Xunit;
 
 public class FuncptrArrayTest
@@ -179,6 +180,10 @@ public class FuncptrArrayTest
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
+        string sourceFile = Path.Combine(AppContext.BaseDirectory, "funcptr-array.c");
+        byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
             ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
 
@@ -186,8 +191,9 @@ public class FuncptrArrayTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 4);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.OpCode(ILOpCode.Add);
@@ -204,8 +210,9 @@ public class FuncptrArrayTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 5);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.OpCode(ILOpCode.Sub);
@@ -222,11 +229,12 @@ public class FuncptrArrayTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
             int ptrSize = machine == Machine.I386 ? 4 : 8;
 
             // IL_0000-0001: init return value
+            enc.MarkLineNumber(cvFile, 10);
             enc.OpCode(ILOpCode.Ldc_i4_0);
             enc.OpCode(ILOpCode.Stloc_0);
 
@@ -246,6 +254,7 @@ public class FuncptrArrayTest
                 enc.OpCode(ILOpCode.Stind_i8);
 
             // ops[1] = sub_fn
+            enc.MarkLineNumber(cvFile, 11);
             enc.LoadLocalAddress(1);                   // ldloca.s V_1
             enc.LoadConstantI4(ptrSize);
             if (machine != Machine.I386)
@@ -261,6 +270,7 @@ public class FuncptrArrayTest
                 enc.OpCode(ILOpCode.Stind_i8);
 
             // ops[0](10, 3)
+            enc.MarkLineNumber(cvFile, 12);
             enc.LoadConstantI4(10);
             enc.OpCode(ILOpCode.Ldc_i4_3);
             enc.LoadLocalAddress(1);
@@ -294,6 +304,7 @@ public class FuncptrArrayTest
 
             enc.OpCode(ILOpCode.Add);
             enc.OpCode(ILOpCode.Stloc_0);
+            enc.MarkLineNumber(cvFile, 13);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 

@@ -4,6 +4,7 @@ using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using Xunit;
 
 public class StructFuncptrTest
@@ -188,6 +189,10 @@ public class StructFuncptrTest
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
+        string sourceFile = Path.Combine(AppContext.BaseDirectory, "struct-funcptr.c");
+        byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
             ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
 
@@ -195,8 +200,9 @@ public class StructFuncptrTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 9);
             enc.OpCode(ILOpCode.Ldarg_0);             // IL_0000
             enc.OpCode(ILOpCode.Ldc_i4_2);            // IL_0001
             enc.OpCode(ILOpCode.Mul);                  // IL_0002
@@ -213,11 +219,12 @@ public class StructFuncptrTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
             if (machine == Machine.I386)
             {
                 // x86: h->value at offset 4, h->callback at offset 0
+                enc.MarkLineNumber(cvFile, 13);
                 enc.OpCode(ILOpCode.Ldarg_0);             // IL_0000
                 enc.OpCode(ILOpCode.Ldc_i4_4);            // IL_0001
                 enc.OpCode(ILOpCode.Add);                  // IL_0002
@@ -226,12 +233,14 @@ public class StructFuncptrTest
                 enc.OpCode(ILOpCode.Ldind_i4);             // IL_0005: h->callback (i4 on x86)
                 enc.CallIndirect(calliSigHandle);          // IL_0006: calli
                 enc.OpCode(ILOpCode.Stloc_0);             // IL_000B
+                enc.MarkLineNumber(cvFile, 14);
                 enc.OpCode(ILOpCode.Ldloc_0);             // IL_000C
                 enc.OpCode(ILOpCode.Ret);                  // IL_000D
             }
             else
             {
                 // arm64: h->value at offset 8, h->callback at offset 0
+                enc.MarkLineNumber(cvFile, 13);
                 enc.OpCode(ILOpCode.Ldarg_0);             // IL_0000
                 enc.LoadConstantI4(8);                     // IL_0001: ldc.i4.8
                 enc.OpCode(ILOpCode.Conv_i8);              // IL_0002
@@ -241,6 +250,7 @@ public class StructFuncptrTest
                 enc.OpCode(ILOpCode.Ldind_i8);             // IL_0006: h->callback (i8 on arm64)
                 enc.CallIndirect(calliSigHandle);          // IL_0007: calli
                 enc.OpCode(ILOpCode.Stloc_0);             // IL_000C
+                enc.MarkLineNumber(cvFile, 14);
                 enc.OpCode(ILOpCode.Ldloc_0);             // IL_000D
                 enc.OpCode(ILOpCode.Ret);                  // IL_000E
             }
@@ -254,8 +264,9 @@ public class StructFuncptrTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 19);
             enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0001
 
@@ -269,6 +280,7 @@ public class StructFuncptrTest
                 enc.OpCode(ILOpCode.Stind_i8);         // arm64: stind.i8
 
             // h.value = 21  (at offset 4 on x86, 8 on arm64)
+            enc.MarkLineNumber(cvFile, 20);
             enc.LoadLocalAddress(1);                   // ldloca.s V_1
             int valueOffset = machine == Machine.I386 ? 4 : 8;
             enc.LoadConstantI4(valueOffset);
@@ -277,9 +289,11 @@ public class StructFuncptrTest
             enc.OpCode(ILOpCode.Stind_i4);
 
             // return invoke(&h)
+            enc.MarkLineNumber(cvFile, 21);
             enc.LoadLocalAddress(1);                   // ldloca.s V_1
             enc.Call(invokeMethod);                    // call invoke
             enc.OpCode(ILOpCode.Stloc_0);
+            enc.MarkLineNumber(cvFile, 22);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 

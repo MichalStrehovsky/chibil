@@ -255,11 +255,12 @@ public class LonglongTest
 
         // ─── Helper: emit simple 6-byte body (ldarg.0, ldarg.1, op, stloc.0, ldloc.0, ret) ──
         void EmitSimpleBinOp(MethodDefinitionHandle method, string coffName, ILOpCode op,
-            StandaloneSignatureHandle localsSigHandle, string debugName)
+            StandaloneSignatureHandle localsSigHandle, string debugName, int sourceLineNumber)
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+            enc.MarkLineNumber(cvFile, sourceLineNumber);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.OpCode(op);
@@ -271,12 +272,12 @@ public class LonglongTest
                 debugName: debugName);
         }
 
-        EmitSimpleBinOp(llAddMethod, "?ll_add@@$$J0YM_J_J0@Z", ILOpCode.Add, llAddLocalsSigHandle, "ll_add");
-        EmitSimpleBinOp(llMulMethod, "?ll_mul@@$$J0YM_J_J0@Z", ILOpCode.Mul, llMulLocalsSigHandle, "ll_mul");
-        EmitSimpleBinOp(llDivMethod, "?ll_div@@$$J0YM_J_J0@Z", ILOpCode.Div, llDivLocalsSigHandle, "ll_div");
-        EmitSimpleBinOp(llShlMethod, "?ll_shl@@$$J0YM_J_JH@Z", ILOpCode.Shl, llShlLocalsSigHandle, "ll_shl");
-        EmitSimpleBinOp(llShrMethod, "?ll_shr@@$$J0YM_J_JH@Z", ILOpCode.Shr, llShrLocalsSigHandle, "ll_shr");
-        EmitSimpleBinOp(ullShrMethod, "?ull_shr@@$$J0YM_K_KH@Z", ILOpCode.Shr_un, ullShrLocalsSigHandle, "ull_shr");
+        EmitSimpleBinOp(llAddMethod, "?ll_add@@$$J0YM_J_J0@Z", ILOpCode.Add, llAddLocalsSigHandle, "ll_add", 10);
+        EmitSimpleBinOp(llMulMethod, "?ll_mul@@$$J0YM_J_J0@Z", ILOpCode.Mul, llMulLocalsSigHandle, "ll_mul", 11);
+        EmitSimpleBinOp(llDivMethod, "?ll_div@@$$J0YM_J_J0@Z", ILOpCode.Div, llDivLocalsSigHandle, "ll_div", 12);
+        EmitSimpleBinOp(llShlMethod, "?ll_shl@@$$J0YM_J_JH@Z", ILOpCode.Shl, llShlLocalsSigHandle, "ll_shl", 13);
+        EmitSimpleBinOp(llShrMethod, "?ll_shr@@$$J0YM_J_JH@Z", ILOpCode.Shr, llShrLocalsSigHandle, "ll_shr", 14);
+        EmitSimpleBinOp(ullShrMethod, "?ull_shr@@$$J0YM_K_KH@Z", ILOpCode.Shr_un, ullShrLocalsSigHandle, "ull_shr", 15);
 
         // ─── Emit IL for ll_compare ───────────────────────────────────────
         {
@@ -287,6 +288,7 @@ public class LonglongTest
             var lbl_false = enc.DefineLabel();
             var lbl_done = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 16);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.Branch(ILOpCode.Bge_s, lbl_false);
@@ -310,6 +312,7 @@ public class LonglongTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 17);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Conv_i8);
             enc.OpCode(ILOpCode.Stloc_0);
@@ -327,6 +330,7 @@ public class LonglongTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Conv_i4);
             enc.OpCode(ILOpCode.Stloc_0);
@@ -344,14 +348,17 @@ public class LonglongTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 22);
             enc.OpCode(ILOpCode.Ldc_i4_0);           // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0001
             enc.LoadConstantI4(0xF4240);              // IL_0002: ldc.i4 1000000
             enc.OpCode(ILOpCode.Conv_i8);             // IL_0007
             enc.OpCode(ILOpCode.Stloc_2);             // IL_0008: a
+            enc.MarkLineNumber(cvFile, 23);
             enc.LoadConstantI4(0x1E8480);             // IL_0009: ldc.i4 2000000
             enc.OpCode(ILOpCode.Conv_i8);             // IL_000E
             enc.OpCode(ILOpCode.Stloc_1);             // IL_000F: b
+            enc.MarkLineNumber(cvFile, 24);
             enc.OpCode(ILOpCode.Ldloc_2);             // IL_0010
             enc.OpCode(ILOpCode.Ldloc_1);             // IL_0011
             enc.Call(llAddMethod);                     // IL_0012: call ll_add
@@ -362,6 +369,7 @@ public class LonglongTest
             enc.OpCode(ILOpCode.Conv_i4);             // IL_002B
             enc.OpCode(ILOpCode.Add);                 // IL_002C
             enc.OpCode(ILOpCode.Stloc_0);             // IL_002D
+            enc.MarkLineNumber(cvFile, 25);
             enc.OpCode(ILOpCode.Ldloc_0);             // IL_002E
             enc.OpCode(ILOpCode.Ret);                 // IL_002F
 

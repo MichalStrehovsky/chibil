@@ -128,11 +128,10 @@ public class WidestrTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
-            enc.MarkLineNumber(cvFile, 5);
+            enc.MarkLineNumber(cvFile, 6);
             enc.OpCode(ILOpCode.Ldc_i4_0);
             enc.OpCode(ILOpCode.Stloc_1);
 
-            enc.MarkLineNumber(cvFile, 6);
             enc.OpCode(ILOpCode.Ldsflda);
             enc.Token(field1);
             enc.OpCode(ILOpCode.Stloc_0);

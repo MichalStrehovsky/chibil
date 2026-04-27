@@ -193,6 +193,7 @@ public class NegconstTest
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+            enc.MarkLineNumber(cvFile, 10);
             enc.LoadConstantI4(-1);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
@@ -207,6 +208,7 @@ public class NegconstTest
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+            enc.MarkLineNumber(cvFile, 11);
             enc.LoadConstantI4(unchecked((int)0x80000000));
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
@@ -221,6 +223,7 @@ public class NegconstTest
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+            enc.MarkLineNumber(cvFile, 12);
             enc.LoadConstantI4(-1);  // 0xFFFFFFFF = ldc.i4.m1
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
@@ -235,6 +238,7 @@ public class NegconstTest
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+            enc.MarkLineNumber(cvFile, 13);
             enc.LoadConstantI8(0x7FFFFFFFFFFFFFFF);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
@@ -249,6 +253,7 @@ public class NegconstTest
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+            enc.MarkLineNumber(cvFile, 14);
             enc.LoadConstantI8(unchecked((long)0x8000000000000000));
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
@@ -263,6 +268,7 @@ public class NegconstTest
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+            enc.MarkLineNumber(cvFile, 15);
             enc.LoadConstantI4(-42);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
@@ -277,6 +283,7 @@ public class NegconstTest
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+            enc.MarkLineNumber(cvFile, 16);
             enc.LoadConstantI4(0);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
@@ -291,6 +298,7 @@ public class NegconstTest
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+            enc.MarkLineNumber(cvFile, 17);
             enc.LoadConstantI4(8);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
@@ -305,6 +313,7 @@ public class NegconstTest
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+            enc.MarkLineNumber(cvFile, 18);
             enc.LoadConstantI4(127);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
@@ -319,6 +328,7 @@ public class NegconstTest
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+            enc.MarkLineNumber(cvFile, 19);
             enc.LoadConstantI4(0x3E8);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
@@ -334,6 +344,7 @@ public class NegconstTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 23);
             enc.OpCode(ILOpCode.Ldc_i4_0);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Call(negOneMethod);
@@ -352,6 +363,7 @@ public class NegconstTest
             enc.Call(largePosMethod);
             enc.OpCode(ILOpCode.Add);
             enc.OpCode(ILOpCode.Stloc_0);
+            enc.MarkLineNumber(cvFile, 25);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 

@@ -179,7 +179,7 @@ public class StructTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
-            enc.MarkLineNumber(cvFile, 10);
+            enc.MarkLineNumber(cvFile, 12);
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0000
             enc.OpCode(ILOpCode.Ldind_i4);         // IL_0001
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0002
@@ -195,7 +195,7 @@ public class StructTest
             enc.OpCode(ILOpCode.Ldind_i4);         // IL_000C
             enc.OpCode(ILOpCode.Add);              // IL_000D
             enc.OpCode(ILOpCode.Stloc_0);         // IL_000E
-            enc.MarkLineNumber(cvFile, 11);
+            enc.MarkLineNumber(cvFile, 13);
             enc.OpCode(ILOpCode.Ldloc_0);         // IL_000F
             enc.OpCode(ILOpCode.Ret);              // IL_0010
 
@@ -210,14 +210,14 @@ public class StructTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
-            enc.MarkLineNumber(cvFile, 15);
+            enc.MarkLineNumber(cvFile, 17);
             enc.OpCode(ILOpCode.Ldc_i4_0);        // IL_0000
             enc.OpCode(ILOpCode.Stloc_1);         // IL_0001: V_1 (return temp)
             enc.OpCode(ILOpCode.Ldc_i4_0);        // IL_0002
             enc.OpCode(ILOpCode.Stloc_0);         // IL_0003: s = 0
 
             // { MyStruct m = { 10, 20, 30 };
-            enc.MarkLineNumber(cvFile, 18);
+            enc.MarkLineNumber(cvFile, 20);
             enc.LoadLocalAddress(5);               // IL_0004: ldloca.s m
             enc.LoadConstantI4(10);                // IL_0006: ldc.i4.s 10
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0008
@@ -233,20 +233,20 @@ public class StructTest
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0016
 
             // int i = sum_struct(&m);
-            enc.MarkLineNumber(cvFile, 19);
+            enc.MarkLineNumber(cvFile, 21);
             enc.LoadLocalAddress(5);               // IL_0017
             enc.Call(sumStructMethod);              // IL_0019
             enc.OpCode(ILOpCode.Stloc_3);         // IL_001E: i
 
             // s += i;
-            enc.MarkLineNumber(cvFile, 20);
+            enc.MarkLineNumber(cvFile, 22);
             enc.OpCode(ILOpCode.Ldloc_0);         // IL_001F
             enc.OpCode(ILOpCode.Ldloc_3);         // IL_0020
             enc.OpCode(ILOpCode.Add);              // IL_0021
             enc.OpCode(ILOpCode.Stloc_0);         // IL_0022
 
             // { MyStruct m = { 20, 30, 40 };
-            enc.MarkLineNumber(cvFile, 24);
+            enc.MarkLineNumber(cvFile, 26);
             enc.LoadLocalAddress(4);               // IL_0023: ldloca.s V_4
             enc.LoadConstantI4(20);                // IL_0025
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0027
@@ -262,23 +262,23 @@ public class StructTest
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0035
 
             // int j = sum_struct(&m);
-            enc.MarkLineNumber(cvFile, 25);
+            enc.MarkLineNumber(cvFile, 27);
             enc.LoadLocalAddress(4);               // IL_0036
             enc.Call(sumStructMethod);              // IL_0038
             enc.OpCode(ILOpCode.Stloc_2);         // IL_003D: j
 
             // s += j;
-            enc.MarkLineNumber(cvFile, 26);
+            enc.MarkLineNumber(cvFile, 28);
             enc.OpCode(ILOpCode.Ldloc_0);         // IL_003E
             enc.OpCode(ILOpCode.Ldloc_2);         // IL_003F
             enc.OpCode(ILOpCode.Add);              // IL_0040
             enc.OpCode(ILOpCode.Stloc_0);         // IL_0041
 
             // return s;
-            enc.MarkLineNumber(cvFile, 29);
+            enc.MarkLineNumber(cvFile, 31);
             enc.OpCode(ILOpCode.Ldloc_0);         // IL_0042
             enc.OpCode(ILOpCode.Stloc_1);         // IL_0043
-            enc.MarkLineNumber(cvFile, 30);
+            enc.MarkLineNumber(cvFile, 32);
             enc.OpCode(ILOpCode.Ldloc_1);         // IL_0044
             enc.OpCode(ILOpCode.Ret);              // IL_0045
 

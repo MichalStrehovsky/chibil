@@ -62,7 +62,7 @@ public class MainArgvTest
         p2.Builder.WriteByte((byte)SignatureTypeCode.SByte);
 
         var mainMethod = md.AddMethodDefinition(
-            MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
+            MethodAttributes.Assembly | MethodAttributes.Static,
             MethodImplAttributes.IL | MethodImplAttributes.Managed,
             md.GetOrAddString("main"), md.GetOrAddBlob(mainSig), 0,
             MetadataTokens.ParameterHandle(1));
@@ -73,6 +73,36 @@ public class MainArgvTest
         var localsSig = new BlobBuilder();
         new BlobEncoder(localsSig).LocalVariableSignature(1).AddVariable().Type().Int32();
         var localsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(localsSig));
+
+        // ─── MethodDef #2: __CxxPureMSILEntry(int32, Ptr Ptr modopt(..) int8, Ptr Ptr modopt(..) int8) -> int32
+        var entrySig = new BlobBuilder();
+        var entrySigEnc = new BlobEncoder(entrySig).MethodSignature();
+        entrySigEnc.Parameters(3, out var eRetEnc, out var eParEnc);
+        eRetEnc.Type().Int32();
+        eParEnc.AddParameter().Type().Int32();
+        // argv param (same char** type)
+        var ep2 = eParEnc.AddParameter().Type();
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        ep2.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isSignUnspecifiedByteRef));
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.SByte);
+        // envp param (same char** type)
+        var ep3 = eParEnc.AddParameter().Type();
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        ep3.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isSignUnspecifiedByteRef));
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.SByte);
+
+        var entryMethod = md.AddMethodDefinition(
+            MethodAttributes.Assembly | MethodAttributes.Static,
+            MethodImplAttributes.IL | MethodImplAttributes.Managed,
+            md.GetOrAddString("__CxxPureMSILEntry"), md.GetOrAddBlob(entrySig), 0,
+            MetadataTokens.ParameterHandle(3));
+        md.AddParameter(ParameterAttributes.None, md.GetOrAddString("argc"), 1);
+        md.AddParameter(ParameterAttributes.None, md.GetOrAddString("argv"), 2);
+        md.AddParameter(ParameterAttributes.None, md.GetOrAddString("envp"), 3);
 
         // ─── Module ───────────────────────────────────────────────────────
         md.AddModule(0, md.GetOrAddString("main-argv.obj"), md.GetOrAddGuid(Guid.NewGuid()), default, default);
@@ -85,9 +115,9 @@ public class MainArgvTest
 
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
         codeviewSymbols.AddObjNameAndCompile3("main-argv.obj",
-            language: CodeViewLanguage.C, machine: cvMachine,
-            feMajor: 19, feMinor: 50, feBuild: 35728,
-            beMajor: 19, beMinor: 50, beBuild: 35728,
+            language: CodeViewLanguage.Cpp, machine: cvMachine,
+            feMajor: 19, feMinor: 50, feBuild: 35729,
+            beMajor: 19, beMinor: 50, beBuild: 35729,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
@@ -107,6 +137,7 @@ public class MainArgvTest
             var lbl_else = enc.DefineLabel();
             var lbl_end = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldc_i4_0);           // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);            // IL_0001
             enc.OpCode(ILOpCode.Ldarg_0);            // IL_0002: argc
@@ -114,6 +145,7 @@ public class MainArgvTest
             enc.Branch(ILOpCode.Ble_s, lbl_else);    // IL_0004: if argc <= 1 goto else
 
             // argv[1][0]
+            enc.MarkLineNumber(cvFile, 12);
             enc.OpCode(ILOpCode.Ldarg_1);            // IL_0006: argv
             if (machine == Machine.I386)
             {
@@ -143,16 +175,43 @@ public class MainArgvTest
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_else);
+            enc.MarkLineNumber(cvFile, 13);
             enc.OpCode(ILOpCode.Ldc_i4_0);
             enc.OpCode(ILOpCode.Stloc_0);
 
             enc.MarkLabel(lbl_end);
+            enc.MarkLineNumber(cvFile, 14);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
-            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHHPAPAD@Z", enc,
+            string mainCoffName = machine == Machine.I386
+                ? "?main@@$$HYMHHPAPAD@Z"
+                : "?main@@$$HYMHHPEAPEAD@Z";
+            bodyEncoder.AddMethodBody(mainMethod, mainCoffName, enc,
                 maxStack: 3, localVariablesSignature: localsSigHandle, attributes: 0,
                 debugName: "main");
+        }
+
+        // ─── Emit IL for __CxxPureMSILEntry ───────────────────────────────
+        {
+            var enc = new RelocatableInstructionEncoder(
+                new BlobBuilder(), new MethodRelocationBuilder(),
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+
+            enc.MarkLineNumber(cvFile, 14);
+            enc.OpCode(ILOpCode.Ldarg_0);             // IL_0000: argc
+            enc.OpCode(ILOpCode.Ldarg_1);             // IL_0001: argv
+            enc.Call(mainMethod);                      // IL_0002: call main
+            enc.OpCode(ILOpCode.Stloc_0);             // IL_0007
+            enc.OpCode(ILOpCode.Ldloc_0);             // IL_0008
+            enc.OpCode(ILOpCode.Ret);                 // IL_0009
+
+            string entryCoffName = machine == Machine.I386
+                ? "?__CxxPureMSILEntry@@$$J0YMHHPAPAD0@Z"
+                : "?__CxxPureMSILEntry@@$$J0YMHHPEAPEAD0@Z";
+            bodyEncoder.AddMethodBody(entryMethod, entryCoffName, enc,
+                maxStack: 2, localVariablesSignature: localsSigHandle, attributes: 0,
+                debugName: "__CxxPureMSILEntry");
         }
 
         // ─── Build COFF & Serialize ───────────────────────────────────────

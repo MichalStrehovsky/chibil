@@ -104,6 +104,7 @@ public class VarargsTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 8);
             enc.OpCode(ILOpCode.Ldc_i4_0);           // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0001
             enc.LoadConstantI4(3);                    // IL_0002: ldc.i4.3
@@ -112,6 +113,7 @@ public class VarargsTest
             enc.LoadConstantI4(30);                   // IL_0007: ldc.i4.s 30
             enc.Call(sumRef);                          // IL_0009: call sum
             enc.OpCode(ILOpCode.Stloc_0);             // IL_000E
+            enc.MarkLineNumber(cvFile, 9);
             enc.OpCode(ILOpCode.Ldloc_0);             // IL_000F
             enc.OpCode(ILOpCode.Ret);                 // IL_0010
 

@@ -178,6 +178,7 @@ public class LocalArrayTest
             enc.LoadConstantI4(0);
             enc.StoreLocal(1);                     // sum = 0
 
+            enc.MarkLineNumber(cvFile, 8);
             enc.LoadConstantI4(0);
             enc.StoreLocal(0);                     // i = 0
             enc.Branch(ILOpCode.Br_s, loopCond);
@@ -194,6 +195,7 @@ public class LocalArrayTest
             enc.Branch(ILOpCode.Bge_s, loopEnd);   // if i >= len goto end
 
             // loop body: sum = sum + arr[i]
+            enc.MarkLineNumber(cvFile, 9);
             enc.LoadLocal(1);
             enc.LoadArgument(0);
             enc.LoadLocal(0);
@@ -208,8 +210,10 @@ public class LocalArrayTest
             enc.Branch(ILOpCode.Br_s, loopInc);
 
             enc.MarkLabel(loopEnd);
+            enc.MarkLineNumber(cvFile, 10);
             enc.LoadLocal(1);
             enc.StoreLocal(2);                     // return value
+            enc.MarkLineNumber(cvFile, 11);
             enc.LoadLocal(2);
             enc.OpCode(ILOpCode.Ret);
 

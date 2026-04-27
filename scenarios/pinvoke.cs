@@ -167,7 +167,7 @@ public class PinvokeTest
             new RelocatableControlFlowBuilder(),
             new CodeViewLineNumberBuilder());
 
-        encoder.MarkLineNumber(cvFile, 7);
+        encoder.MarkLineNumber(cvFile, 8);
         encoder.OpCode(ILOpCode.Ldc_i4_0);       // IL_0000
         encoder.OpCode(ILOpCode.Stloc_0);         // IL_0001
         encoder.OpCode(ILOpCode.Ldc_i4_0);        // IL_0002
@@ -179,8 +179,8 @@ public class PinvokeTest
         encoder.OpCode(ILOpCode.Ldc_i4_0);        // IL_0008
         encoder.Call(messageBoxWRef);              // IL_0009
         encoder.OpCode(ILOpCode.Stloc_0);         // IL_000E
-        encoder.MarkLineNumber(cvFile, 8);
-        encoder.OpCode(ILOpCode.Ldloc_0);         // IL_000F
+        encoder.MarkLineNumber(cvFile, 9);
+        encoder.OpCode(ILOpCode.Ldloc_0);// IL_000F
         encoder.OpCode(ILOpCode.Ret);              // IL_0010
 
         bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", encoder,

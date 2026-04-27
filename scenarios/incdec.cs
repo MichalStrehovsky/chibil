@@ -266,6 +266,7 @@ public class IncDecTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0000
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0001
             enc.OpCode(ILOpCode.Ldc_i4_1);        // IL_0002
@@ -286,6 +287,7 @@ public class IncDecTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 12);
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0000
             enc.OpCode(ILOpCode.Ldc_i4_1);        // IL_0001
             enc.OpCode(ILOpCode.Add);             // IL_0002
@@ -306,6 +308,7 @@ public class IncDecTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 13);
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);         // IL_0001
             enc.OpCode(ILOpCode.Add);             // IL_0002
@@ -326,6 +329,7 @@ public class IncDecTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 14);
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);         // IL_0001
             enc.OpCode(ILOpCode.Sub);             // IL_0002
@@ -346,6 +350,7 @@ public class IncDecTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);         // IL_0001
             enc.OpCode(ILOpCode.Mul);             // IL_0002
@@ -366,6 +371,7 @@ public class IncDecTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 16);
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);         // IL_0001
             enc.OpCode(ILOpCode.Shl);             // IL_0002
@@ -386,24 +392,28 @@ public class IncDecTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 20);
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0000
             if (machine == Machine.I386)
                 enc.OpCode(ILOpCode.Ldind_i4);    // x86: pointer is 4 bytes
             else
                 enc.OpCode(ILOpCode.Ldind_i8);    // arm64: pointer is 8 bytes
             enc.OpCode(ILOpCode.Stloc_0);         // IL_0002
+            enc.MarkLineNumber(cvFile, 21);
             enc.OpCode(ILOpCode.Ldloc_0);         // IL_0003
             enc.OpCode(ILOpCode.Ldc_i4_4);        // IL_0004
             if (machine != Machine.I386)
                 enc.OpCode(ILOpCode.Conv_i8);     // arm64 only
             enc.OpCode(ILOpCode.Add);             // IL_0005 (x86) / IL_0006 (arm64)
             enc.OpCode(ILOpCode.Stloc_0);
+            enc.MarkLineNumber(cvFile, 22);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldloc_0);
             if (machine == Machine.I386)
                 enc.OpCode(ILOpCode.Stind_i4);    // x86
             else
                 enc.OpCode(ILOpCode.Stind_i8);    // arm64
+            enc.MarkLineNumber(cvFile, 23);
             enc.OpCode(ILOpCode.Ret);
 
             var ptrPostIncSlots = new[] {
@@ -421,12 +431,15 @@ public class IncDecTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 27);
             enc.OpCode(ILOpCode.Ldc_i4_0);        // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);         // IL_0001
             enc.OpCode(ILOpCode.Ldc_i4_5);        // IL_0002
             enc.OpCode(ILOpCode.Stloc_2);         // IL_0003
+            enc.MarkLineNumber(cvFile, 28);
             enc.LoadLocalAddress(2);              // IL_0004: ldloca.s V_2
             enc.OpCode(ILOpCode.Stloc_1);         // IL_0006
+            enc.MarkLineNumber(cvFile, 29);
             enc.LoadConstantI4(10);                // IL_0007: ldc.i4.s 10
             enc.Call(postIncMethod);               // IL_0009: call post_inc
             enc.LoadConstantI4(10);                // IL_000E: ldc.i4.s 10
@@ -437,6 +450,7 @@ public class IncDecTest
             enc.Call(compAddMethod);               // IL_0018: call compound_add
             enc.OpCode(ILOpCode.Add);             // IL_001D
             enc.OpCode(ILOpCode.Stloc_0);         // IL_001E
+            enc.MarkLineNumber(cvFile, 30);
             enc.OpCode(ILOpCode.Ldloc_0);         // IL_001F
             enc.OpCode(ILOpCode.Ret);             // IL_0020
 

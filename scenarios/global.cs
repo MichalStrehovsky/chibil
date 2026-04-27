@@ -51,6 +51,8 @@ public class GlobalTest
             md.GetOrAddString("System.Runtime.CompilerServices"), md.GetOrAddString("UnsafeValueTypeAttribute"));
         var fixedAddressAttrRef = md.AddTypeReference(mscorlibRef,
             md.GetOrAddString("System.Runtime.CompilerServices"), md.GetOrAddString("FixedAddressValueTypeAttribute"));
+        var isSignUnspecifiedByteRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"), md.GetOrAddString("IsSignUnspecifiedByte"));
 
         // ─── MemberRefs for custom attribute constructors ─────────────────
         var voidCtorSig = new BlobBuilder();
@@ -83,7 +85,7 @@ public class GlobalTest
             md.GetOrAddString("g_array$$BY0A@H"),
             valueTypeRef,
             MetadataTokens.FieldDefinitionHandle(6), // no fields of its own
-            MetadataTokens.MethodDefinitionHandle(4)); // no methods of its own
+            MetadataTokens.MethodDefinitionHandle(5)); // no methods — starts past __CxxPureMSILEntry
 
         md.AddTypeLayout(arrayTypeDef, 0, 16);
         // UnsafeValueTypeAttribute first, then NativeCppClassAttribute
@@ -187,6 +189,36 @@ public class GlobalTest
             0,
             MetadataTokens.ParameterHandle(1));
 
+        // ─── MethodDef #4: __CxxPureMSILEntry(int32, char**, char**) -> int32
+        var entrySig = new BlobBuilder();
+        var entrySigEnc = new BlobEncoder(entrySig).MethodSignature();
+        entrySigEnc.Parameters(3, out var eRetEnc, out var eParEnc);
+        eRetEnc.Type().Int32();
+        eParEnc.AddParameter().Type().Int32();
+        var ep2 = eParEnc.AddParameter().Type();
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        ep2.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isSignUnspecifiedByteRef));
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.SByte);
+        var ep3 = eParEnc.AddParameter().Type();
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        ep3.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(isSignUnspecifiedByteRef));
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.SByte);
+
+        var entryMethod = md.AddMethodDefinition(
+            MethodAttributes.Assembly | MethodAttributes.Static,
+            MethodImplAttributes.IL | MethodImplAttributes.Managed,
+            md.GetOrAddString("__CxxPureMSILEntry"),
+            md.GetOrAddBlob(entrySig),
+            0,
+            MetadataTokens.ParameterHandle(1));
+        md.AddParameter(ParameterAttributes.None, md.GetOrAddString("argc"), 1);
+        md.AddParameter(ParameterAttributes.None, md.GetOrAddString("argv"), 2);
+        md.AddParameter(ParameterAttributes.None, md.GetOrAddString("envp"), 3);
+
         // ─── StandaloneSig: locals (int32, int32, int32) for main ─────────
         var mainLocalsSig = new BlobBuilder();
         var mainLocalsEnc = new BlobEncoder(mainLocalsSig).LocalVariableSignature(3);
@@ -194,6 +226,11 @@ public class GlobalTest
         mainLocalsEnc.AddVariable().Type().Int32(); // slot 1: sum
         mainLocalsEnc.AddVariable().Type().Int32(); // slot 2: return
         var mainLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(mainLocalsSig));
+
+        // ─── StandaloneSig: locals (int32) for __CxxPureMSILEntry ─────────
+        var entryLocalsSig = new BlobBuilder();
+        new BlobEncoder(entryLocalsSig).LocalVariableSignature(1).AddVariable().Type().Int32();
+        var entryLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(entryLocalsSig));
 
         // ─── Module ───────────────────────────────────────────────────────
         md.AddModule(0,
@@ -219,8 +256,8 @@ public class GlobalTest
         codeviewSymbols.AddObjNameAndCompile3(objPath,
             language: CodeViewLanguage.Cpp,
             machine: cvMachine,
-            feMajor: 19, feMinor: 50, feBuild: 35728,
-            beMajor: 19, beMinor: 50, beBuild: 35728,
+            feMajor: 19, feMinor: 50, feBuild: 35729,
+            beMajor: 19, beMinor: 50, beBuild: 35729,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
@@ -247,6 +284,7 @@ public class GlobalTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 5);
             enc.LoadConstantI4(42);                   // IL_0000: ldc.i4.s 42
             enc.OpCode(ILOpCode.Stsfld);              // IL_0002: stsfld g_initialized
             enc.Token(field_gInitialized);
@@ -263,6 +301,7 @@ public class GlobalTest
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
             // g_array[0] = 1
+            enc.MarkLineNumber(cvFile, 7);
             enc.OpCode(ILOpCode.Ldsflda);             // IL_0000
             enc.Token(field_gArray);
             enc.OpCode(ILOpCode.Ldc_i4_1);            // IL_0005
@@ -308,11 +347,10 @@ public class GlobalTest
             var lbl_loopTest = enc.DefineLabel();     // IL_001D
             var lbl_afterLoop = enc.DefineLabel();    // IL_0030 (x86) / IL_0032 (arm64)
 
-            enc.MarkLineNumber(cvFile, 10);
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0000
             enc.OpCode(ILOpCode.Stloc_2);             // IL_0001: return = 0
 
-            enc.MarkLineNumber(cvFile, 11);
             enc.LoadConstantI4(10);                    // IL_0002: ldc.i4.s 10
             enc.OpCode(ILOpCode.Stsfld);               // IL_0004: stsfld g_uninitialized
             enc.Token(field_gUninitialized);
@@ -337,7 +375,6 @@ public class GlobalTest
             enc.OpCode(ILOpCode.Stloc_0);              // IL_001C: i++
 
             enc.MarkLabel(lbl_loopTest);               // IL_001D
-            enc.MarkLineNumber(cvFile, 14);
             enc.OpCode(ILOpCode.Ldloc_0);              // IL_001D
             enc.OpCode(ILOpCode.Ldc_i4_4);             // IL_001E
             enc.Branch(ILOpCode.Bge_s, lbl_afterLoop);  // IL_001F: if i >= 4 goto afterLoop
@@ -361,6 +398,7 @@ public class GlobalTest
             enc.MarkLineNumber(cvFile, 16);
             enc.OpCode(ILOpCode.Ldloc_1);              // ldloc.1
             enc.OpCode(ILOpCode.Stloc_2);              // stloc.2: return = sum
+            enc.MarkLineNumber(cvFile, 17);
             enc.OpCode(ILOpCode.Ldloc_2);              // ldloc.2
             enc.OpCode(ILOpCode.Ret);                  // ret
 
@@ -372,6 +410,26 @@ public class GlobalTest
             bodyEncoder.AddMethodBody(mainMethod, "?main@@$$HYMHXZ", enc,
                 maxStack: 4, localVariablesSignature: mainLocalsSigHandle, attributes: 0,
                 debugName: "main", localSlots: mainLocalSlots);
+        }
+
+        // ─── Emit IL for __CxxPureMSILEntry ───────────────────────────────
+        {
+            var enc = new RelocatableInstructionEncoder(
+                new BlobBuilder(), new MethodRelocationBuilder(),
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+
+            enc.MarkLineNumber(cvFile, 17);
+            enc.Call(mainMethod);                      // IL_0000: call main (no args)
+            enc.OpCode(ILOpCode.Stloc_0);             // IL_0005
+            enc.OpCode(ILOpCode.Ldloc_0);             // IL_0006
+            enc.OpCode(ILOpCode.Ret);                 // IL_0007
+
+            string entryCoffName = machine == Machine.I386
+                ? "?__CxxPureMSILEntry@@$$J0YMHHPAPAD0@Z"
+                : "?__CxxPureMSILEntry@@$$J0YMHHPEAPEAD0@Z";
+            bodyEncoder.AddMethodBody(entryMethod, entryCoffName, enc,
+                maxStack: 1, localVariablesSignature: entryLocalsSigHandle, attributes: 0,
+                debugName: "__CxxPureMSILEntry");
         }
 
         // ─── Serialize ────────────────────────────────────────────────────

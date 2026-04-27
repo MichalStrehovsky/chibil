@@ -4,6 +4,7 @@ using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using Xunit;
 
 public class ReturnStructTest
@@ -163,25 +164,33 @@ public class ReturnStructTest
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
-        var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
+        string sourceFile = Path.Combine(AppContext.BaseDirectory, "return-struct.c");
+        byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
+        var bodyEncoder= new RelocatableMethodBodyStreamEncoder(
             ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
 
         // ─── Emit IL for make_point ───────────────────────────────────────
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 9);
             enc.LoadLocalAddress(1);               // IL_0000: ldloca.s V_1
             enc.OpCode(ILOpCode.Ldarg_0);          // IL_0002: ldarg.0
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0003: stind.i4
+            enc.MarkLineNumber(cvFile, 10);
             enc.LoadLocalAddress(1);               // IL_0004: ldloca.s V_1
             enc.LoadConstantI4(4);                 // IL_0006: ldc.i4.4
             enc.OpCode(ILOpCode.Add);              // IL_0007: add
             enc.OpCode(ILOpCode.Ldarg_1);          // IL_0008: ldarg.1
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0009: stind.i4
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldloc_1);          // IL_000A: ldloc.1
             enc.OpCode(ILOpCode.Stloc_0);          // IL_000B: stloc.0
+            enc.MarkLineNumber(cvFile, 12);
             enc.OpCode(ILOpCode.Ldloc_0);          // IL_000C: ldloc.0
             enc.OpCode(ILOpCode.Ret);              // IL_000D: ret
 
@@ -198,14 +207,16 @@ public class ReturnStructTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 16);
             enc.OpCode(ILOpCode.Ldc_i4_0);        // IL_0000: ldc.i4.0
             enc.OpCode(ILOpCode.Stloc_0);         // IL_0001: stloc.0
             enc.LoadConstantI4(10);                // IL_0002: ldc.i4.s 10
             enc.LoadConstantI4(20);                // IL_0004: ldc.i4.s 20
             enc.Call(makePointMethod);             // IL_0006: call make_point
             enc.OpCode(ILOpCode.Stloc_1);         // IL_000B: stloc.1
+            enc.MarkLineNumber(cvFile, 17);
             enc.LoadLocalAddress(1);               // IL_000C: ldloca.s V_1
             enc.OpCode(ILOpCode.Ldind_i4);         // IL_000E: ldind.i4
             enc.LoadLocalAddress(1);               // IL_000F: ldloca.s V_1
@@ -214,6 +225,7 @@ public class ReturnStructTest
             enc.OpCode(ILOpCode.Ldind_i4);         // IL_0013: ldind.i4
             enc.OpCode(ILOpCode.Add);              // IL_0014: add
             enc.OpCode(ILOpCode.Stloc_0);         // IL_0015: stloc.0
+            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Ldloc_0);         // IL_0016: ldloc.0
             enc.OpCode(ILOpCode.Ret);              // IL_0017: ret
 

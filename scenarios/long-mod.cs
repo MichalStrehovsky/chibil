@@ -183,10 +183,12 @@ public class LongModTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 6);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.OpCode(ILOpCode.Add);
             enc.OpCode(ILOpCode.Stloc_0);
+            enc.MarkLineNumber(cvFile, 7);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
@@ -201,10 +203,12 @@ public class LongModTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.OpCode(ILOpCode.Add);
             enc.OpCode(ILOpCode.Stloc_0);
+            enc.MarkLineNumber(cvFile, 12);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
@@ -219,20 +223,24 @@ public class LongModTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 16);
             enc.OpCode(ILOpCode.Ldc_i4_0);           // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0001
             enc.LoadConstantI4(10);                   // IL_0002: ldc.i4.s 10
             enc.LoadConstantI4(20);                   // IL_0004: ldc.i4.s 20
             enc.Call(addLongMethod);                   // IL_0006: call add_long
             enc.OpCode(ILOpCode.Stloc_2);             // IL_000B: x
+            enc.MarkLineNumber(cvFile, 17);
             enc.LoadConstantI4(100);                  // IL_000C: ldc.i4.s 100
             enc.LoadConstantI4(0xC8);                 // IL_000E: ldc.i4 200
             enc.Call(addUlongMethod);                  // IL_0013: call add_ulong
             enc.OpCode(ILOpCode.Stloc_1);             // IL_0018: y
+            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Ldloc_2);             // IL_0019
             enc.OpCode(ILOpCode.Ldloc_1);             // IL_001A
             enc.OpCode(ILOpCode.Add);                 // IL_001B
             enc.OpCode(ILOpCode.Stloc_0);             // IL_001C
+            enc.MarkLineNumber(cvFile, 19);
             enc.OpCode(ILOpCode.Ldloc_0);             // IL_001D
             enc.OpCode(ILOpCode.Ret);                 // IL_001E
 

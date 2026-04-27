@@ -4,6 +4,7 @@ using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using Xunit;
 
 public class LongdoubleTest
@@ -132,6 +133,10 @@ public class LongdoubleTest
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
+        string sourceFile = Path.Combine(AppContext.BaseDirectory, "longdouble.c");
+        byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
             ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
 
@@ -139,12 +144,14 @@ public class LongdoubleTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 6);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.OpCode(ILOpCode.Add);
             enc.OpCode(ILOpCode.Stloc_0);
+            enc.MarkLineNumber(cvFile, 7);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
@@ -157,21 +164,26 @@ public class LongdoubleTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldc_i4_0);               // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);                 // IL_0001
             enc.LoadConstantR8(3.14);                     // IL_0002: ldc.r8 3.14
             enc.StoreLocal(3);                            // IL_000B: stloc.3 (x)
+            enc.MarkLineNumber(cvFile, 12);
             enc.LoadConstantR8(2.0);                      // IL_000C: ldc.r8 2.0
             enc.OpCode(ILOpCode.Stloc_2);                 // IL_0015: stloc.2 (y)
+            enc.MarkLineNumber(cvFile, 13);
             enc.OpCode(ILOpCode.Ldloc_3);                 // IL_0016
             enc.OpCode(ILOpCode.Ldloc_2);                 // IL_0017
             enc.Call(ldAddMethod);                         // IL_0018: call ld_add
             enc.OpCode(ILOpCode.Stloc_1);                 // IL_001D: stloc.1 (z)
+            enc.MarkLineNumber(cvFile, 14);
             enc.OpCode(ILOpCode.Ldloc_1);                 // IL_001E
             enc.OpCode(ILOpCode.Conv_i4);                 // IL_001F
             enc.OpCode(ILOpCode.Stloc_0);                 // IL_0020
+            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Ldloc_0);                 // IL_0021
             enc.OpCode(ILOpCode.Ret);                      // IL_0022
 

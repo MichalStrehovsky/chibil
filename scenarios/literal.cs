@@ -201,17 +201,17 @@ public class LiteralTest
             new RelocatableControlFlowBuilder(),
             new CodeViewLineNumberBuilder());
 
-        encoder.MarkLineNumber(cvFile, 5);
+        encoder.MarkLineNumber(cvFile, 6);
         encoder.OpCode(ILOpCode.Ldc_i4_0);       // IL_0000
         encoder.OpCode(ILOpCode.Stloc_0);         // IL_0001
         encoder.OpCode(ILOpCode.Ldsflda);          // IL_0002
         encoder.Token(field1);
         encoder.OpCode(ILOpCode.Stloc_2);         // IL_0007: c
-        encoder.MarkLineNumber(cvFile, 6);
+        encoder.MarkLineNumber(cvFile, 7);
         encoder.OpCode(ILOpCode.Ldsflda);          // IL_0008
         encoder.Token(field2);
         encoder.OpCode(ILOpCode.Stloc_1);         // IL_000D: d
-        encoder.MarkLineNumber(cvFile, 7);
+        encoder.MarkLineNumber(cvFile, 8);
         encoder.OpCode(ILOpCode.Ldloc_2);
         encoder.OpCode(ILOpCode.Ldc_i4_1);
         if (machine != Machine.I386) encoder.OpCode(ILOpCode.Conv_i8);
@@ -230,7 +230,7 @@ public class LiteralTest
         encoder.OpCode(ILOpCode.Ldind_i1);
         encoder.OpCode(ILOpCode.Add);
         encoder.OpCode(ILOpCode.Stloc_0);
-        encoder.MarkLineNumber(cvFile, 8);
+        encoder.MarkLineNumber(cvFile, 9);
         encoder.OpCode(ILOpCode.Ldloc_0);
         encoder.OpCode(ILOpCode.Ret);
 

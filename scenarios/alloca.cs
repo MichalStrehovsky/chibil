@@ -4,6 +4,7 @@ using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using Xunit;
 
 public class AllocaTest
@@ -120,14 +121,18 @@ public class AllocaTest
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
-        var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
+        string sourceFile = Path.Combine(AppContext.BaseDirectory, "alloca.c");
+        byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
+        var bodyEncoder= new RelocatableMethodBodyStreamEncoder(
             ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
 
         // ─── Emit IL for sum_dynamic ──────────────────────────────────────
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
             var loop1Inc = enc.DefineLabel();
             var loop1Cond = enc.DefineLabel();
@@ -137,7 +142,8 @@ public class AllocaTest
             var loop2End = enc.DefineLabel();
 
             // arr = (int*)_alloca(n * 4)
-            enc.OpCode(ILOpCode.Ldarg_0);             // IL_0000
+            enc.MarkLineNumber(cvFile, 8);
+            enc.OpCode(ILOpCode.Ldarg_0);// IL_0000
             enc.OpCode(ILOpCode.Ldc_i4_4);            // IL_0001
             enc.OpCode(ILOpCode.Mul);                  // IL_0002
             if (machine != Machine.I386)
@@ -146,7 +152,8 @@ public class AllocaTest
             enc.OpCode(ILOpCode.Stloc_2);             // IL_0005/0006
 
             // i = 0
-            enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0006/0007
+            enc.MarkLineNumber(cvFile, 10);
+            enc.OpCode(ILOpCode.Ldc_i4_0);// IL_0006/0007
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0007/0008
             enc.Branch(ILOpCode.Br_s, loop1Cond);
 
@@ -164,7 +171,8 @@ public class AllocaTest
             enc.Branch(ILOpCode.Bge_s, loop1End);
 
             // loop1 body: arr[i] = i + 1
-            enc.OpCode(ILOpCode.Ldloc_2);             // arr
+            enc.MarkLineNumber(cvFile, 11);
+            enc.OpCode(ILOpCode.Ldloc_2);// arr
             enc.OpCode(ILOpCode.Ldloc_0);             // i
             if (machine != Machine.I386) enc.OpCode(ILOpCode.Conv_i8);
             enc.OpCode(ILOpCode.Ldc_i4_4);
@@ -179,8 +187,10 @@ public class AllocaTest
 
             // loop1 end — sum = 0, i = 0
             enc.MarkLabel(loop1End);
+            enc.MarkLineNumber(cvFile, 12);
             enc.OpCode(ILOpCode.Ldc_i4_0);
             enc.OpCode(ILOpCode.Stloc_1);             // sum = 0
+            enc.MarkLineNumber(cvFile, 13);
             enc.OpCode(ILOpCode.Ldc_i4_0);
             enc.OpCode(ILOpCode.Stloc_0);             // i = 0
             enc.Branch(ILOpCode.Br_s, loop2Cond);
@@ -199,7 +209,8 @@ public class AllocaTest
             enc.Branch(ILOpCode.Bge_s, loop2End);
 
             // loop2 body: sum = sum + arr[i]
-            enc.OpCode(ILOpCode.Ldloc_1);             // sum
+            enc.MarkLineNumber(cvFile, 14);
+            enc.OpCode(ILOpCode.Ldloc_1);// sum
             enc.OpCode(ILOpCode.Ldloc_2);             // arr
             enc.OpCode(ILOpCode.Ldloc_0);             // i
             if (machine != Machine.I386) enc.OpCode(ILOpCode.Conv_i8);
@@ -214,8 +225,10 @@ public class AllocaTest
 
             // loop2 end — return sum
             enc.MarkLabel(loop2End);
+            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Ldloc_1);
             enc.OpCode(ILOpCode.Stloc_3);             // retval
+            enc.MarkLineNumber(cvFile, 16);
             enc.OpCode(ILOpCode.Ldloc_3);
             enc.OpCode(ILOpCode.Ret);
 
@@ -234,13 +247,15 @@ public class AllocaTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 20);
             enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0001
             enc.OpCode(ILOpCode.Ldc_i4_5);            // IL_0002
             enc.Call(sumDynMethod);                    // IL_0003: call sum_dynamic
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0008
+            enc.MarkLineNumber(cvFile, 21);
             enc.OpCode(ILOpCode.Ldloc_0);             // IL_0009
             enc.OpCode(ILOpCode.Ret);                  // IL_000A
 

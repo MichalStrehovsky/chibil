@@ -4,6 +4,7 @@ using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using Xunit;
 
 public class FlexibleArrayTest
@@ -159,6 +160,10 @@ public class FlexibleArrayTest
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
+        string sourceFile = Path.Combine(AppContext.BaseDirectory, "flexible-array.c");
+        byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
             ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
 
@@ -166,17 +171,19 @@ public class FlexibleArrayTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
             var loopInc = enc.DefineLabel();
             var loopCond = enc.DefineLabel();
             var loopEnd = enc.DefineLabel();
 
             // sum = 0
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0000
             enc.OpCode(ILOpCode.Stloc_1);             // IL_0001
 
             // i = 0
+            enc.MarkLineNumber(cvFile, 13);
             enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0002
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0003
             enc.Branch(ILOpCode.Br_s, loopCond);
@@ -196,6 +203,7 @@ public class FlexibleArrayTest
             enc.Branch(ILOpCode.Bge_s, loopEnd);
 
             // loop body: sum = sum + buf->data[i]
+            enc.MarkLineNumber(cvFile, 14);
             enc.OpCode(ILOpCode.Ldloc_1);             // sum
             enc.OpCode(ILOpCode.Ldarg_0);              // buf
             enc.OpCode(ILOpCode.Ldc_i4_4);             // offset to data (after len)
@@ -214,8 +222,10 @@ public class FlexibleArrayTest
 
             // loop end: return sum
             enc.MarkLabel(loopEnd);
+            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Ldloc_1);
             enc.OpCode(ILOpCode.Stloc_2);             // retval
+            enc.MarkLineNumber(cvFile, 16);
             enc.OpCode(ILOpCode.Ldloc_2);
             enc.OpCode(ILOpCode.Ret);
 
@@ -233,12 +243,14 @@ public class FlexibleArrayTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 20);
             enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0001
             enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0002
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0003
+            enc.MarkLineNumber(cvFile, 21);
             enc.OpCode(ILOpCode.Ldloc_0);             // IL_0004
             enc.OpCode(ILOpCode.Ret);                  // IL_0005
 

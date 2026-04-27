@@ -171,7 +171,7 @@ public class PinvokeForwardrefTest
             new RelocatableControlFlowBuilder(),
             new CodeViewLineNumberBuilder());
 
-        encoder.MarkLineNumber(cvFile, 9);
+        encoder.MarkLineNumber(cvFile, 10);
         encoder.OpCode(ILOpCode.Ldc_i4_0);
         encoder.OpCode(ILOpCode.Stloc_0);
         encoder.OpCode(ILOpCode.Ldc_i4_0);
@@ -183,7 +183,7 @@ public class PinvokeForwardrefTest
         encoder.OpCode(ILOpCode.Ldc_i4_0);
         encoder.Call(messageBoxWRef);
         encoder.OpCode(ILOpCode.Stloc_0);
-        encoder.MarkLineNumber(cvFile, 10);
+        encoder.MarkLineNumber(cvFile, 11);
         encoder.OpCode(ILOpCode.Ldloc_0);
         encoder.OpCode(ILOpCode.Ret);
 

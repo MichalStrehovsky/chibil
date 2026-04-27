@@ -214,8 +214,8 @@ public class ArithTest
             enc.OpCode(ILOpCode.Ldc_i4_3);        // IL_0004
             enc.Call(arithMethod);                 // IL_0005: call arith
 
-            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Stloc_0);         // IL_000A
+            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Ldloc_0);         // IL_000B
             enc.OpCode(ILOpCode.Ret);             // IL_000C
 

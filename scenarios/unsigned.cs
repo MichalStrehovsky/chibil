@@ -209,6 +209,7 @@ public class UnsignedTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 9);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.OpCode(ILOpCode.Div_un);
@@ -227,6 +228,7 @@ public class UnsignedTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 10);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.OpCode(ILOpCode.Rem_un);
@@ -245,6 +247,7 @@ public class UnsignedTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.OpCode(ILOpCode.Shr_un);
@@ -266,6 +269,7 @@ public class UnsignedTest
             var lbl_false = enc.DefineLabel();
             var lbl_done = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 13);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.Branch(ILOpCode.Bge_un_s, lbl_false);
@@ -292,6 +296,7 @@ public class UnsignedTest
             var lbl_false = enc.DefineLabel();
             var lbl_done = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 14);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.Branch(ILOpCode.Bgt_un_s, lbl_false);
@@ -318,6 +323,7 @@ public class UnsignedTest
             var lbl_false = enc.DefineLabel();
             var lbl_done = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.Branch(ILOpCode.Ble_un_s, lbl_false);
@@ -344,6 +350,7 @@ public class UnsignedTest
             var lbl_false = enc.DefineLabel();
             var lbl_done = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 16);
             enc.OpCode(ILOpCode.Ldarg_0);
             enc.OpCode(ILOpCode.Ldarg_1);
             enc.Branch(ILOpCode.Blt_un_s, lbl_false);
@@ -367,6 +374,7 @@ public class UnsignedTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 20);
             enc.OpCode(ILOpCode.Ldc_i4_0);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.LoadConstantI4(100);              // ldc.i4.s 100
@@ -389,6 +397,7 @@ public class UnsignedTest
             enc.Call(ugeMethod);                   // call uge
             enc.OpCode(ILOpCode.Add);
             enc.OpCode(ILOpCode.Stloc_0);
+            enc.MarkLineNumber(cvFile, 23);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 

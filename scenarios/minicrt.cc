@@ -41,3 +41,13 @@ void __clrcall __identifier(".cctor")()
     }
 }
 
+extern "C" int __CxxPureMSILEntry(int, char**, char**);
+
+char arg0[] = "NotImplemented";
+char* argv[] = { arg0, nullptr };
+char* envp[] = { nullptr };
+
+int __clrcall mainCRTStartup(cli::array<System::String^>^)
+{
+    return __CxxPureMSILEntry(1, argv, envp);
+}

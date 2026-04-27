@@ -202,6 +202,7 @@ public class VoidPtrTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 10);
             enc.OpCode(ILOpCode.Ldarg_0);          // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);          // IL_0001
             enc.OpCode(ILOpCode.Ldloc_0);          // IL_0002
@@ -218,6 +219,7 @@ public class VoidPtrTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldarg_0);          // IL_0000
             enc.OpCode(ILOpCode.Ldind_i4);         // IL_0001
             enc.OpCode(ILOpCode.Stloc_0);          // IL_0002
@@ -235,6 +237,7 @@ public class VoidPtrTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 12);
             enc.OpCode(ILOpCode.Ldarg_0);          // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);          // IL_0001
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0002
@@ -255,10 +258,13 @@ public class VoidPtrTest
             var lbl_cond = enc.DefineLabel();
             var lbl_end = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 16);
             enc.OpCode(ILOpCode.Ldarg_0);              // IL_0000
             enc.OpCode(ILOpCode.Stloc_2);              // IL_0001: d = dst
+            enc.MarkLineNumber(cvFile, 17);
             enc.OpCode(ILOpCode.Ldarg_1);              // IL_0002
             enc.OpCode(ILOpCode.Stloc_1);              // IL_0003: s = src
+            enc.MarkLineNumber(cvFile, 19);
             enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0004
             enc.OpCode(ILOpCode.Stloc_0);              // IL_0005: i = 0
             enc.Branch(ILOpCode.Br_s, lbl_cond);      // IL_0006: br.s lbl_cond
@@ -275,6 +281,7 @@ public class VoidPtrTest
             enc.Branch(ILOpCode.Bge_s, lbl_end);      // IL_000E: bge.s lbl_end
 
             // d[i] = s[i]
+            enc.MarkLineNumber(cvFile, 20);
             enc.OpCode(ILOpCode.Ldloc_2);              // IL_0010: d
             enc.OpCode(ILOpCode.Ldloc_0);              // IL_0011: i
             if (machine != Machine.I386) enc.OpCode(ILOpCode.Conv_i8);
@@ -285,9 +292,11 @@ public class VoidPtrTest
             enc.OpCode(ILOpCode.Add);                  // add
             enc.OpCode(ILOpCode.Ldind_i1);             // ldind.i1
             enc.OpCode(ILOpCode.Stind_i1);             // stind.i1
+            enc.MarkLineNumber(cvFile, 21);
             enc.Branch(ILOpCode.Br_s, lbl_inc);       // br.s lbl_inc
 
             enc.MarkLabel(lbl_end);                    // IL_001A (x86) / IL_001C (arm64)
+            enc.MarkLineNumber(cvFile, 22);
             enc.OpCode(ILOpCode.Ret);                  // ret
 
             var cbLocalSlots = new[] {
@@ -307,18 +316,23 @@ public class VoidPtrTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 26);
             enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0001
             enc.LoadConstantI4(42);                    // IL_0002: ldc.i4.s 42
             enc.OpCode(ILOpCode.Stloc_2);             // IL_0004: x = 42
+            enc.MarkLineNumber(cvFile, 27);
             enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0005
             enc.OpCode(ILOpCode.Stloc_1);             // IL_0006: y = 0
+            enc.MarkLineNumber(cvFile, 28);
             enc.LoadLocalAddress(1);                   // IL_0007: ldloca.s V_1 (&y)
             enc.LoadLocalAddress(2);                   // IL_0009: ldloca.s V_2 (&x)
             enc.Call(derefViaCastMethod);              // IL_000B: call deref_via_cast
             enc.Call(writeViaCastMethod);              // IL_0010: call write_via_cast
+            enc.MarkLineNumber(cvFile, 29);
             enc.OpCode(ILOpCode.Ldloc_1);             // IL_0015
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0016
+            enc.MarkLineNumber(cvFile, 30);
             enc.OpCode(ILOpCode.Ldloc_0);             // IL_0017
             enc.OpCode(ILOpCode.Ret);                  // IL_0018
 

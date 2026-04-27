@@ -4,6 +4,7 @@ using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using Xunit;
 
 public class StructCopyTest
@@ -251,6 +252,10 @@ public class StructCopyTest
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
+        string sourceFile = Path.Combine(AppContext.BaseDirectory, "structcopy.c");
+        byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
             ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
 
@@ -258,8 +263,9 @@ public class StructCopyTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldarg_0);          // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);          // IL_0001
             enc.LoadConstantI4(8);                 // IL_0002: ldc.i4.8
@@ -280,8 +286,9 @@ public class StructCopyTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 12);
             enc.OpCode(ILOpCode.Ldarg_0);          // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);          // IL_0001
             enc.LoadConstantI4(64);                // IL_0002: ldc.i4.s 64
@@ -302,18 +309,22 @@ public class StructCopyTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 17);
             enc.LoadLocalAddress(1);               // IL_0000: ldloca.s V_1
             enc.OpCode(ILOpCode.Ldarg_0);          // IL_0002: ldarg.0
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0003: stind.i4
+            enc.MarkLineNumber(cvFile, 18);
             enc.LoadLocalAddress(1);               // IL_0004: ldloca.s V_1
             enc.LoadConstantI4(4);                 // IL_0006: ldc.i4.4
             enc.OpCode(ILOpCode.Add);              // IL_0007: add
             enc.OpCode(ILOpCode.Ldarg_1);          // IL_0008: ldarg.1
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0009: stind.i4
+            enc.MarkLineNumber(cvFile, 19);
             enc.OpCode(ILOpCode.Ldloc_1);          // IL_000A: ldloc.1
             enc.OpCode(ILOpCode.Stloc_0);          // IL_000B: stloc.0
+            enc.MarkLineNumber(cvFile, 20);
             enc.OpCode(ILOpCode.Ldloc_0);          // IL_000C: ldloc.0
             enc.OpCode(ILOpCode.Ret);              // IL_000D: ret
 
@@ -330,18 +341,22 @@ public class StructCopyTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 26);
             enc.LoadLocalAddress(0);               // IL_0000: ldloca.s V_0
             enc.LoadConstantI4(1);                 // IL_0002: ldc.i4.1
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0003: stind.i4
+            enc.MarkLineNumber(cvFile, 27);
             enc.LoadLocalAddress(0);               // IL_0004: ldloca.s V_0
             enc.LoadConstantI4(4);                 // IL_0006: ldc.i4.4
             enc.OpCode(ILOpCode.Add);              // IL_0007: add
             enc.LoadConstantI4(2);                 // IL_0008: ldc.i4.2
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0009: stind.i4
+            enc.MarkLineNumber(cvFile, 28);
             enc.OpCode(ILOpCode.Ldloc_0);          // IL_000A: ldloc.0
             enc.OpCode(ILOpCode.Stloc_1);          // IL_000B: stloc.1
+            enc.MarkLineNumber(cvFile, 29);
             enc.OpCode(ILOpCode.Ret);              // IL_000C: ret
 
             var assignLocalLocalSlots = new[] {
@@ -358,17 +373,20 @@ public class StructCopyTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 35);
             enc.OpCode(ILOpCode.Ldc_i4_0);         // IL_0000: ldc.i4.0
             enc.OpCode(ILOpCode.Stloc_0);          // IL_0001: stloc.0
             enc.LoadConstantI4(10);                // IL_0002: ldc.i4.s 10
             enc.LoadConstantI4(20);                // IL_0004: ldc.i4.s 20
             enc.Call(makeSmallMethod);             // IL_0006: call make_small
             enc.OpCode(ILOpCode.Stloc_2);          // IL_000B: stloc.2
+            enc.MarkLineNumber(cvFile, 36);
             enc.LoadLocalAddress(1);               // IL_000C: ldloca.s V_1
             enc.LoadLocalAddress(2);               // IL_000E: ldloca.s V_2
             enc.Call(copySmallMethod);             // IL_0010: call copy_small
+            enc.MarkLineNumber(cvFile, 37);
             enc.LoadLocalAddress(1);               // IL_0015: ldloca.s V_1
             enc.OpCode(ILOpCode.Ldind_i4);         // IL_0017: ldind.i4
             enc.LoadLocalAddress(1);               // IL_0018: ldloca.s V_1
@@ -377,6 +395,7 @@ public class StructCopyTest
             enc.OpCode(ILOpCode.Ldind_i4);         // IL_001C: ldind.i4
             enc.OpCode(ILOpCode.Add);              // IL_001D: add
             enc.OpCode(ILOpCode.Stloc_0);          // IL_001E: stloc.0
+            enc.MarkLineNumber(cvFile, 38);
             enc.OpCode(ILOpCode.Ldloc_0);          // IL_001F: ldloc.0
             enc.OpCode(ILOpCode.Ret);              // IL_0020: ret
 

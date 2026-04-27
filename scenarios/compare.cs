@@ -237,8 +237,8 @@ public class CompareTest
             enc.LoadConstantI4(20);
             enc.Call(compareMethod);
 
-            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Stloc_0);
+            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 

@@ -265,12 +265,11 @@ public class FuncptrTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
-            enc.MarkLineNumber(cvFile, 13);
+            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Ldc_i4_0);        // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);         // IL_0001
 
             // fp = add;
-            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Ldftn);            // IL_0002
             enc.Token(addMethod);
             enc.OpCode(ILOpCode.Stloc_3);         // IL_0008

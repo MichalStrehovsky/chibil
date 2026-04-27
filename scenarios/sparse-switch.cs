@@ -4,6 +4,7 @@ using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using Xunit;
 
 public class SparseSwitchTest
@@ -113,6 +114,10 @@ public class SparseSwitchTest
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
+        string sourceFile = Path.Combine(AppContext.BaseDirectory, "sparse-switch.c");
+        byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
             ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
 
@@ -120,7 +125,7 @@ public class SparseSwitchTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
             var lbl_case1 = enc.DefineLabel();
             var lbl_case100 = enc.DefineLabel();
@@ -129,6 +134,7 @@ public class SparseSwitchTest
             var lbl_default = enc.DefineLabel();
             var lbl_end = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 12);
             if (machine == Machine.I386)
             {
                 // x86 binary tree: bgt.s for initial pivot at 1000
@@ -208,30 +214,36 @@ public class SparseSwitchTest
             }
 
             enc.MarkLabel(lbl_case1);                        // x86:IL_0027 arm64:IL_0029
+            enc.MarkLineNumber(cvFile, 13);
             enc.LoadConstantI4(10);                          // ldc.i4.s 10
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case100);                      // x86:IL_002C arm64:IL_002E
+            enc.MarkLineNumber(cvFile, 14);
             enc.LoadConstantI4(20);                          // ldc.i4.s 20
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case1000);                     // x86:IL_0031 arm64:IL_0033
+            enc.MarkLineNumber(cvFile, 15);
             enc.LoadConstantI4(30);                          // ldc.i4.s 30
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case10000);                    // x86:IL_0036 arm64:IL_0038
+            enc.MarkLineNumber(cvFile, 16);
             enc.LoadConstantI4(40);                          // ldc.i4.s 40
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_default);                      // x86:IL_003B arm64:IL_003D
+            enc.MarkLineNumber(cvFile, 17);
             enc.OpCode(ILOpCode.Ldc_i4_m1);
             enc.OpCode(ILOpCode.Stloc_0);
 
             enc.MarkLabel(lbl_end);                          // x86:IL_003D arm64:IL_003F
+            enc.MarkLineNumber(cvFile, 19);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
@@ -244,7 +256,7 @@ public class SparseSwitchTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
             var lbl_default = enc.DefineLabel();
             var lbl_end = enc.DefineLabel();
@@ -259,6 +271,7 @@ public class SparseSwitchTest
             var lbl_case8 = enc.DefineLabel();
             var lbl_case9 = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 23);
             if (machine == Machine.Arm64)
             {
                 // ARM64: bounds-check before switch
@@ -283,60 +296,72 @@ public class SparseSwitchTest
             enc.Branch(ILOpCode.Br_s, lbl_default);
 
             enc.MarkLabel(lbl_case0);
+            enc.MarkLineNumber(cvFile, 24);
             enc.LoadConstantI4(100);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case1);
+            enc.MarkLineNumber(cvFile, 25);
             enc.LoadConstantI4(101);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case2);
+            enc.MarkLineNumber(cvFile, 26);
             enc.LoadConstantI4(102);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case3);
+            enc.MarkLineNumber(cvFile, 27);
             enc.LoadConstantI4(103);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case4);
+            enc.MarkLineNumber(cvFile, 28);
             enc.LoadConstantI4(104);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case5);
+            enc.MarkLineNumber(cvFile, 29);
             enc.LoadConstantI4(105);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case6);
+            enc.MarkLineNumber(cvFile, 30);
             enc.LoadConstantI4(106);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case7);
+            enc.MarkLineNumber(cvFile, 31);
             enc.LoadConstantI4(107);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case8);
+            enc.MarkLineNumber(cvFile, 32);
             enc.LoadConstantI4(108);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_case9);
+            enc.MarkLineNumber(cvFile, 33);
             enc.LoadConstantI4(109);
             enc.OpCode(ILOpCode.Stloc_0);
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_default);
+            enc.MarkLineNumber(cvFile, 34);
             enc.OpCode(ILOpCode.Ldc_i4_m1);
             enc.OpCode(ILOpCode.Stloc_0);
 
             enc.MarkLabel(lbl_end);
+            enc.MarkLineNumber(cvFile, 36);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
@@ -351,8 +376,9 @@ public class SparseSwitchTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 40);
             enc.OpCode(ILOpCode.Ldc_i4_0);              // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);               // IL_0001
             enc.LoadConstantI4(100);                     // IL_0002: ldc.i4.s 100
@@ -361,6 +387,7 @@ public class SparseSwitchTest
             enc.Call(denseMethod);                        // IL_000A: call dense_switch
             enc.OpCode(ILOpCode.Add);                    // IL_000F: add
             enc.OpCode(ILOpCode.Stloc_0);               // IL_0010
+            enc.MarkLineNumber(cvFile, 41);
             enc.OpCode(ILOpCode.Ldloc_0);               // IL_0011
             enc.OpCode(ILOpCode.Ret);                    // IL_0012
 

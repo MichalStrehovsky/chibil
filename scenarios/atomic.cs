@@ -210,10 +210,12 @@ public class AtomicTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0000
             enc.OpCode(ILOpCode.Ldarg_1);         // IL_0001
             enc.Call(exchangeRef);                // IL_0002: call Interlocked::Exchange
             enc.StoreLocal(0);                    // IL_0007
+            enc.MarkLineNumber(cvFile, 12);
             enc.LoadLocal(0);                     // IL_0008
             enc.OpCode(ILOpCode.Ret);             // IL_0009
 
@@ -228,11 +230,13 @@ public class AtomicTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 16);
             enc.OpCode(ILOpCode.Ldarg_0);         // IL_0000
             enc.OpCode(ILOpCode.Ldarg_2);         // IL_0001: desired
             enc.OpCode(ILOpCode.Ldarg_1);         // IL_0002: expected
             enc.Call(compareExchangeRef);          // IL_0003: call Interlocked::CompareExchange
             enc.StoreLocal(0);                    // IL_0008
+            enc.MarkLineNumber(cvFile, 17);
             enc.LoadLocal(0);                     // IL_0009
             enc.OpCode(ILOpCode.Ret);             // IL_000A
 
@@ -247,21 +251,26 @@ public class AtomicTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 21);
             enc.OpCode(ILOpCode.Ldc_i4_0);        // IL_0000
             enc.StoreLocal(0);                    // IL_0001
             enc.OpCode(ILOpCode.Ldc_i4_0);        // IL_0002
             enc.StoreLocal(1);                    // IL_0003
+            enc.MarkLineNumber(cvFile, 22);
             enc.LoadLocalAddress(1);              // IL_0004: ldloca.s V_1
             enc.LoadConstantI4(42);               // IL_0006: ldc.i4.s 42
             enc.Call(xchgMethod);                 // IL_0008: call atomic_xchg
             enc.OpCode(ILOpCode.Pop);             // IL_000D
+            enc.MarkLineNumber(cvFile, 23);
             enc.LoadLocalAddress(1);              // IL_000E: ldloca.s V_1
             enc.LoadConstantI4(42);               // IL_0010: ldc.i4.s 42
             enc.LoadConstantI4(100);              // IL_0012: ldc.i4.s 100
             enc.Call(casMethod);                  // IL_0014: call atomic_cas
             enc.OpCode(ILOpCode.Pop);             // IL_0019
+            enc.MarkLineNumber(cvFile, 24);
             enc.LoadLocal(1);                     // IL_001A: ldloc.1
             enc.StoreLocal(0);                    // IL_001B
+            enc.MarkLineNumber(cvFile, 25);
             enc.LoadLocal(0);                     // IL_001C: ldloc.0
             enc.OpCode(ILOpCode.Ret);             // IL_001D
 

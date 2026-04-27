@@ -194,8 +194,8 @@ public class LogicTest
             enc.OpCode(ILOpCode.Ldc_i4_0);
             enc.Call(logicMethod);
 
-            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Stloc_0);
+            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 

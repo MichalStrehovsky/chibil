@@ -266,6 +266,7 @@ public class BitfieldTest
             enc.OpCode(ILOpCode.Stloc_0);         // IL_0001
             enc.Call(bitfieldTestMethod);           // IL_0002: call bitfield_test
             enc.OpCode(ILOpCode.Stloc_0);         // IL_0007
+            enc.MarkLineNumber(cvFile, 25);
             enc.OpCode(ILOpCode.Ldloc_0);         // IL_0008
             enc.OpCode(ILOpCode.Ret);              // IL_0009
 

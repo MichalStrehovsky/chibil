@@ -4,6 +4,7 @@ using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using Xunit;
 
 public class CompoundLiteralTest
@@ -159,16 +160,21 @@ public class CompoundLiteralTest
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
-        var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
+        string sourceFile = Path.Combine(AppContext.BaseDirectory, "compound-literal.c");
+        byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+        CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+
+        var bodyEncoder= new RelocatableMethodBodyStreamEncoder(
             ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
 
         // ─── Emit IL for sum_point ────────────────────────────────────────
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
-            enc.OpCode(ILOpCode.Ldarg_0);              // IL_0000
+            enc.MarkLineNumber(cvFile, 6);
+            enc.OpCode(ILOpCode.Ldarg_0);// IL_0000
             enc.OpCode(ILOpCode.Ldind_i4);              // IL_0001: p->x
             enc.OpCode(ILOpCode.Ldarg_0);              // IL_0002
             enc.OpCode(ILOpCode.Ldc_i4_4);             // IL_0003
@@ -189,9 +195,10 @@ public class CompoundLiteralTest
         {
             var enc = new RelocatableInstructionEncoder(
                 new BlobBuilder(), new MethodRelocationBuilder(),
-                new RelocatableControlFlowBuilder());
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
-            enc.OpCode(ILOpCode.Ldc_i4_0);            // IL_0000
+            enc.MarkLineNumber(cvFile, 10);
+            enc.OpCode(ILOpCode.Ldc_i4_0);// IL_0000
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0001
 
             // Compound literal: p.x = 10
@@ -211,9 +218,11 @@ public class CompoundLiteralTest
             enc.OpCode(ILOpCode.Stloc_2);             // IL_000F
 
             // return sum_point(&p)
+            enc.MarkLineNumber(cvFile, 11);
             enc.LoadLocalAddress(2);                   // IL_0010: ldloca.s V_2
             enc.Call(sumPointMethod);                  // IL_0012: call sum_point
             enc.OpCode(ILOpCode.Stloc_0);             // IL_0017
+            enc.MarkLineNumber(cvFile, 12);
             enc.OpCode(ILOpCode.Ldloc_0);             // IL_0018
             enc.OpCode(ILOpCode.Ret);                  // IL_0019
 

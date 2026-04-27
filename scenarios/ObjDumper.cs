@@ -290,6 +290,10 @@ class CoffFile
 
             // Determine data size from type layout
             int row = token & 0x00FFFFFF;
+            int fieldRowCount = reader.GetTableRowCount(TableIndex.Field);
+            if (row < 1 || row > fieldRowCount)
+                throw new InvalidDataException(
+                    $"CLR field token 0x{token:X8} references field row {row}, but metadata has {fieldRowCount} field rows.");
             var fieldHandle = MetadataTokens.FieldDefinitionHandle(row);
             var fieldDef = reader.GetFieldDefinition(fieldHandle);
             int dataSize = GetFieldDataSize(reader, fieldDef, Header.Machine);
@@ -304,10 +308,16 @@ class CoffFile
     {
         // Decode the field signature to find the type
         var sigReader = reader.GetBlobReader(fieldDef.Signature);
-        sigReader.ReadByte(); // calling convention (FIELD = 0x06)
+        string fieldName = reader.GetString(fieldDef.Name);
+        if (sigReader.Length < 2)
+            throw new InvalidDataException($"Field '{fieldName}' has an invalid signature: expected FIELD calling convention and type.");
+
+        byte callingConvention = sigReader.ReadByte();
+        if (callingConvention != 0x06)
+            throw new InvalidDataException($"Field '{fieldName}' has invalid signature calling convention 0x{callingConvention:X2}; expected FIELD (0x06).");
 
         // Walk through modifiers
-        while (true)
+        while (sigReader.RemainingBytes > 0)
         {
             int peek = sigReader.ReadByte();
             if (peek == (int)SignatureTypeCode.OptionalModifier || peek == (int)SignatureTypeCode.RequiredModifier)
@@ -324,7 +334,7 @@ class CoffFile
 
             if (peek == (int)SignatureTypeCode.GenericTypeParameter ||
                 peek == (int)SignatureTypeCode.GenericMethodParameter)
-                return -1;
+                throw new InvalidDataException($"Field '{fieldName}' has an unsupported generic parameter RVA signature.");
 
             // Check for value type
             if (peek == 0x11 || peek == 0x12) // VALUETYPE or CLASS
@@ -366,9 +376,11 @@ class CoffFile
                 0x0D => 8, // R8
                 0x18 => (machine == 0x014C ? 4 : 8), // IntPtr
                 0x19 => (machine == 0x014C ? 4 : 8), // UIntPtr
-                _ => -1,
+                _ => throw new InvalidDataException($"Field '{fieldName}' has unsupported RVA signature element 0x{peek:X2}."),
             };
         }
+
+        throw new InvalidDataException($"Field '{fieldName}' has an invalid signature: missing field type.");
     }
     /// <summary>
     /// For each CLR token symbol that represents a method (0x06XXXXXX), find the
@@ -481,8 +493,7 @@ static class ObjDumper
 
     static bool IsBoilerplateMethod(string methodName)
     {
-        // MSVC CRT initialization stubs
-        return methodName.StartsWith("__CxxPure", StringComparison.Ordinal);
+        return false;
     }
 
     static HashSet<TypeDefinitionHandle> GetBoilerplateTypes(MetadataReader reader)
@@ -917,11 +928,16 @@ static class ObjDumper
 
         CompileInfo compile = null;
         var methodDebug = new SortedDictionary<int, MethodDebugInfo>();
+        // Accumulate string table and file checksums across all .debug$S sections
+        // so COMDAT sections can resolve file IDs from the global section.
+        var globalStringTable = new Dictionary<int, string>();
+        var globalFileChecksums = new List<(int FileId, int StringOffset, byte ChecksumType, byte[] Checksum)>();
 
         for (int si = 0; si < coff.Sections.Length; si++)
         {
             if (coff.Sections[si].Name == ".debug$S" && coff.Sections[si].SizeOfRawData > 4)
-                ParseDebugS(coff, coff.Sections[si], reader, ref compile, methodDebug);
+                ParseDebugS(coff, coff.Sections[si], reader, ref compile, methodDebug,
+                    globalStringTable, globalFileChecksums);
         }
 
         // S_COMPILE3
@@ -982,7 +998,9 @@ static class ObjDumper
     }
 
     static void ParseDebugS(CoffFile coff, CoffSectionHeader section, MetadataReader reader,
-        ref CompileInfo compile, SortedDictionary<int, MethodDebugInfo> methodDebug)
+        ref CompileInfo compile, SortedDictionary<int, MethodDebugInfo> methodDebug,
+        Dictionary<int, string> globalStringTable,
+        List<(int FileId, int StringOffset, byte ChecksumType, byte[] Checksum)> globalFileChecksums)
     {
         byte[] data = coff.GetSectionData(section).ToArray();
 
@@ -999,7 +1017,7 @@ static class ObjDumper
         uint version = BinaryPrimitives.ReadUInt32LittleEndian(data);
         if (version != 4) return;
 
-        // First pass: string table + file checksums
+        // First pass: string table + file checksums (per-section, then merge into global)
         var stringTable = new Dictionary<int, string>();
         var fileChecksums = new List<(int FileId, int StringOffset, byte ChecksumType, byte[] Checksum)>();
         int pos = 4;
@@ -1016,6 +1034,19 @@ static class ObjDumper
             pos += 8 + subSize;
             pos = (pos + 3) & ~3;
         }
+
+        // Merge into global tables for cross-section resolution
+        foreach (var kv in stringTable)
+            globalStringTable.TryAdd(kv.Key, kv.Value);
+        foreach (var fc in fileChecksums)
+        {
+            if (!globalFileChecksums.Exists(x => x.FileId == fc.FileId))
+                globalFileChecksums.Add(fc);
+        }
+
+        // Use global tables for resolution (handles COMDAT sections without their own F3/F4)
+        var resolveStringTable = stringTable.Count > 0 ? stringTable : globalStringTable;
+        var resolveFileChecksums = fileChecksums.Count > 0 ? fileChecksums : globalFileChecksums;
 
         // Track current method for grouping
         int currentMethodToken = 0;
@@ -1039,7 +1070,7 @@ static class ObjDumper
             }
             else if (subType == 0xF2) // LINES
             {
-                ParseLineNumbers(subData, subStart, symRelocMap, stringTable, fileChecksums,
+                ParseLineNumbers(subData, subStart, symRelocMap, resolveStringTable, resolveFileChecksums,
                     methodDebug, currentMethodToken, currentMethodCodeOff);
             }
 
@@ -1186,8 +1217,9 @@ static class ObjDumper
                     {
                         string endName = recType == 0x114F ? "S_PROC_ID_END" : "S_END";
                         methodDebug[currentMethodToken].Records.Add(endName);
-                        if (recType == 0x114F)
-                            currentMethodToken = 0;
+                        // Don't reset currentMethodToken here — the F2 LINES subsection
+                        // follows the F1 SYMBOLS subsection and needs the token to attribute
+                        // line numbers to this method. The next S_GMANPROC will overwrite it.
                     }
                     break;
                 }

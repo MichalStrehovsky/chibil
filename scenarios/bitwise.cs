@@ -193,8 +193,8 @@ public class BitwiseTest
             enc.LoadConstantI4(51);                // IL_0004: ldc.i4.s 51
             enc.Call(bitwiseMethod);               // IL_0006: call bitwise
 
-            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Stloc_0);         // IL_000B
+            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Ldloc_0);         // IL_000C
             enc.OpCode(ILOpCode.Ret);             // IL_000D
 

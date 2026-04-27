@@ -56,7 +56,6 @@ These are known acceptable differences between MSVC and our emitter:
 |------|-----|
 | TypeRefs / MemberRefs tables | MSVC emits unused boilerplate refs; we only emit what IL/signatures reference |
 | MSVC boilerplate types (`vc.cppcli.*`, `__clr_*`) | Compiler-internal helper types not needed for linking |
-| MSVC boilerplate methods (`__CxxPure*`) | CRT initialization stubs we don't emit |
 | `.debug$T` section | Build provenance metadata (LF_BUILDINFO); not needed for debugging |
 | S_OBJNAME | Contains the obj file path, which differs per environment |
 | S_BUILDINFO | References `.debug$T` type records we don't emit |
@@ -89,6 +88,8 @@ Key compiler switches:
 - `/Z7` — embed CodeView debug info in the `.obj` (not a separate `.pdb`)
 - `/Zl` — omit default library references
 - `/d1clrNoPureCRT` — suppress pure-mode CRT dependencies
+
+Some scenarios intentionally compile as C++ with `/TP` instead of C with `/BC`. Use `/TP` when the MSVC C frontend cannot emit the behavior being studied, especially C++ frontend generated entry-point plumbing such as `__CxxPureMSILEntry` for `main`. Those generated methods are compared by the tests; do not filter them as boilerplate.
 
 Place the resulting `.obj` files in `reference/foo/x86/`, `reference/foo/x64/`, and `reference/foo/arm64/`.
 
@@ -162,6 +163,8 @@ link.exe /debug /entry:main /subsystem:console foo.obj /out:foo_ours.exe
 ildasm foo_ours.exe /out=foo_ours.il /nobar
 ildasm foo.exe /out=foo_msvc.il /nobar
 ```
+
+For `/TP` scenarios that rely on `__CxxPureMSILEntry`, link with `minicrt.obj` and let its `mainCRTStartup` call the generated entry shim rather than forcing `/entry:main`.
 
 ## Design decisions
 

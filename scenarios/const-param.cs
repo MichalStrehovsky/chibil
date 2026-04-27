@@ -212,9 +212,11 @@ public class ConstParamTest
             var loopCond = enc.DefineLabel();
             var loopEnd = enc.DefineLabel();
 
+            enc.MarkLineNumber(cvFile, 6);
             enc.LoadConstantI4(0);                 // IL_0000: ldc.i4.0
             enc.StoreLocal(1);                     // IL_0001: stloc.1 (sum = 0)
 
+            enc.MarkLineNumber(cvFile, 8);
             enc.LoadConstantI4(0);                 // IL_0002: ldc.i4.0
             enc.StoreLocal(0);                     // IL_0003: stloc.0 (i = 0)
             enc.Branch(ILOpCode.Br_s, loopCond);   // IL_0004: br.s loopCond
@@ -231,6 +233,7 @@ public class ConstParamTest
             enc.Branch(ILOpCode.Bge_s, loopEnd);   // IL_000C: bge.s loopEnd
 
             // loop body: sum = sum + arr[i]
+            enc.MarkLineNumber(cvFile, 9);
             enc.LoadLocal(1);                      // IL_000E: ldloc.1 (sum)
             enc.LoadArgument(0);                   // IL_000F: ldarg.0 (arr)
             enc.LoadLocal(0);                      // IL_0010: ldloc.0 (i)
@@ -245,8 +248,10 @@ public class ConstParamTest
             enc.Branch(ILOpCode.Br_s, loopInc);    // br.s loopInc
 
             enc.MarkLabel(loopEnd);
+            enc.MarkLineNumber(cvFile, 10);
             enc.LoadLocal(1);                      // ldloc.1
             enc.StoreLocal(2);                     // stloc.2 (return value)
+            enc.MarkLineNumber(cvFile, 11);
             enc.LoadLocal(2);                      // ldloc.2
             enc.OpCode(ILOpCode.Ret);              // ret
 
@@ -266,10 +271,12 @@ public class ConstParamTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 15);
             enc.LoadArgument(0);                   // IL_0000: ldarg.0
             enc.OpCode(ILOpCode.Volatile);         // IL_0001: volatile.
             enc.OpCode(ILOpCode.Ldind_i4);         // IL_0003: ldind.i4
             enc.StoreLocal(0);                     // IL_0004: stloc.0
+            enc.MarkLineNumber(cvFile, 16);
             enc.LoadLocal(0);                      // IL_0005: ldloc.0
             enc.OpCode(ILOpCode.Ret);              // IL_0006: ret
 
@@ -284,6 +291,7 @@ public class ConstParamTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
+            enc.MarkLineNumber(cvFile, 20);
             enc.OpCode(ILOpCode.Ldc_i4_0);         // IL_0000: ldc.i4.0
             enc.StoreLocal(0);                     // IL_0001: stloc.0
 
@@ -307,10 +315,12 @@ public class ConstParamTest
             enc.OpCode(ILOpCode.Stind_i4);         // IL_0014: stind.i4
 
             // volatile int v = 42
+            enc.MarkLineNumber(cvFile, 21);
             enc.LoadConstantI4(42);                // IL_0015: ldc.i4.s 42
             enc.StoreLocal(1);                     // IL_0017: stloc.1
 
             // sum_array(arr, 3)
+            enc.MarkLineNumber(cvFile, 22);
             enc.LoadLocalAddress(2);               // IL_0018: ldloca.s V_2
             enc.LoadConstantI4(3);                 // IL_001A: ldc.i4.3
             enc.Call(sumArrayMethod);              // IL_001B: call sum_array
@@ -323,6 +333,7 @@ public class ConstParamTest
             enc.OpCode(ILOpCode.Add);              // IL_0027: add
             enc.StoreLocal(0);                     // IL_0028: stloc.0
 
+            enc.MarkLineNumber(cvFile, 23);
             enc.LoadLocal(0);                      // IL_0029: ldloc.0
             enc.OpCode(ILOpCode.Ret);              // IL_002A: ret
 

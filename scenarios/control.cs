@@ -150,7 +150,7 @@ public class ControlTest
             var lbl_afterLoop = enc.DefineLabel();  // IL_0018: after loop
             var lbl_end = enc.DefineLabel();        // IL_001C: end
 
-            enc.MarkLineNumber(cvFile, 7);
+            enc.MarkLineNumber(cvFile, 6);
             enc.OpCode(ILOpCode.Ldc_i4_0);          // IL_0000
             enc.OpCode(ILOpCode.Stloc_1);           // IL_0001: sum = 0
 
@@ -159,25 +159,23 @@ public class ControlTest
             enc.OpCode(ILOpCode.Ldc_i4_0);          // IL_0003
             enc.Branch(ILOpCode.Ble_s, lbl_neg);    // IL_0004: if n <= 0 goto neg
 
-            enc.MarkLineNumber(cvFile, 9);
+            enc.MarkLineNumber(cvFile, 10);
             enc.OpCode(ILOpCode.Ldc_i4_0);          // IL_0006
             enc.OpCode(ILOpCode.Stloc_0);           // IL_0007: i = 0
             enc.Branch(ILOpCode.Br_s, lbl_loopTest); // IL_0008: goto loopTest
 
             enc.MarkLabel(lbl_loopBody);            // IL_000A
-            enc.MarkLineNumber(cvFile, 10);
             enc.OpCode(ILOpCode.Ldloc_0);           // IL_000A
             enc.OpCode(ILOpCode.Ldc_i4_1);          // IL_000B
             enc.OpCode(ILOpCode.Add);               // IL_000C
             enc.OpCode(ILOpCode.Stloc_0);           // IL_000D: i++
 
             enc.MarkLabel(lbl_loopTest);            // IL_000E
-            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldloc_0);           // IL_000E
             enc.OpCode(ILOpCode.Ldarg_0);           // IL_000F
             enc.Branch(ILOpCode.Bge_s, lbl_afterLoop); // IL_0010: if i >= n goto afterLoop
 
-            enc.MarkLineNumber(cvFile, 12);
+            enc.MarkLineNumber(cvFile, 11);
             enc.OpCode(ILOpCode.Ldloc_1);           // IL_0012
             enc.OpCode(ILOpCode.Ldloc_0);           // IL_0013
             enc.OpCode(ILOpCode.Add);               // IL_0014
@@ -185,18 +183,19 @@ public class ControlTest
             enc.Branch(ILOpCode.Br_s, lbl_loopBody); // IL_0016: goto loopBody
 
             enc.MarkLabel(lbl_afterLoop);           // IL_0018
-            enc.MarkLineNumber(cvFile, 13);
+            enc.MarkLineNumber(cvFile, 12);
             enc.Branch(ILOpCode.Br_s, lbl_end);     // IL_0018: goto end
 
             enc.MarkLabel(lbl_neg);                 // IL_001A
-            enc.MarkLineNumber(cvFile, 14);
+            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Ldc_i4_m1);         // IL_001A
             enc.OpCode(ILOpCode.Stloc_1);           // IL_001B: sum = -1
 
             enc.MarkLabel(lbl_end);                 // IL_001C
-            enc.MarkLineNumber(cvFile, 15);
+            enc.MarkLineNumber(cvFile, 17);
             enc.OpCode(ILOpCode.Ldloc_1);           // IL_001C
             enc.OpCode(ILOpCode.Stloc_2);           // IL_001D
+            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Ldloc_2);           // IL_001E
             enc.OpCode(ILOpCode.Ret);               // IL_001F
 

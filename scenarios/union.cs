@@ -232,6 +232,7 @@ public class UnionTest
             enc.OpCode(ILOpCode.Stloc_0);                                   // IL_0001: stloc.0
             enc.Call(unionTestMethod);                                       // IL_0002: call union_test
             enc.OpCode(ILOpCode.Stloc_0);                                   // IL_0007: stloc.0
+            enc.MarkLineNumber(cvFile, 24);
             enc.OpCode(ILOpCode.Ldloc_0);                                   // IL_0008: ldloc.0
             enc.OpCode(ILOpCode.Ret);                                       // IL_0009: ret
 

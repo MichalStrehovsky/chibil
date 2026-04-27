@@ -404,12 +404,11 @@ public class FloatTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
-            enc.MarkLineNumber(cvFile, 31);
+            enc.MarkLineNumber(cvFile, 32);
             enc.OpCode(ILOpCode.Ldc_i4_0);         // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);          // IL_0001
 
             // float f = float_arith(3.5f, 1.5f)
-            enc.MarkLineNumber(cvFile, 32);
             enc.LoadConstantR4(3.5f);               // IL_0002: ldc.r4 3.5
             enc.LoadConstantR4(1.5f);               // IL_0007: ldc.r4 1.5
             enc.Call(floatArithMethod);              // IL_000C: call float_arith
