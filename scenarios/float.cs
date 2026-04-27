@@ -12,10 +12,11 @@ public class FloatTest
     [Theory]
     [InlineData(Machine.I386)]
     [InlineData(Machine.Arm64)]
+    [InlineData(Machine.Amd64)]
     public void Emit(Machine machine)
     {
         byte[] emitted = EmitObj(machine);
-        string refDir = machine == Machine.I386 ? "x86" : "arm64";
+        string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "float", refDir, "float.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -28,7 +29,7 @@ public class FloatTest
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
-        CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : CodeViewMachine.Arm64;
+        CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : machine == Machine.Arm64 ? CodeViewMachine.Arm64 : CodeViewMachine.Amd64;
 
         var md = new MetadataBuilder();
 
@@ -188,9 +189,9 @@ public class FloatTest
             // sum = a + b
             enc.MarkLineNumber(cvFile, 6);
             enc.OpCode(ILOpCode.Ldarg_0);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Ldarg_1);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Add);
             enc.OpCode(ILOpCode.Conv_r4);
             enc.StoreLocal(4);                     // stloc.s V_4 (sum)
@@ -198,9 +199,9 @@ public class FloatTest
             // diff = a - b
             enc.MarkLineNumber(cvFile, 7);
             enc.OpCode(ILOpCode.Ldarg_0);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Ldarg_1);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Sub);
             enc.OpCode(ILOpCode.Conv_r4);
             enc.OpCode(ILOpCode.Stloc_3);          // stloc.3 (diff)
@@ -208,9 +209,9 @@ public class FloatTest
             // prod = a * b
             enc.MarkLineNumber(cvFile, 8);
             enc.OpCode(ILOpCode.Ldarg_0);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Ldarg_1);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Mul);
             enc.OpCode(ILOpCode.Conv_r4);
             enc.OpCode(ILOpCode.Stloc_2);          // stloc.2 (prod)
@@ -218,9 +219,9 @@ public class FloatTest
             // quot = a / b
             enc.MarkLineNumber(cvFile, 9);
             enc.OpCode(ILOpCode.Ldarg_0);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Ldarg_1);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Div);
             enc.OpCode(ILOpCode.Conv_r4);
             enc.OpCode(ILOpCode.Stloc_1);          // stloc.1 (quot)
@@ -228,15 +229,15 @@ public class FloatTest
             // return sum + diff + prod + quot
             enc.MarkLineNumber(cvFile, 10);
             enc.LoadLocal(4);                       // ldloc.s V_4
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Ldloc_3);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Add);
             enc.OpCode(ILOpCode.Ldloc_2);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Add);
             enc.OpCode(ILOpCode.Ldloc_1);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Add);
             enc.OpCode(ILOpCode.Conv_r4);
             enc.OpCode(ILOpCode.Stloc_0);
@@ -334,9 +335,9 @@ public class FloatTest
             // eq = (a == b)
             enc.MarkLineNumber(cvFile, 24);
             enc.OpCode(ILOpCode.Ldarg_0);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Ldarg_1);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.Branch(ILOpCode.Bne_un_s, lbl_eq0);
             enc.OpCode(ILOpCode.Ldc_i4_1);
             enc.Branch(ILOpCode.Br_s, lbl_eq_done);
@@ -348,9 +349,9 @@ public class FloatTest
             // lt = (a < b)
             enc.MarkLineNumber(cvFile, 25);
             enc.OpCode(ILOpCode.Ldarg_0);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Ldarg_1);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.Branch(ILOpCode.Bge_un_s, lbl_lt0);
             enc.OpCode(ILOpCode.Ldc_i4_1);
             enc.Branch(ILOpCode.Br_s, lbl_lt_done);
@@ -362,9 +363,9 @@ public class FloatTest
             // le = (a <= b)
             enc.MarkLineNumber(cvFile, 26);
             enc.OpCode(ILOpCode.Ldarg_0);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.OpCode(ILOpCode.Ldarg_1);
-            if (machine == Machine.I386) enc.OpCode(ILOpCode.Conv_r8);
+            if (machine != Machine.Arm64) enc.OpCode(ILOpCode.Conv_r8);
             enc.Branch(ILOpCode.Bgt_un_s, lbl_le0);
             enc.OpCode(ILOpCode.Ldc_i4_1);
             enc.Branch(ILOpCode.Br_s, lbl_le_done);

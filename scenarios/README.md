@@ -19,6 +19,7 @@ Each scenario has:
 | `foo.c` | Source C program (the "spec") |
 | `foo.cs` | C# xUnit test that emits `foo.obj` and compares against the reference |
 | `reference/foo/x86/foo.obj` | MSVC-compiled reference object file (x86) |
+| `reference/foo/x64/foo.obj` | MSVC-compiled reference object file (x64) |
 | `reference/foo/arm64/foo.obj` | MSVC-compiled reference object file (ARM64) |
 
 Supporting files:
@@ -35,7 +36,7 @@ Supporting files:
 dotnet test CoffEmitterTests.csproj
 ```
 
-Each `.cs` file is a `[Theory]` with `[InlineData(Machine.I386)]` and `[InlineData(Machine.Arm64)]`. The test emits the `.obj` in memory, dumps both the emitted and reference objects using `ObjDumper`, and asserts the dumps are identical.
+Each `.cs` file is a `[Theory]` with `[InlineData(Machine.I386)]`, `[InlineData(Machine.Arm64)]`, and `[InlineData(Machine.Amd64)]`. The test emits the `.obj` in memory, dumps both the emitted and reference objects using `ObjDumper`, and asserts the dumps are identical.
 
 ## What the tests compare
 
@@ -60,6 +61,7 @@ These are known acceptable differences between MSVC and our emitter:
 | S_OBJNAME | Contains the obj file path, which differs per environment |
 | S_BUILDINFO | References `.debug$T` type records we don't emit |
 | S_FRAMEPROC flags | `fOptSpeed` and `fSecurityChecks` bits differ between our emitter and MSVC |
+| S_COMPILE3 HotPatch flag | MSVC sets `fHotPatch` (0x4000) on x64 but not on x86/ARM64; not needed for linking or debugging |
 | S_MANSLOT CV_LVARFLAGS | Informational annotations (`fAddrTaken`, `fIsParam`); not used by linker or debugger |
 | S_MANSLOT typind | StandaloneSig token numbers differ due to different metadata row counts |
 | S_MANSLOT for parameters | MSVC emits `fIsParam=1` slots; parameter names come from the metadata Parameter table instead |
@@ -88,7 +90,7 @@ Key compiler switches:
 - `/Zl` — omit default library references
 - `/d1clrNoPureCRT` — suppress pure-mode CRT dependencies
 
-Place the resulting `.obj` files in `reference/foo/x86/` and `reference/foo/arm64/`.
+Place the resulting `.obj` files in `reference/foo/x86/`, `reference/foo/x64/`, and `reference/foo/arm64/`.
 
 ### 3. Inspect the MSVC object file
 
@@ -122,10 +124,11 @@ public class FooTest
     [Theory]
     [InlineData(Machine.I386)]
     [InlineData(Machine.Arm64)]
+    [InlineData(Machine.Amd64)]
     public void Emit(Machine machine)
     {
         byte[] emitted = EmitObj(machine);
-        string refDir = machine == Machine.I386 ? "x86" : "arm64";
+        string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "foo", refDir, "foo.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -189,10 +192,10 @@ Fat method bodies (those with locals, maxStack > 8, or exception handlers) requi
 ### COFF symbol ordering matters
 `AddDataClrToken` and `AddExternalClrToken` must be called **before** emitting IL that references the same metadata tokens. This is because IL token references create CLR token COFF symbols via `GetOrAddCoffSymbol`, which caches by name. If the IL emission creates the symbol first (at section 0), the later `AddDataClrToken` call is a no-op — it gets the cached version. Pre-registering the symbol ensures the correct section number is used.
 
-### Architecture parameterization (x86 vs ARM64)
-Each `.cs` test receives `Machine` as a parameter. The following things differ between architectures:
+### Architecture parameterization (x86 vs x64 vs ARM64)
+Each `.cs` test receives `Machine` as a parameter. The distinction is primarily 32-bit vs 64-bit — x64 and ARM64 share the same codegen for all aspects below:
 
-| Aspect | x86 | ARM64 |
+| Aspect | x86 (32-bit) | x64 / ARM64 (64-bit) |
 |--------|-----|-------|
 | mscorlib hash | `32 CD 81 47...` | `28 DC 37 8B...` |
 | Pointer arithmetic IL | no `conv.i8` | `conv.i8` after integer constants |
@@ -201,6 +204,7 @@ Each `.cs` test receives `Machine` as a parameter. The following things differ b
 | CRTMA slot size | 4 bytes | 8 bytes |
 | CRTMA section alignment | Align4Bytes | Align8Bytes |
 | `<alignment member>` field (struct) | not emitted | emitted |
+| CodeView machine | `I386` | `Amd64` / `Arm64` |
 
 ### .CRTMA section and global variable initializers
 The `init.c` scenario demonstrates global variables with initializers (e.g., `char* str = "Hello!"`). The MSVC compiler generates:
@@ -226,4 +230,5 @@ The `init.c` scenario demonstrates global variables with initializers (e.g., `ch
 
 ### Linker paths
 - x86: `C:\Program Files\Microsoft Visual Studio\...\bin\Hostx86\x86\link.exe`
+- x64: `C:\Program Files\Microsoft Visual Studio\...\bin\Hostx64\x64\link.exe`
 - ARM64: `C:\Program Files\Microsoft Visual Studio\...\bin\Hostx64\arm64\link.exe`

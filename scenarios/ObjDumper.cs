@@ -1209,6 +1209,9 @@ static class ObjDumper
         if (payload.Length < 22) return null;
 
         uint flags = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+        // Mask out HotPatch (0x4000): MSVC sets this on x64 but not x86/arm64;
+        // our emitter doesn't set it, and it's not needed for linking or debugging.
+        flags &= ~0x4000u;
         ushort machine = BinaryPrimitives.ReadUInt16LittleEndian(payload[4..]);
 
         byte lang = (byte)(flags & 0xFF);

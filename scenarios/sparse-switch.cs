@@ -11,10 +11,11 @@ public class SparseSwitchTest
     [Theory]
     [InlineData(Machine.I386)]
     [InlineData(Machine.Arm64)]
+    [InlineData(Machine.Amd64)]
     public void Emit(Machine machine)
     {
         byte[] emitted = EmitObj(machine);
-        string refDir = machine == Machine.I386 ? "x86" : "arm64";
+        string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "sparse-switch", refDir, "sparse-switch.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -27,7 +28,7 @@ public class SparseSwitchTest
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
-        CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : CodeViewMachine.Arm64;
+        CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : machine == Machine.Arm64 ? CodeViewMachine.Arm64 : CodeViewMachine.Amd64;
 
         var md = new MetadataBuilder();
 
@@ -73,8 +74,8 @@ public class SparseSwitchTest
             MetadataTokens.ParameterHandle(2));
         md.AddParameter(ParameterAttributes.None, md.GetOrAddString("x"), 1);
 
-        // dense_switch locals: 1 x int32 on x86, 2 x int32 on arm64
-        int denseLocalCount = machine == Machine.I386 ? 1 : 2;
+        // dense_switch locals: 1 x int32 on x86/x64, 2 x int32 on arm64
+        int denseLocalCount = machine == Machine.Arm64 ? 2 : 1;
         var dLocalsSig = new BlobBuilder();
         var dLocalsEnc = new BlobEncoder(dLocalsSig).LocalVariableSignature(denseLocalCount);
         for (int i = 0; i < denseLocalCount; i++) dLocalsEnc.AddVariable().Type().Int32();
@@ -154,6 +155,25 @@ public class SparseSwitchTest
                 enc.LoadConstantI4(10000);                   // IL_001E: ldc.i4 0x2710
                 enc.Branch(ILOpCode.Beq_s, lbl_case10000);  // IL_0023: beq.s
                 enc.Branch(ILOpCode.Br_s, lbl_default);     // IL_0025: br.s
+            }
+            else if (machine == Machine.Amd64)
+            {
+                // x64: linear if-else chain
+                enc.OpCode(ILOpCode.Ldarg_0);               // IL_0000
+                enc.OpCode(ILOpCode.Stloc_1);               // IL_0001
+                enc.OpCode(ILOpCode.Ldloc_1);               // IL_0002
+                enc.OpCode(ILOpCode.Ldc_i4_1);              // IL_0003
+                enc.Branch(ILOpCode.Beq_s, lbl_case1);      // IL_0004: beq.s
+                enc.OpCode(ILOpCode.Ldloc_1);               // IL_0006
+                enc.LoadConstantI4(100);                     // IL_0007: ldc.i4.s 100
+                enc.Branch(ILOpCode.Beq_s, lbl_case100);    // IL_0009: beq.s
+                enc.OpCode(ILOpCode.Ldloc_1);               // IL_000B
+                enc.LoadConstantI4(1000);                    // IL_000C: ldc.i4 0x3E8
+                enc.Branch(ILOpCode.Beq_s, lbl_case1000);   // IL_0011: beq.s
+                enc.OpCode(ILOpCode.Ldloc_1);               // IL_0013
+                enc.LoadConstantI4(10000);                   // IL_0014: ldc.i4 0x2710
+                enc.Branch(ILOpCode.Beq_s, lbl_case10000);  // IL_0019: beq.s
+                enc.Branch(ILOpCode.Br_s, lbl_default);     // IL_001B: br.s
             }
             else
             {
@@ -239,7 +259,7 @@ public class SparseSwitchTest
             var lbl_case8 = enc.DefineLabel();
             var lbl_case9 = enc.DefineLabel();
 
-            if (machine != Machine.I386)
+            if (machine == Machine.Arm64)
             {
                 // ARM64: bounds-check before switch
                 enc.OpCode(ILOpCode.Ldarg_0);
@@ -320,7 +340,7 @@ public class SparseSwitchTest
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
-            int denseMaxStack = machine == Machine.I386 ? 1 : 2;
+            int denseMaxStack = machine == Machine.Arm64 ? 2 : 1;
 
             bodyEncoder.AddMethodBody(denseMethod, "?dense_switch@@$$J0YMHH@Z", enc,
                 maxStack: denseMaxStack, localVariablesSignature: dLocalsSigHandle, attributes: 0,

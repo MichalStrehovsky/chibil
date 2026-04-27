@@ -12,10 +12,11 @@ public class SwitchTest
     [Theory]
     [InlineData(Machine.I386)]
     [InlineData(Machine.Arm64)]
+    [InlineData(Machine.Amd64)]
     public void Emit(Machine machine)
     {
         byte[] emitted = EmitObj(machine);
-        string refDir = machine == Machine.I386 ? "x86" : "arm64";
+        string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "switch", refDir, "switch.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -28,7 +29,7 @@ public class SwitchTest
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
-        CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : CodeViewMachine.Arm64;
+        CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : machine == Machine.Arm64 ? CodeViewMachine.Arm64 : CodeViewMachine.Amd64;
 
         var md = new MetadataBuilder();
 
@@ -54,7 +55,7 @@ public class SwitchTest
             MetadataTokens.ParameterHandle(1));
         md.AddParameter(ParameterAttributes.None, md.GetOrAddString("x"), 1);
 
-        // classify locals: 2 x int32 (x86), 3 x int32 (arm64: extra temp for switch bounds check)
+        // classify locals: 2 x int32 (x86), 3 x int32 (arm64/x64: extra temp)
         int classifyLocalCount = machine == Machine.I386 ? 2 : 3;
         var cLocalsSig = new BlobBuilder();
         var cLocalsEnc = new BlobEncoder(cLocalsSig).LocalVariableSignature(classifyLocalCount);
@@ -114,7 +115,7 @@ public class SwitchTest
 
             enc.MarkLineNumber(cvFile, 7);
 
-            if (machine != Machine.I386)
+            if (machine == Machine.Arm64)
             {
                 // ARM64: bounds-check before switch
                 // ldarg.0, stloc.1, ldloc.1, ldc.i4.0, blt.s default, ldloc.1, ldc.i4.3, bgt.s default, ldloc.1, switch...
@@ -127,17 +128,40 @@ public class SwitchTest
                 enc.OpCode(ILOpCode.Ldc_i4_3);
                 enc.Branch(ILOpCode.Bgt_s, lbl_default);
                 enc.OpCode(ILOpCode.Ldloc_1);
+
+                // switch (case0, case1, case2, case2)
+                enc.Switch(lbl_case0, lbl_case1, lbl_case2, lbl_case2);
+
+                enc.Branch(ILOpCode.Br_s, lbl_default);
+            }
+            else if (machine == Machine.Amd64)
+            {
+                // x64: if-else chain (no switch instruction)
+                enc.OpCode(ILOpCode.Ldarg_0);
+                enc.OpCode(ILOpCode.Stloc_1);
+                enc.OpCode(ILOpCode.Ldloc_1);
+                enc.Branch(ILOpCode.Brfalse_s, lbl_case0);
+                enc.OpCode(ILOpCode.Ldloc_1);
+                enc.OpCode(ILOpCode.Ldc_i4_1);
+                enc.Branch(ILOpCode.Beq_s, lbl_case1);
+                enc.OpCode(ILOpCode.Ldloc_1);
+                enc.OpCode(ILOpCode.Ldc_i4_2);
+                enc.Branch(ILOpCode.Beq_s, lbl_case2);
+                enc.OpCode(ILOpCode.Ldloc_1);
+                enc.OpCode(ILOpCode.Ldc_i4_3);
+                enc.Branch(ILOpCode.Beq_s, lbl_case2);
+                enc.Branch(ILOpCode.Br_s, lbl_default);
             }
             else
             {
                 // x86: direct switch
                 enc.OpCode(ILOpCode.Ldarg_0);
+
+                // switch (case0, case1, case2, case2)
+                enc.Switch(lbl_case0, lbl_case1, lbl_case2, lbl_case2);
+
+                enc.Branch(ILOpCode.Br_s, lbl_default);
             }
-
-            // switch (case0, case1, case2, case2)
-            enc.Switch(lbl_case0, lbl_case1, lbl_case2, lbl_case2);
-
-            enc.Branch(ILOpCode.Br_s, lbl_default);
 
             enc.MarkLabel(lbl_case0);
             enc.MarkLineNumber(cvFile, 10);

@@ -11,10 +11,11 @@ public class ReturnStructTest
     [Theory]
     [InlineData(Machine.I386)]
     [InlineData(Machine.Arm64)]
+    [InlineData(Machine.Amd64)]
     public void Emit(Machine machine)
     {
         byte[] emitted = EmitObj(machine);
-        string refDir = machine == Machine.I386 ? "x86" : "arm64";
+        string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "return-struct", refDir, "return-struct.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -27,7 +28,7 @@ public class ReturnStructTest
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
-        CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : CodeViewMachine.Arm64;
+        CodeViewMachine cvMachine = machine == Machine.I386 ? CodeViewMachine.I386 : machine == Machine.Arm64 ? CodeViewMachine.Arm64 : CodeViewMachine.Amd64;
 
         var md = new MetadataBuilder();
 
