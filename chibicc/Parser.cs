@@ -115,7 +115,7 @@ public class Parser
         return v;
     }
 
-    private Obj NewAnonGvar(CType ty) => NewGvar(NewUniqueName(), ty);
+    private Obj NewAnonGvar(CType ty) => NewGvar($"__chibicc_anon_{_uniqueId++}", ty);
 
     private Obj NewStringLiteral(byte[] str, CType ty)
     {
@@ -1000,7 +1000,7 @@ public class Parser
         rest = Util.Skip(tok, ")");
         var node = NewUnary(NodeKind.FunCall, fn, tok);
         node.FuncTy = ty; node.Ty = ty.ReturnTy; node.Args = head.Next;
-        if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) node.RetBuffer = NewLvar("", node.Ty);
+        // MSIL returns structs by value on the eval stack — no RetBuffer needed
         return node;
     }
 
@@ -1658,10 +1658,10 @@ public class Parser
         _currentFn = fn; _locals = null; EnterScope();
         CreateParamLvars(ty.Params);
         CType rty = ty.ReturnTy;
-        if ((rty.Kind == TypeKind.Struct || rty.Kind == TypeKind.Union) && rty.Size > 16) NewLvar("", TypeSystem.PointerTo(rty));
+        // MSIL returns structs by value — no hidden return buffer parameter
         fn.Params = _locals;
-        if (ty.IsVariadic) fn.VaArea = NewLvar("__va_area__", TypeSystem.ArrayOf(TypeSystem.TyChar, 136));
-        fn.AllocaBottom = NewLvar("__alloca_size__", TypeSystem.PointerTo(TypeSystem.TyChar));
+        // MSIL varargs use the ECMA-335 vararg mechanism — no SysV va_area
+        // MSIL alloca uses localloc — no alloca bottom tracking
         tok = Util.Skip(tok, "{");
         byte[] nameBytes = Encoding.UTF8.GetBytes(fn.Name);
         byte[] nameBytesNul = new byte[nameBytes.Length + 1];

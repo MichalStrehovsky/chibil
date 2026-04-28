@@ -665,8 +665,12 @@ public class CodeGen
 
             _fieldDefs[v] = fieldHandle;
 
-            LogicalSection section = v.InitData != null ? LogicalSection.RData : LogicalSection.Data;
-            _symtab.AddDataClrToken(v.Name, fieldHandle, section, v.InitData != null ? _dataStream.Count - v.InitData.Length : 0, out _);
+            if (v.InitData != null)
+            {
+                LogicalSection section = LogicalSection.RData;
+                _symtab.AddDataClrToken(v.Name, fieldHandle, section, _dataStream.Count - v.InitData.Length, out _);
+            }
+            // Zero-initialized globals: no COFF data symbol needed, just the FieldDef
         }
     }
 
@@ -853,7 +857,6 @@ public class CodeGen
                 }
                 return;
             case NodeKind.FunCall:
-                if (node.RetBuffer != null) { GenExpr(node); return; }
                 break;
             case NodeKind.Assign:
             case NodeKind.Cond:
@@ -1376,7 +1379,21 @@ public class CodeGen
                 if (!_labels.TryGetValue(node.UniqueLabel, out var labelT)) { labelT = _enc.DefineLabel(); _labels[node.UniqueLabel] = labelT; }
                 _enc.MarkLabel(labelT); GenStmt(node.Lhs); return;
             case NodeKind.Return:
-                if (node.Lhs != null) { GenExpr(node.Lhs); _enc.OpCode(ILOpCode.Ret); Pop(); }
+                if (node.Lhs != null)
+                {
+                    GenExpr(node.Lhs);
+                    // For struct/union returns, GenExpr leaves an address on the stack
+                    // but ret expects a value type. Use ldobj to load the value.
+                    CType retTy = node.Lhs.Ty;
+                    if ((retTy.Kind == TypeKind.Struct || retTy.Kind == TypeKind.Union) &&
+                        _structTypeDefs.TryGetValue(retTy, out var retTypeDef))
+                    {
+                        _enc.OpCode(ILOpCode.Ldobj);
+                        _enc.Token(retTypeDef);
+                        // ldobj pops address, pushes value — net 0
+                    }
+                    _enc.OpCode(ILOpCode.Ret); Pop();
+                }
                 else _enc.OpCode(ILOpCode.Ret);
                 return;
             case NodeKind.ExprStmt:
