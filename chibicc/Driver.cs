@@ -63,7 +63,7 @@ public class Driver
             string output;
             if (_optO != null) output = _optO;
             else if (_optS) output = ReplaceExtn(input, ".s");
-            else output = ReplaceExtn(input, ".o");
+            else output = ReplaceExtn(input, ".obj");
 
             FileType type = GetFileType(input);
 
@@ -92,7 +92,7 @@ public class Driver
         }
 
         if (ldArgs.Count > 0)
-            RunLinker(ldArgs, _optO ?? "a.out");
+            RunLinker(ldArgs, _optO ?? "a.exe");
 
         Cleanup();
     }
@@ -230,7 +230,7 @@ public class Driver
         if (_optX != FileType.None) return _optX;
         if (filename.EndsWith(".a")) return FileType.Ar;
         if (filename.EndsWith(".so")) return FileType.Dso;
-        if (filename.EndsWith(".o")) return FileType.Obj;
+        if (filename.EndsWith(".obj")) return FileType.Obj;
         if (filename.EndsWith(".c")) return FileType.C;
         if (filename.EndsWith(".s")) return FileType.Asm;
         Util.Error($"unknown file extension: {filename}");
@@ -328,44 +328,15 @@ public class Driver
 
     private void Assemble(string input, string output)
     {
-        RunSubprocess(new[] { "as", "-c", input, "-o", output });
+        // No separate assembly step needed for MSIL — the .obj is produced directly by cc1
+        File.Copy(input, output, true);
     }
 
     private void RunLinker(List<string> inputs, string output)
     {
-        var arr = new List<string> { "ld", "-o", output, "-m", "elf_x86_64" };
-        string libpath = FindLibpath();
-        string gccLibpath = FindGccLibpath();
-
-        if (_optShared)
-        {
-            arr.Add($"{libpath}/crti.o");
-            arr.Add($"{gccLibpath}/crtbeginS.o");
-        }
-        else
-        {
-            arr.Add($"{libpath}/crt1.o");
-            arr.Add($"{libpath}/crti.o");
-            arr.Add($"{gccLibpath}/crtbegin.o");
-        }
-
-        arr.Add($"-L{gccLibpath}");
-        arr.Add("-L/usr/lib/x86_64-linux-gnu");
-        arr.Add("-L/usr/lib64"); arr.Add("-L/lib64");
-        arr.Add("-L/usr/lib"); arr.Add("-L/lib");
-
-        if (!_optStatic) { arr.Add("-dynamic-linker"); arr.Add("/lib64/ld-linux-x86-64.so.2"); }
-
+        var arr = new List<string> { "link.exe", "/DEBUG", "/subsystem:console", $"/out:{output}" };
         arr.AddRange(LdExtraArgs);
         arr.AddRange(inputs);
-
-        if (_optStatic) { arr.Add("--start-group"); arr.Add("-lgcc"); arr.Add("-lgcc_eh"); arr.Add("-lc"); arr.Add("--end-group"); }
-        else { arr.Add("-lc"); arr.Add("-lgcc"); arr.Add("--as-needed"); arr.Add("-lgcc_s"); arr.Add("--no-as-needed"); }
-
-        if (_optShared) arr.Add($"{gccLibpath}/crtendS.o");
-        else arr.Add($"{gccLibpath}/crtend.o");
-        arr.Add($"{libpath}/crtn.o");
-
         RunSubprocess(arr.ToArray());
     }
 
@@ -454,14 +425,12 @@ public class Driver
         Obj prog = parser.Parse(tok);
 
         var codegen = new CodeGen(Options, tokenizer);
-        var sw = new StringWriter();
-        codegen.Generate(prog, sw);
-        string asm = sw.ToString();
+        byte[] objBytes = codegen.Generate(prog, _outputFile ?? "output.obj");
 
         if (_outputFile == null || _outputFile == "-")
-            Console.Write(asm);
+            Console.OpenStandardOutput().Write(objBytes, 0, objBytes.Length);
         else
-            File.WriteAllText(_outputFile, asm);
+            File.WriteAllBytes(_outputFile, objBytes);
     }
 
     private void PrintTokens(Token tok)
