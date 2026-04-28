@@ -767,15 +767,11 @@ public class CodeGen
             bool hasReloc = v.Rel != null;
             bool hasInitData = v.InitData != null;
             bool isAllZero = hasInitData && !hasReloc && v.InitData.All(b => b == 0);
-            // Anonymous globals (string literals) always use HasFieldRVA.
-            // Named scalar globals (size <= 8) with non-zero init use CRTMA (single stsfld).
-            // Named aggregate globals without relocs use HasFieldRVA (read-only is fine
-            // because the initializer data is the complete value, never modified piecemeal).
-            // Globals with relocations use CRTMA to patch pointer slots.
+            // Anonymous globals (string literals) are immutable — use HasFieldRVA in rdata.
+            // All named globals with non-zero init use CRTMA because C globals are writable.
             bool isAnonymous = v.Name.StartsWith("__chibicc_anon_");
-            bool isSmallScalar = v.Ty.Size <= 8 && v.Ty.Kind != TypeKind.Struct && v.Ty.Kind != TypeKind.Union && v.Ty.Kind != TypeKind.Array;
-            bool useFieldRVA = hasInitData && !hasReloc && (!isSmallScalar || isAnonymous);
-            bool useCrtmaInit = !isAllZero && ((hasInitData && isSmallScalar && !isAnonymous) || hasReloc);
+            bool useFieldRVA = hasInitData && isAnonymous && !hasReloc;
+            bool useCrtmaInit = !isAllZero && ((hasInitData && !isAnonymous) || hasReloc);
 
             FieldAttributes attrs = FieldAttributes.Assembly | FieldAttributes.Static;
             if (useFieldRVA)
@@ -1894,10 +1890,42 @@ public class CodeGen
             }
             else if (global.InitData != null)
             {
-                // Small scalar init: single ldc + stsfld
-                EmitScalarInitConstant(enc, global);
-                enc.OpCode(ILOpCode.Stsfld);
-                enc.Token(fieldHandle);
+                if (global.Ty.Size <= 8 && global.Ty.Kind != TypeKind.Struct
+                    && global.Ty.Kind != TypeKind.Union && global.Ty.Kind != TypeKind.Array)
+                {
+                    // Small scalar init: single ldc + stsfld
+                    EmitScalarInitConstant(enc, global);
+                    enc.OpCode(ILOpCode.Stsfld);
+                    enc.Token(fieldHandle);
+                }
+                else
+                {
+                    // Large aggregate init: cpblk from anonymous RVA source
+                    // Create an anonymous field with the init data in rdata
+                    var srcName = $"__chibicc_anon_init_{global.Name}";
+                    FieldDefinitionHandle srcField;
+                    if (!fieldByName.TryGetValue(srcName, out srcField))
+                    {
+                        var srcSig = new BlobBuilder();
+                        var srcTypeEnc = new BlobEncoder(srcSig).Field().Type();
+                        EncodeType(srcTypeEnc.Builder, global.Ty);
+                        srcField = _md.AddFieldDefinition(
+                            FieldAttributes.Assembly | FieldAttributes.Static | FieldAttributes.HasFieldRVA,
+                            _md.GetOrAddString(srcName),
+                            _md.GetOrAddBlob(srcSig));
+                        _nextFieldRow++;
+                        int rva = _dataStream.Count;
+                        _dataStream.WriteBytes(global.InitData);
+                        _md.AddFieldRelativeVirtualAddress(srcField, rva);
+                        _symtab.AddDataClrToken(srcName, srcField, LogicalSection.RData, rva, out _);
+                        fieldByName[srcName] = srcField;
+                    }
+                    // ldsflda dest; ldsflda src; ldc.i4 size; cpblk
+                    enc.OpCode(ILOpCode.Ldsflda); enc.Token(fieldHandle);
+                    enc.OpCode(ILOpCode.Ldsflda); enc.Token(srcField);
+                    enc.LoadConstantI4(global.InitData.Length);
+                    enc.OpCode(ILOpCode.Cpblk);
+                }
             }
 
             enc.OpCode(ILOpCode.Ret);
@@ -1912,13 +1940,22 @@ public class CodeGen
     private void EmitScalarInitConstant(RelocatableInstructionEncoder enc, Obj v)
     {
         if (v.InitData == null) return;
-        switch (v.Ty.Size)
+        switch (v.Ty.Kind)
         {
-            case 1: enc.LoadConstantI4(v.InitData[0]); break;
-            case 2: enc.LoadConstantI4(BitConverter.ToInt16(v.InitData, 0)); break;
-            case 4: enc.LoadConstantI4(BitConverter.ToInt32(v.InitData, 0)); break;
-            case 8: enc.LoadConstantI8(BitConverter.ToInt64(v.InitData, 0)); break;
-            default: enc.LoadConstantI4(0); break;
+            case TypeKind.Float:
+                enc.LoadConstantR4(BitConverter.ToSingle(v.InitData, 0)); break;
+            case TypeKind.Double: case TypeKind.LDouble:
+                enc.LoadConstantR8(BitConverter.ToDouble(v.InitData, 0)); break;
+            default:
+                switch (v.Ty.Size)
+                {
+                    case 1: enc.LoadConstantI4(v.InitData[0]); break;
+                    case 2: enc.LoadConstantI4(BitConverter.ToInt16(v.InitData, 0)); break;
+                    case 4: enc.LoadConstantI4(BitConverter.ToInt32(v.InitData, 0)); break;
+                    case 8: enc.LoadConstantI8(BitConverter.ToInt64(v.InitData, 0)); break;
+                    default: enc.LoadConstantI4(0); break;
+                }
+                break;
         }
     }
 
