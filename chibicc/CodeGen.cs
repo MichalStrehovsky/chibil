@@ -50,6 +50,10 @@ public class CodeGen
     private readonly Dictionary<CType, TypeDefinitionHandle> _structTypeDefs = new();
     private readonly Dictionary<string, TypeDefinitionHandle> _arrayTypeDefs = new();
 
+    // CRTMA dynamic initializers for globals with relocations
+    private InitializerListSectionBuilder _initializerList;
+    private readonly List<(Obj global, MethodDefinitionHandle initMethod)> _globalInitializers = new();
+
     // Translation-unit hash for static local mangling
     private string _tuHash;
 
@@ -719,8 +723,11 @@ public class CodeGen
             var fieldSigEnc = new BlobEncoder(fieldSig).Field().Type();
             EncodeType(fieldSigEnc.Builder, v.Ty);
 
+            bool hasReloc = v.Rel != null;
+            bool hasInitData = v.InitData != null && !hasReloc;
+
             FieldAttributes attrs = FieldAttributes.Assembly | FieldAttributes.Static;
-            if (v.InitData != null)
+            if (hasInitData)
                 attrs |= FieldAttributes.HasFieldRVA;
 
             var fieldHandle = _md.AddFieldDefinition(
@@ -729,22 +736,55 @@ public class CodeGen
                 _md.GetOrAddBlob(fieldSig));
             _nextFieldRow++;
 
-            if (v.InitData != null)
+            if (hasInitData)
             {
-                // Write init data to the data section
                 int rva = _dataStream.Count;
                 _dataStream.WriteBytes(v.InitData);
                 _md.AddFieldRelativeVirtualAddress(fieldHandle, rva);
+                _symtab.AddDataClrToken(v.Name, fieldHandle, LogicalSection.RData, rva, out _);
             }
 
             _fieldDefs[v] = fieldHandle;
 
-            if (v.InitData != null)
+            // For globals with relocations, generate a dynamic initializer
+            if (hasReloc)
             {
-                LogicalSection section = LogicalSection.RData;
-                _symtab.AddDataClrToken(v.Name, fieldHandle, section, _dataStream.Count - v.InitData.Length, out _);
+                // Create initializer MethodDef: void ??__E<name>@@YMXXZ()
+                var initSig = new BlobBuilder();
+                new BlobEncoder(initSig).MethodSignature()
+                    .Parameters(0, out var initRet, out _);
+                initRet.Void();
+
+                string initName = $"{GetTuHash()}.??__E{v.Name}@@YMXXZ";
+                var initMethod = _md.AddMethodDefinition(
+                    MethodAttributes.Assembly | MethodAttributes.Static,
+                    MethodImplAttributes.IL | MethodImplAttributes.Managed,
+                    _md.GetOrAddString(initName),
+                    _md.GetOrAddBlob(initSig),
+                    0,
+                    MetadataTokens.ParameterHandle(_nextParamRow));
+                _nextMethodRow++;
+
+                _globalInitializers.Add((v, initMethod));
+                _initializerList.AddInitializer(initMethod);
+
+                // Create CRTMA field: function pointer with HasFieldRVA
+                var crtmaFieldSig = new BlobBuilder();
+                crtmaFieldSig.WriteByte(0x06); // FIELD
+                crtmaFieldSig.WriteByte(0x1B); // FNPTR
+                crtmaFieldSig.WriteByte(0x00); // DEFAULT, 0 generic
+                crtmaFieldSig.WriteByte(0x00); // 0 params
+                crtmaFieldSig.WriteByte(0x01); // VOID return
+
+                string crtmaFieldName = $"{GetTuHash()}.{v.Name}$initializer$";
+                var crtmaField = _md.AddFieldDefinition(
+                    FieldAttributes.Assembly | FieldAttributes.Static | FieldAttributes.HasFieldRVA,
+                    _md.GetOrAddString(crtmaFieldName),
+                    _md.GetOrAddBlob(crtmaFieldSig));
+                _nextFieldRow++;
+                _md.AddFieldRelativeVirtualAddress(crtmaField, 0);
+                _symtab.AddDataClrToken(crtmaFieldName, crtmaField, LogicalSection.Crtma, 0, out _);
             }
-            // Zero-initialized globals: no COFF data symbol needed, just the FieldDef
         }
     }
 
@@ -1676,16 +1716,104 @@ public class CodeGen
         _bodyEncoder = new RelocatableMethodBodyStreamEncoder(
             _ilStreamBuilder, _ilRelocBuilder, _symtab, _coffHeader, _codeviewSymbols);
 
+        _initializerList = new InitializerListSectionBuilder(_coffHeader, _symtab);
+
         RegisterMetadata(prog, objName);
         EmitFunctions(prog);
+        EmitGlobalInitializers();
         EmitCxxPureMSILEntry(prog);
 
         var coffBuilder = new ManagedCoffBuilder(_coffHeader, new MetadataRootBuilder(_md), _symtab,
             _codeviewSymbols, _ilStreamBuilder, _ilRelocBuilder,
-            _dataStream.Count > 0 ? _dataStream : null, _dataRelocs.Count > 0 ? _dataRelocs : null);
+            rdataStream: _dataStream.Count > 0 ? _dataStream : null,
+            initializerList: _initializerList.HasInitializers ? _initializerList : null);
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
         return output.ToArray();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  CRTMA dynamic initializers for globals with relocations
+    // ═══════════════════════════════════════════════════════════════
+
+    private void EmitGlobalInitializers()
+    {
+        foreach (var (global, initMethod) in _globalInitializers)
+        {
+            var enc = new RelocatableInstructionEncoder(
+                new BlobBuilder(), new MethodRelocationBuilder(),
+                new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+
+            // Walk the InitData and Rel chain to generate the initializer IL
+            // For pointer globals like `char* str = "Hello!";`:
+            //   The Rel chain tells us which offsets contain symbol references.
+            //   For each relocation: load the target symbol address + addend, store to the field.
+            //
+            // For scalar globals like `int g = 42;`:
+            //   No relocations — just load the constant and stsfld.
+
+            var fieldHandle = _fieldDefs[global];
+
+            if (global.Rel != null)
+            {
+                // Pointer-containing initializer: walk relocations
+                for (Relocation rel = global.Rel; rel != null; rel = rel.Next)
+                {
+                    // Find the target field (the symbol the relocation points to)
+                    string targetName = rel.Label();
+                    Obj targetObj = null;
+                    foreach (var kvp in _fieldDefs)
+                    {
+                        if (kvp.Key.Name == targetName) { targetObj = kvp.Key; break; }
+                    }
+                    if (targetObj != null && _fieldDefs.TryGetValue(targetObj, out var targetField))
+                    {
+                        // ldsflda <target> + addend → stsfld <global>
+                        enc.OpCode(ILOpCode.Ldsflda);
+                        enc.Token(targetField);
+                        if (rel.Addend != 0)
+                        {
+                            enc.LoadConstantI8(rel.Addend);
+                            enc.OpCode(ILOpCode.Add);
+                        }
+                        enc.OpCode(ILOpCode.Stsfld);
+                        enc.Token(fieldHandle);
+                    }
+                    else
+                    {
+                        Console.Error.WriteLine($"CRTMA: relocation target '{targetName}' not found for global '{global.Name}'");
+                    }
+                }
+            }
+            else if (global.InitData != null)
+            {
+                // Non-zero scalar: load constant, stsfld
+                // For now handle simple int/long scalar inits
+                EmitScalarInitConstant(enc, global);
+                enc.OpCode(ILOpCode.Stsfld);
+                enc.Token(fieldHandle);
+            }
+
+            enc.OpCode(ILOpCode.Ret);
+
+            string initCoffName = $"???__E{global.Name}@@YMXXZ@{GetTuHash()}@@$$FYMXXZ";
+            _bodyEncoder.AddMethodBody(initMethod, initCoffName, enc,
+                maxStack: 2,
+                debugName: $"`dynamic initializer for '{global.Name}''");
+        }
+    }
+
+    private void EmitScalarInitConstant(RelocatableInstructionEncoder enc, Obj v)
+    {
+        if (v.InitData == null) return;
+        switch (v.Ty.Size)
+        {
+            case 1: enc.LoadConstantI4(v.InitData[0]); break;
+            case 2: enc.LoadConstantI4(BitConverter.ToInt16(v.InitData, 0)); break;
+            case 4: enc.LoadConstantI4(BitConverter.ToInt32(v.InitData, 0)); break;
+            case 8: enc.LoadConstantI8(BitConverter.ToInt64(v.InitData, 0)); break;
+            default: enc.LoadConstantI4(0); break;
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
