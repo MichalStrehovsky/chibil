@@ -350,7 +350,16 @@ public class CodeGen
                 EncodeType(sig, ty.Base);
                 break;
             case TypeKind.Array:
-                EncodeValueType(sig, GetOrCreateArrayTypeDef(ty));
+                if (ty.ArrayLen <= 0)
+                {
+                    // Incomplete array (extern T arr[]) — treat as pointer to element
+                    sig.WriteByte((byte)SignatureTypeCode.Pointer);
+                    EncodeType(sig, ty.Base);
+                }
+                else
+                {
+                    EncodeValueType(sig, GetOrCreateArrayTypeDef(ty));
+                }
                 break;
             case TypeKind.Struct: case TypeKind.Union:
                 if (_structTypeDefs.TryGetValue(ty, out var sth))
@@ -562,7 +571,8 @@ public class CodeGen
                 break;
             case TypeKind.Array:
                 PreAllocateTypeDefsFromType(ty.Base, registered, ref nextTypeDefRow);
-                PreAllocateArrayTypeDef(ty, ref nextTypeDefRow);
+                if (ty.ArrayLen > 0) // skip incomplete arrays (extern T arr[])
+                    PreAllocateArrayTypeDef(ty, ref nextTypeDefRow);
                 break;
             case TypeKind.Func:
                 PreAllocateTypeDefsFromType(ty.ReturnTy, registered, ref nextTypeDefRow);
