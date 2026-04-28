@@ -737,6 +737,29 @@ public class CodeGen
         switch (node.Kind)
         {
             case NodeKind.Var:
+                // Function address → ldftn
+                if (node.Var.Ty.Kind == TypeKind.Func && !node.Var.IsLocal)
+                {
+                    if (_methodDefs.TryGetValue(node.Var, out var mh))
+                    {
+                        _enc.OpCode(ILOpCode.Ldftn);
+                        _enc.Token(mh);
+                        Push();
+                    }
+                    else
+                    {
+                        // External function
+                        if (!_externalFuncRefs.TryGetValue(node.Var.Name, out var mr))
+                        {
+                            mr = CreateExternalMemberRef(node.Var);
+                            _externalFuncRefs[node.Var.Name] = mr;
+                        }
+                        _enc.OpCode(ILOpCode.Ldftn);
+                        _enc.Token((EntityHandle)mr);
+                        Push();
+                    }
+                    return;
+                }
                 if (node.Var.IsLocal)
                 {
                     if (_paramSlots.TryGetValue(node.Var, out int pIdx))
@@ -1028,7 +1051,7 @@ public class CodeGen
                 int argCount = 0;
                 for (Node arg = node.Args; arg != null; arg = arg.Next) { GenExpr(arg); argCount++; }
                 EntityHandle callTarget = default;
-                if (node.Lhs.Kind == NodeKind.Var)
+                if (node.Lhs.Kind == NodeKind.Var && node.Lhs.Var.Ty.Kind == TypeKind.Func)
                 {
                     Obj fnVar = node.Lhs.Var;
                     if (_methodDefs.TryGetValue(fnVar, out var mh)) callTarget = mh;
