@@ -1744,9 +1744,12 @@ public class CodeGen
         var fieldByName = new Dictionary<string, FieldDefinitionHandle>();
         foreach (var kvp in _fieldDefs)
             fieldByName[kvp.Key.Name] = kvp.Value;
-        var funcByName = new Dictionary<string, MethodDefinitionHandle>();
+        // Build function lookup from both definitions and external refs
+        var funcHandleByName = new Dictionary<string, EntityHandle>();
         foreach (var kvp in _methodDefs)
-            funcByName[kvp.Key.Name] = kvp.Value;
+            funcHandleByName[kvp.Key.Name] = kvp.Value;
+        foreach (var kvp in _externalFuncRefs)
+            funcHandleByName.TryAdd(kvp.Key, kvp.Value);
 
         foreach (var (global, initMethod) in _globalInitializers)
         {
@@ -1794,9 +1797,9 @@ public class CodeGen
                         enc.OpCode(ILOpCode.Ldsflda); enc.Token(targetField);
                         if (rel.Addend != 0) { enc.LoadConstantI8(rel.Addend); enc.OpCode(ILOpCode.Add); }
                     }
-                    else if (funcByName.TryGetValue(targetName, out var targetMethod))
+                    else if (funcHandleByName.TryGetValue(targetName, out var targetMethodHandle))
                     {
-                        enc.OpCode(ILOpCode.Ldftn); enc.Token(targetMethod);
+                        enc.OpCode(ILOpCode.Ldftn); enc.Token(targetMethodHandle);
                         if (rel.Addend != 0) { enc.LoadConstantI8(rel.Addend); enc.OpCode(ILOpCode.Add); }
                     }
                     else
@@ -1834,9 +1837,10 @@ public class CodeGen
                         enc.OpCode(ILOpCode.Ldsflda); enc.Token(targetField);
                         if (rel.Addend != 0) { enc.LoadConstantI8(rel.Addend); enc.OpCode(ILOpCode.Add); }
                     }
-                    else if (funcByName.TryGetValue(targetName, out var targetMethod))
+                    else if (funcHandleByName.TryGetValue(targetName, out var targetMethodHandle))
                     {
-                        enc.OpCode(ILOpCode.Ldftn); enc.Token(targetMethod);
+                        enc.OpCode(ILOpCode.Ldftn); enc.Token(targetMethodHandle);
+                        if (rel.Addend != 0) { enc.LoadConstantI8(rel.Addend); enc.OpCode(ILOpCode.Add); }
                     }
                     else
                     {
