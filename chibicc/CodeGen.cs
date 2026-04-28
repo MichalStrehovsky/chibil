@@ -798,11 +798,10 @@ public class CodeGen
             bool hasReloc = v.Rel != null;
             bool hasInitData = v.InitData != null;
             bool isAllZero = hasInitData && !hasReloc && v.InitData.All(b => b == 0);
-            // Anonymous globals (string literals) are immutable — use HasFieldRVA in rdata.
-            // All named globals with non-zero init use CRTMA because C globals are writable.
-            bool isAnonymous = v.Name.StartsWith("__chibicc_anon_");
-            bool useFieldRVA = hasInitData && isAnonymous && !hasReloc;
-            bool useCrtmaInit = !isAllZero && ((hasInitData && !isAnonymous) || hasReloc);
+            // String literals are immutable — use HasFieldRVA in rdata.
+            // All other globals with non-zero init use CRTMA because C globals are writable.
+            bool useFieldRVA = hasInitData && v.IsStringLiteral && !hasReloc;
+            bool useCrtmaInit = !isAllZero && ((hasInitData && !v.IsStringLiteral) || hasReloc);
 
             FieldAttributes attrs = FieldAttributes.Assembly | FieldAttributes.Static;
             if (useFieldRVA)

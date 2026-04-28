@@ -198,6 +198,7 @@ public class Obj
     // Static inline function
     public bool IsLive;
     public bool IsRoot;
+    public bool IsStringLiteral; // true for string literals (immutable, can use HasFieldRVA)
     public List<string> Refs = new();
 }
 
