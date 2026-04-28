@@ -365,7 +365,14 @@ public class CodeGen
                 if (_structTypeDefs.TryGetValue(ty, out var sth))
                     EncodeValueType(sig, sth);
                 else
-                    sig.WriteByte((byte)SignatureTypeCode.Int32);
+                {
+                    // Forward-declared/incomplete struct — use TypeRef with null scope
+                    string fwdName = GetStructName(ty);
+                    var fwdRef = _md.AddTypeReference(default(EntityHandle),
+                        default, _md.GetOrAddString(fwdName));
+                    sig.WriteByte(0x11); // ELEMENT_TYPE_VALUETYPE
+                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(fwdRef));
+                }
                 break;
             case TypeKind.Func:
                 sig.WriteByte((byte)SignatureTypeCode.FunctionPointer);
@@ -556,7 +563,7 @@ public class CodeGen
         switch (ty.Kind)
         {
             case TypeKind.Struct: case TypeKind.Union:
-                if (!_structTypeDefs.ContainsKey(ty))
+                if (!_structTypeDefs.ContainsKey(ty) && ty.Size > 0)
                 {
                     string name = GetStructName(ty);
                     var handle = MetadataTokens.TypeDefinitionHandle(nextTypeDefRow++);
@@ -610,6 +617,8 @@ public class CodeGen
             System.Diagnostics.Debug.Assert(actualHandle == expectedHandle,
                 $"TypeDef handle mismatch: expected {MetadataTokens.GetRowNumber(expectedHandle)}, got {MetadataTokens.GetRowNumber(actualHandle)} for '{name}'");
 
+            System.Diagnostics.Debug.Assert(ty.Size > 0,
+                $"TypeDef '{name}' has non-positive size {ty.Size}");
             _md.AddTypeLayout(actualHandle, 0, (uint)ty.Size);
             _md.AddCustomAttribute(actualHandle, GetNativeCppCtorRef(), GetDefaultCtorAttrBlob());
             _md.AddCustomAttribute(actualHandle, GetUnsafeVTCtorRef(), GetDefaultCtorAttrBlob());
