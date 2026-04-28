@@ -118,14 +118,14 @@ public class CodeGen
     private CodeViewFileHandle GetCvFile(Token tok)
     {
         if (tok?.File == null) return _cvFile;
-        string name = tok.File.DisplayName ?? tok.File.Name;
-        if (_cvFileCache.TryGetValue(name, out var handle)) return handle;
-        // Hash raw file bytes from disk (not tokenizer buffer which has been modified)
+        string displayName = tok.File.DisplayName ?? tok.File.Name;
+        if (_cvFileCache.TryGetValue(displayName, out var handle)) return handle;
+        // Hash raw file bytes from disk using the real path, not DisplayName
         byte[] hash;
-        try { hash = SHA256.HashData(File.ReadAllBytes(name)); }
+        try { hash = SHA256.HashData(File.ReadAllBytes(tok.File.Name)); }
         catch { hash = new byte[32]; }
-        handle = _codeviewSymbols.GetOrAddFile(name, CodeViewChecksumType.SHA256, hash);
-        _cvFileCache[name] = handle;
+        handle = _codeviewSymbols.GetOrAddFile(displayName, CodeViewChecksumType.SHA256, hash);
+        _cvFileCache[displayName] = handle;
         return handle;
     }
 
@@ -1896,8 +1896,11 @@ public class CodeGen
             }
             else if (global.InitData != null)
             {
-                if (global.Ty.Size <= 8 && global.Ty.Kind != TypeKind.Struct
-                    && global.Ty.Kind != TypeKind.Union && global.Ty.Kind != TypeKind.Array)
+                bool isScalar = global.Ty.Kind != TypeKind.Struct
+                    && global.Ty.Kind != TypeKind.Union && global.Ty.Kind != TypeKind.Array;
+                // LDouble is size 16 in the type system but encoded as float64 (8 bytes) in metadata
+                bool isSmallOrLDouble = (global.Ty.Size <= 8 || global.Ty.Kind == TypeKind.LDouble) && isScalar;
+                if (isSmallOrLDouble)
                 {
                     // Small scalar init: single ldc + stsfld
                     EmitScalarInitConstant(enc, global);
