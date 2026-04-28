@@ -49,6 +49,7 @@ public class CodeGen
     private readonly Dictionary<string, MemberReferenceHandle> _externalFuncRefs = new();
     private readonly Dictionary<CType, TypeDefinitionHandle> _structTypeDefs = new();
     private readonly Dictionary<string, TypeDefinitionHandle> _arrayTypeDefs = new();
+    private readonly Dictionary<string, TypeReferenceHandle> _forwardDeclTypeRefs = new();
 
     // CRTMA dynamic initializers for globals with relocations
     private InitializerListSectionBuilder _initializerList;
@@ -119,8 +120,9 @@ public class CodeGen
         if (tok?.File == null) return _cvFile;
         string name = tok.File.DisplayName ?? tok.File.Name;
         if (_cvFileCache.TryGetValue(name, out var handle)) return handle;
+        // Hash raw file bytes from disk (not tokenizer buffer which has been modified)
         byte[] hash;
-        try { hash = SHA256.HashData(tok.File.Contents ?? File.ReadAllBytes(name)); }
+        try { hash = SHA256.HashData(File.ReadAllBytes(name)); }
         catch { hash = new byte[32]; }
         handle = _codeviewSymbols.GetOrAddFile(name, CodeViewChecksumType.SHA256, hash);
         _cvFileCache[name] = handle;
@@ -380,10 +382,14 @@ public class CodeGen
                     EncodeValueType(sig, sth);
                 else
                 {
-                    // Forward-declared/incomplete struct — use TypeRef with null scope
+                    // Forward-declared/incomplete struct — use cached TypeRef with null scope
                     string fwdName = GetStructName(ty);
-                    var fwdRef = _md.AddTypeReference(default(EntityHandle),
-                        default, _md.GetOrAddString(fwdName));
+                    if (!_forwardDeclTypeRefs.TryGetValue(fwdName, out var fwdRef))
+                    {
+                        fwdRef = _md.AddTypeReference(default(EntityHandle),
+                            default, _md.GetOrAddString(fwdName));
+                        _forwardDeclTypeRefs[fwdName] = fwdRef;
+                    }
                     sig.WriteByte(0x11); // ELEMENT_TYPE_VALUETYPE
                     sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(fwdRef));
                 }
