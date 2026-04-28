@@ -80,10 +80,30 @@ public class CodeGen
     private BlobBuilder _dataStream;
     private BlobBuilder _dataRelocs;
 
+    // Scratch locals added during IL emission (for assignment dup, etc.)
+    private readonly List<CType> _scratchLocals = new();
+    private int _scratchLocalBase; // first slot index for scratch locals
+
     public CodeGen(CompilerOptions options, Tokenizer tokenizer)
     {
         _options = options;
         _tokenizer = tokenizer;
+    }
+
+    /// <summary>
+    /// Gets or adds a scratch local variable slot for temporary values during IL emission.
+    /// These are added after the user's locals.
+    /// </summary>
+    private int GetOrAddScratchLocal(CType ty)
+    {
+        // Reuse existing scratch local of same type
+        for (int i = 0; i < _scratchLocals.Count; i++)
+        {
+            if (_scratchLocals[i].Kind == ty.Kind && _scratchLocals[i].Size == ty.Size)
+                return _scratchLocalBase + i;
+        }
+        _scratchLocals.Add(ty);
+        return _scratchLocalBase + _scratchLocals.Count - 1;
     }
 
     private int Count() => _labelCount++;
@@ -585,6 +605,8 @@ public class CodeGen
             EncodeType(fieldSigEnc.Builder, v.Ty);
 
             FieldAttributes attrs = FieldAttributes.Assembly | FieldAttributes.Static;
+            if (v.InitData != null)
+                attrs |= FieldAttributes.HasFieldRVA;
 
             var fieldHandle = _md.AddFieldDefinition(
                 attrs,
@@ -592,8 +614,18 @@ public class CodeGen
                 _md.GetOrAddBlob(fieldSig));
             _nextFieldRow++;
 
+            if (v.InitData != null)
+            {
+                // Write init data to the data section
+                int rva = _dataStream.Count;
+                _dataStream.WriteBytes(v.InitData);
+                _md.AddFieldRelativeVirtualAddress(fieldHandle, rva);
+            }
+
             _fieldDefs[v] = fieldHandle;
-            _symtab.AddDataClrToken(v.Name, fieldHandle, LogicalSection.Data, 0, out _);
+
+            LogicalSection section = v.InitData != null ? LogicalSection.RData : LogicalSection.Data;
+            _symtab.AddDataClrToken(v.Name, fieldHandle, section, v.InitData != null ? _dataStream.Count - v.InitData.Length : 0, out _);
         }
     }
 
@@ -603,11 +635,19 @@ public class CodeGen
 
     private void EmitFunctions(Obj prog)
     {
+        // Collect live functions, then emit in reverse order so callees
+        // are registered before callers (AddMethodBody registers the COFF
+        // token symbol, and call instructions create undefined token
+        // references that must not precede the definition).
+        var fns = new List<Obj>();
         for (Obj fn = prog; fn != null; fn = fn.Next)
         {
             if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
-            EmitFunction(fn);
+            fns.Add(fn);
         }
+        fns.Reverse();
+        foreach (Obj fn in fns)
+            EmitFunction(fn);
     }
 
     private void EmitFunction(Obj fn)
@@ -616,6 +656,7 @@ public class CodeGen
         _localSlots.Clear();
         _paramSlots.Clear();
         _labels.Clear();
+        _scratchLocals.Clear();
         _maxStack = 0;
         _stackDepth = 0;
         _labelCount = 1;
@@ -636,21 +677,7 @@ public class CodeGen
             if (_paramSlots.ContainsKey(local)) continue;
             _localSlots[local] = localIdx++;
         }
-
-        // Build locals signature
-        _localsSigHandle = default;
-        if (localIdx > 0)
-        {
-            var localsSig = new BlobBuilder();
-            var localsEnc = new BlobEncoder(localsSig).LocalVariableSignature(localIdx);
-            for (Obj local = fn.Locals; local != null; local = local.Next)
-            {
-                if (!_localSlots.ContainsKey(local)) continue;
-                var varEnc = localsEnc.AddVariable().Type();
-                EncodeType(varEnc.Builder, local.Ty);
-            }
-            _localsSigHandle = _md.AddStandaloneSignature(_md.GetOrAddBlob(localsSig));
-        }
+        _scratchLocalBase = localIdx;
 
         if (fn.Body != null && fn.Body.Tok != null)
             _enc.MarkLineNumber(_cvFile, fn.Body.Tok.LineNo);
@@ -662,14 +689,35 @@ public class CodeGen
         if (_labels.TryGetValue(retLabel, out var retLabelHandle))
             _enc.MarkLabel(retLabelHandle);
 
-        // Ensure main returns 0 if it falls through
-        if (fn.Name == "main" && fn.Ty.ReturnTy.Kind != TypeKind.Void)
+        // Ensure non-void functions have a return value on fallthrough
+        if (fn.Ty.ReturnTy.Kind != TypeKind.Void)
         {
-            _enc.LoadConstantI4(0);
+            EmitDefaultValue(fn.Ty.ReturnTy);
             Push();
         }
         _enc.OpCode(ILOpCode.Ret);
         if (_stackDepth > 0) Pop();
+
+        // Build locals signature (including any scratch locals added during emission)
+        int totalLocals = localIdx + _scratchLocals.Count;
+        _localsSigHandle = default;
+        if (totalLocals > 0)
+        {
+            var localsSig = new BlobBuilder();
+            var localsEnc = new BlobEncoder(localsSig).LocalVariableSignature(totalLocals);
+            for (Obj local = fn.Locals; local != null; local = local.Next)
+            {
+                if (!_localSlots.ContainsKey(local)) continue;
+                var varEnc = localsEnc.AddVariable().Type();
+                EncodeType(varEnc.Builder, local.Ty);
+            }
+            foreach (var scratchTy in _scratchLocals)
+            {
+                var varEnc = localsEnc.AddVariable().Type();
+                EncodeType(varEnc.Builder, scratchTy);
+            }
+            _localsSigHandle = _md.AddStandaloneSignature(_md.GetOrAddBlob(localsSig));
+        }
 
         var methodHandle = _methodDefs[fn];
         string mangledName = MangleFunctionName(fn);
@@ -713,7 +761,13 @@ public class CodeGen
                         Push();
                     }
                     else
-                        Util.ErrorTok(node.Tok, $"global '{node.Var.Name}' not registered");
+                    {
+                        // External (non-definition) global — create on demand
+                        var extFh = GetOrCreateExternalField(node.Var);
+                        _enc.OpCode(ILOpCode.Ldsflda);
+                        _enc.Token(extFh);
+                        Push();
+                    }
                 }
                 return;
             case NodeKind.Deref:
@@ -820,8 +874,36 @@ public class CodeGen
         }
     }
 
+    private void EmitDefaultValue(CType ty)
+    {
+        switch (ty.Kind)
+        {
+            case TypeKind.Float: _enc.LoadConstantR4(0.0f); break;
+            case TypeKind.Double: case TypeKind.LDouble: _enc.LoadConstantR8(0.0); break;
+            case TypeKind.Long: _enc.LoadConstantI8(0); break;
+            default: _enc.LoadConstantI4(0); break;
+        }
+    }
+
     private void CmpZero(CType ty)
     {
+        // Compare-to-zero: value → 0 or 1
+        switch (ty.Kind)
+        {
+            case TypeKind.Float:
+                _enc.LoadConstantR4(0.0f); Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                // ceq gives 1 if equal to zero; we want "not zero"
+                _enc.LoadConstantI4(0); Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                return;
+            case TypeKind.Double: case TypeKind.LDouble:
+                _enc.LoadConstantR8(0.0); Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                _enc.LoadConstantI4(0); Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                return;
+        }
         _enc.LoadConstantI4(0); Push();
         if (ty.Kind == TypeKind.Long || ty.Kind == TypeKind.Ptr || ty.Size == 8)
             _enc.OpCode(ILOpCode.Conv_i8);
@@ -861,7 +943,34 @@ public class CodeGen
                 return;
             case NodeKind.Deref: GenExpr(node.Lhs); Load(node.Ty); return;
             case NodeKind.Addr: GenAddr(node.Lhs); return;
-            case NodeKind.Assign: GenAddr(node.Lhs); GenExpr(node.Rhs); Store(node.Ty); return;
+            case NodeKind.Assign:
+                GenAddr(node.Lhs);  // stack: [addr]
+                GenExpr(node.Rhs);  // stack: [addr, val]
+                // Dup the value so assignment expression leaves its result
+                // Stack after: [addr, val, val]
+                _enc.OpCode(ILOpCode.Dup); Push();
+                // Rotate: we need [val, addr, val] for stind, but stind expects [addr, val].
+                // Simpler approach: store to a temp, then store, then reload temp.
+                // Actually: GenAddr pushes addr, GenExpr pushes val, we need addr,val for stind
+                // and want val left over. So: dup val → [addr, val, val], then use a temp local.
+                // Cleanest approach for struct: skip dup. For scalars: dup + stloc + stind + ldloc.
+                if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union)
+                {
+                    // For struct assign: addr, src_addr on stack → cpblk
+                    Pop(); // undo the dup
+                    Store(node.Ty);
+                    // Struct assignment as expression: reload address of lhs
+                    GenAddr(node.Lhs);
+                }
+                else
+                {
+                    // [addr, val, val_copy] — store val_copy to a scratch local
+                    int scratchSlot = GetOrAddScratchLocal(node.Ty);
+                    _enc.StoreLocal(scratchSlot); Pop();  // [addr, val]
+                    Store(node.Ty);                       // []
+                    _enc.LoadLocal(scratchSlot); Push();   // [val]
+                }
+                return;
             case NodeKind.StmtExpr:
                 for (Node n = node.Body; n != null; n = n.Next)
                     if (n.Next == null && n.Kind == NodeKind.ExprStmt) GenExpr(n.Lhs);
@@ -940,11 +1049,21 @@ public class CodeGen
                 }
                 else
                 {
-                    GenExpr(node.Lhs);
-                    // TODO: calli
-                    _enc.OpCode(ILOpCode.Pop); Pop();
-                    for (int i = 0; i < argCount; i++) { _enc.OpCode(ILOpCode.Pop); Pop(); }
-                    if (node.Ty.Kind != TypeKind.Void) { _enc.LoadConstantI4(0); Push(); }
+                    // Indirect call via function pointer — use calli
+                    GenExpr(node.Lhs); // pushes the function pointer
+                    // Build standalone signature for the call
+                    var calliSig = new BlobBuilder();
+                    calliSig.WriteByte(0x00); // DEFAULT calling convention
+                    int cParamCount = 0;
+                    for (CType cp = node.FuncTy.Params; cp != null; cp = cp.Next) cParamCount++;
+                    calliSig.WriteCompressedInteger(cParamCount);
+                    EncodeType(calliSig, node.FuncTy.ReturnTy);
+                    for (CType cp = node.FuncTy.Params; cp != null; cp = cp.Next)
+                        EncodeType(calliSig, cp);
+                    var calliSigHandle = _md.AddStandaloneSignature(_md.GetOrAddBlob(calliSig));
+                    _enc.CallIndirect(calliSigHandle);
+                    Pop(argCount + 1); // pops args + function pointer
+                    if (node.Ty.Kind != TypeKind.Void) Push();
                 }
                 return;
             }
@@ -991,6 +1110,27 @@ public class CodeGen
         return memberRef;
     }
 
+    private FieldDefinitionHandle GetOrCreateExternalField(Obj v)
+    {
+        // Check if already registered
+        if (_fieldDefs.TryGetValue(v, out var existing))
+            return existing;
+
+        var fieldSig = new BlobBuilder();
+        var fieldSigEnc = new BlobEncoder(fieldSig).Field().Type();
+        EncodeType(fieldSigEnc.Builder, v.Ty);
+
+        var fieldHandle = _md.AddFieldDefinition(
+            FieldAttributes.Assembly | FieldAttributes.Static,
+            _md.GetOrAddString(v.Name),
+            _md.GetOrAddBlob(fieldSig));
+        _nextFieldRow++;
+
+        _fieldDefs[v] = fieldHandle;
+        _symtab.AddDataClrToken(v.Name, fieldHandle, LogicalSection.Data, 0, out _);
+        return fieldHandle;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     //  Statement code generation
     // ═══════════════════════════════════════════════════════════════
@@ -1034,19 +1174,49 @@ public class CodeGen
             case NodeKind.Switch:
             {
                 GenExpr(node.Cond);
+                // Store condition in a scratch local to avoid stack leak at case labels
+                int switchLocal = GetOrAddScratchLocal(node.Cond.Ty);
+                _enc.StoreLocal(switchLocal); Pop();
+
                 var endL = _enc.DefineLabel();
                 if (node.BrkLabel != null) _labels[node.BrkLabel] = endL;
                 for (Node n = node.CaseNext; n != null; n = n.CaseNext)
                 {
                     var caseL = _enc.DefineLabel();
                     _labels[n.Label] = caseL;
-                    _enc.OpCode(ILOpCode.Dup); Push();
-                    _enc.LoadConstantI4((int)n.Begin); Push();
-                    _enc.Branch(ILOpCode.Beq, caseL); Pop(2);
+                    _enc.LoadLocal(switchLocal); Push();
+                    if (node.Cond.Ty.Kind == TypeKind.Long || node.Cond.Ty.Size == 8)
+                        _enc.LoadConstantI8(n.Begin);
+                    else
+                        _enc.LoadConstantI4((int)n.Begin);
+                    Push();
+                    if (n.Begin == n.End)
+                    {
+                        _enc.Branch(ILOpCode.Beq, caseL); Pop(2);
+                    }
+                    else
+                    {
+                        // Range case: n.Begin ... n.End
+                        // subtract Begin, compare unsigned <= (End - Begin)
+                        _enc.OpCode(ILOpCode.Sub); Pop();
+                        if (node.Cond.Ty.Kind == TypeKind.Long || node.Cond.Ty.Size == 8)
+                            _enc.LoadConstantI8(n.End - n.Begin);
+                        else
+                            _enc.LoadConstantI4((int)(n.End - n.Begin));
+                        Push();
+                        _enc.Branch(ILOpCode.Ble_un, caseL); Pop(2);
+                    }
                 }
-                if (node.DefaultCase != null) { var defL = _enc.DefineLabel(); _labels[node.DefaultCase.Label] = defL; _enc.Branch(ILOpCode.Br, defL); }
-                else _enc.Branch(ILOpCode.Br, endL);
-                _enc.OpCode(ILOpCode.Pop); Pop();
+                if (node.DefaultCase != null)
+                {
+                    var defL = _enc.DefineLabel();
+                    _labels[node.DefaultCase.Label] = defL;
+                    _enc.Branch(ILOpCode.Br, defL);
+                }
+                else
+                {
+                    _enc.Branch(ILOpCode.Br, endL);
+                }
                 GenStmt(node.Then); _enc.MarkLabel(endL);
                 return;
             }
