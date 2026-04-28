@@ -527,19 +527,16 @@ public class CodeGen
     private void PreAllocateStructTypeDefs(Obj prog, ref int nextTypeDefRow)
     {
         var registered = new HashSet<CType>();
+        // Scan ALL objects (functions, globals, externs) for type discovery
         for (Obj obj = prog; obj != null; obj = obj.Next)
         {
-            if (obj.IsFunction && obj.IsDefinition && obj.IsLive)
+            PreAllocateTypeDefsFromType(obj.Ty, registered, ref nextTypeDefRow);
+            if (obj.IsFunction)
             {
-                PreAllocateTypeDefsFromType(obj.Ty, registered, ref nextTypeDefRow);
                 for (Obj local = obj.Locals; local != null; local = local.Next)
                     PreAllocateTypeDefsFromType(local.Ty, registered, ref nextTypeDefRow);
                 for (Obj param = obj.Params; param != null; param = param.Next)
                     PreAllocateTypeDefsFromType(param.Ty, registered, ref nextTypeDefRow);
-            }
-            else if (!obj.IsFunction && obj.IsDefinition)
-            {
-                PreAllocateTypeDefsFromType(obj.Ty, registered, ref nextTypeDefRow);
             }
         }
     }
@@ -667,6 +664,10 @@ public class CodeGen
             }
 
             _methodDefs[fn] = methodHandle;
+
+            // Pre-register COFF symbol so forward-referencing calls don't conflict
+            string mangledName = MangleFunctionName(fn);
+            _symtab.PreRegisterFunctionClrToken(mangledName, methodHandle);
 
             // Register __CxxPureMSILEntry immediately after main so it's
             // owned by <Module> (before struct TypeDefs are materialized)
@@ -803,19 +804,11 @@ public class CodeGen
 
     private void EmitFunctions(Obj prog)
     {
-        // Collect live functions, then emit in reverse order so callees
-        // are registered before callers (AddMethodBody registers the COFF
-        // token symbol, and call instructions create undefined token
-        // references that must not precede the definition).
-        var fns = new List<Obj>();
         for (Obj fn = prog; fn != null; fn = fn.Next)
         {
             if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
-            fns.Add(fn);
-        }
-        fns.Reverse();
-        foreach (Obj fn in fns)
             EmitFunction(fn);
+        }
     }
 
     private void EmitFunction(Obj fn)
@@ -1747,10 +1740,13 @@ public class CodeGen
 
     private void EmitGlobalInitializers()
     {
-        // Build name→FieldDef index for relocation target lookups
+        // Build name→handle indices for relocation target lookups
         var fieldByName = new Dictionary<string, FieldDefinitionHandle>();
         foreach (var kvp in _fieldDefs)
             fieldByName[kvp.Key.Name] = kvp.Value;
+        var funcByName = new Dictionary<string, MethodDefinitionHandle>();
+        foreach (var kvp in _methodDefs)
+            funcByName[kvp.Key.Name] = kvp.Value;
 
         foreach (var (global, initMethod) in _globalInitializers)
         {
@@ -1789,22 +1785,26 @@ public class CodeGen
 
                     // Write pointer at relocation offset
                     string targetName = rel.Label();
-                    Obj targetObj = null;
-                    foreach (var kvp in _fieldDefs)
-                        if (kvp.Key.Name == targetName) { targetObj = kvp.Key; break; }
 
-                    if (targetObj != null && _fieldDefs.TryGetValue(targetObj, out var targetField))
+                    enc.OpCode(ILOpCode.Ldsflda); enc.Token(fieldHandle);
+                    if (rel.Offset != 0) { enc.LoadConstantI4(rel.Offset); enc.OpCode(ILOpCode.Add); }
+
+                    if (fieldByName.TryGetValue(targetName, out var targetField))
                     {
-                        enc.OpCode(ILOpCode.Ldsflda); enc.Token(fieldHandle);
-                        if (rel.Offset != 0) { enc.LoadConstantI4(rel.Offset); enc.OpCode(ILOpCode.Add); }
                         enc.OpCode(ILOpCode.Ldsflda); enc.Token(targetField);
                         if (rel.Addend != 0) { enc.LoadConstantI8(rel.Addend); enc.OpCode(ILOpCode.Add); }
-                        enc.OpCode(ILOpCode.Stind_i);
+                    }
+                    else if (funcByName.TryGetValue(targetName, out var targetMethod))
+                    {
+                        enc.OpCode(ILOpCode.Ldftn); enc.Token(targetMethod);
+                        if (rel.Addend != 0) { enc.LoadConstantI8(rel.Addend); enc.OpCode(ILOpCode.Add); }
                     }
                     else
                     {
                         Console.Error.WriteLine($"CRTMA: relocation target '{targetName}' not found for global '{global.Name}'");
+                        enc.LoadConstantI4(0); enc.OpCode(ILOpCode.Conv_i);
                     }
+                    enc.OpCode(ILOpCode.Stind_i);
 
                     pos = rel.Offset + 8; // skip past the 8-byte pointer slot
                 }
@@ -1823,21 +1823,26 @@ public class CodeGen
             }
             else if (global.Rel != null)
             {
-                // Rel without InitData (shouldn't happen, but handle gracefully)
                 for (Relocation rel = global.Rel; rel != null; rel = rel.Next)
                 {
                     string targetName = rel.Label();
-                    Obj targetObj = null;
-                    foreach (var kvp in _fieldDefs)
-                        if (kvp.Key.Name == targetName) { targetObj = kvp.Key; break; }
-                    if (targetObj != null && _fieldDefs.TryGetValue(targetObj, out var targetField))
+                    enc.OpCode(ILOpCode.Ldsflda); enc.Token(fieldHandle);
+                    if (rel.Offset != 0) { enc.LoadConstantI4(rel.Offset); enc.OpCode(ILOpCode.Add); }
+
+                    if (fieldByName.TryGetValue(targetName, out var targetField))
                     {
-                        enc.OpCode(ILOpCode.Ldsflda); enc.Token(fieldHandle);
-                        if (rel.Offset != 0) { enc.LoadConstantI4(rel.Offset); enc.OpCode(ILOpCode.Add); }
                         enc.OpCode(ILOpCode.Ldsflda); enc.Token(targetField);
                         if (rel.Addend != 0) { enc.LoadConstantI8(rel.Addend); enc.OpCode(ILOpCode.Add); }
-                        enc.OpCode(ILOpCode.Stind_i);
                     }
+                    else if (funcByName.TryGetValue(targetName, out var targetMethod))
+                    {
+                        enc.OpCode(ILOpCode.Ldftn); enc.Token(targetMethod);
+                    }
+                    else
+                    {
+                        enc.LoadConstantI4(0); enc.OpCode(ILOpCode.Conv_i);
+                    }
+                    enc.OpCode(ILOpCode.Stind_i);
                 }
             }
 

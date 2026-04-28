@@ -1812,9 +1812,92 @@ namespace System.Reflection.PortableExecutable
         {
         }
 
+        private readonly Dictionary<int, (Blob valuePatch, Blob tokenValuePatch, CoffSymbolHandle methodSymbol, CoffSymbolHandle tokenSymbol)> _preRegisteredFunctions = new();
+
+        /// <summary>
+        /// Pre-registers COFF symbols for a function MethodDef before any IL is emitted.
+        /// The body offset (value field) is a placeholder patched later by AddMethodBody.
+        /// This prevents conflicts when forward-referencing calls create undefined token symbols.
+        /// </summary>
+        public void PreRegisterFunctionClrToken(string name, EntityHandle handle)
+        {
+            int token = MetadataTokens.GetToken(handle);
+            string tokenSymbolName = token.ToString("X8");
+
+            if (_coffSymbols.ContainsKey(tokenSymbolName))
+                return; // Already registered
+
+            // Create decorated-name symbol with deferred value + section
+            Blob methodValuePatch;
+            CoffSymbolHandle methodSymbol = GetOrAddCoffSymbolCoreDeferred(name,
+                LogicalSection.Text, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0,
+                out methodValuePatch);
+
+            // Create CLR token symbol with deferred value + section + aux record
+            Blob tokenValuePatch;
+            CoffSymbolHandle tokenSymbol = GetOrAddCoffSymbolCoreDeferred(tokenSymbolName,
+                LogicalSection.Text, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 1,
+                out tokenValuePatch);
+
+            // Write aux record linking token → method symbol
+            _coffSymbolTableBuilder.WriteByte(1);
+            _coffSymbolTableBuilder.WriteByte(0);
+            _coffSymbolTableBuilder.WriteInt32(methodSymbol._value);
+            _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
+
+            _preRegisteredFunctions[token] = (methodValuePatch, tokenValuePatch, methodSymbol, tokenSymbol);
+        }
+
+        private CoffSymbolHandle GetOrAddCoffSymbolCoreDeferred(string name, LogicalSection section,
+            CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols,
+            out Blob valuePatch)
+        {
+            if (_deferredSectionsResolved)
+                throw new InvalidOperationException("Cannot add deferred symbols after sections have been resolved.");
+
+            if (_coffSymbols.TryGetValue(name, out CoffSymbolHandle result))
+            {
+                valuePatch = default;
+                return result;
+            }
+
+            result = new CoffSymbolHandle(Count);
+
+            if (name.Length <= 8)
+                CoffBuilder.WritePaddedName(_coffSymbolTableBuilder, name);
+            else
+            {
+                _coffSymbolTableBuilder.WriteUInt32(0);
+                _coffSymbolTableBuilder.WriteInt32(GetOrAddStringTableEntry(name));
+            }
+
+            // Reserve value field for later patching
+            valuePatch = _coffSymbolTableBuilder.ReserveBytes(4);
+
+            // Deferred section number
+            Blob sectionPatch = _coffSymbolTableBuilder.ReserveBytes(2);
+            _deferredSectionFixups.Add((sectionPatch, section));
+
+            _coffSymbolTableBuilder.WriteUInt16((ushort)type);
+            _coffSymbolTableBuilder.WriteByte((byte)storageClass);
+            _coffSymbolTableBuilder.WriteByte(numberOfAuxSymbols);
+
+            _coffSymbols.Add(name, result);
+            return result;
+        }
+
         public CoffSymbolHandle AddFunctionClrToken(string name, EntityHandle handle, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol)
         {
             int token = MetadataTokens.GetToken(handle);
+
+            // Check if pre-registered — patch body offset instead of creating new symbols
+            if (_preRegisteredFunctions.TryGetValue(token, out var preReg))
+            {
+                new BlobWriter(preReg.valuePatch).WriteUInt32((uint)sectionOffset);
+                new BlobWriter(preReg.tokenValuePatch).WriteUInt32((uint)sectionOffset);
+                tokenCoffSymbol = preReg.tokenSymbol;
+                return preReg.methodSymbol;
+            }
 
             CoffSymbolHandle index = GetOrAddCoffSymbolDeferred(name, (uint)sectionOffset, LogicalSection.Text, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0);
 
