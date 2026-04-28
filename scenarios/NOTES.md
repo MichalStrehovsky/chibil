@@ -820,3 +820,58 @@ Casting `void*` to a typed pointer and dereferencing generates
 Byte-level memory access through `char*` uses `ldind.i1`/`stind.i1`.
 
 See the `voidptr` scenario for the full pattern.
+
+## Incomplete (forward-declared) structs produce TypeRef and LNK4248
+
+When a struct is forward-declared but never defined in the translation unit,
+MSVC `/clr:pure` emits a **TypeRef** (not a TypeDef) with a null
+ResolutionScope. The linker issues warning LNK4248 if no other object file
+provides a matching TypeDef:
+
+```
+warning LNK4248: unresolved typeref token (01000005) for 'opaque'; image may not run
+```
+
+This is expected and harmless when the struct is only used through pointers
+and never instantiated or dereferenced. If another translation unit provides
+the complete struct definition (and thus a TypeDef), the linker resolves the
+TypeRef silently with no warning.
+
+Minimal reproducer (generates LNK4248 with both MSVC and chibicc):
+
+```c
+// incomplete.c
+// cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC incomplete.c
+// link /DEBUG /subsystem:console incomplete.obj /entry:main
+//   -> warning LNK4248: unresolved typeref token for 'opaque'
+
+struct opaque;  // forward declaration, never defined
+
+struct opaque* get_opaque(void);
+
+int main() {
+    struct opaque* p = 0;
+    return 0;
+}
+```
+
+In a multi-TU build where another file defines `struct opaque`, the warning
+disappears:
+
+```c
+// provider.c — defines the struct
+struct opaque { int x; int y; };
+struct opaque instance;
+struct opaque* get_opaque(void) { return &instance; }
+```
+
+```
+link /DEBUG /subsystem:console incomplete.obj provider.obj /entry:main
+   -> no LNK4248 warning
+```
+
+A real-world example is PureDOOM.h, which declares `struct hostent* hostentry`
+(a POSIX networking type) as a local variable outside of `#if defined(I_NET_ENABLED)`
+guards. Since `struct hostent` is never defined, the linker warns — but the
+pointer is never dereferenced when networking is disabled, so the warning is
+benign.

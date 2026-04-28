@@ -378,14 +378,7 @@ public class CodeGen
                 }
                 break;
             case TypeKind.Struct: case TypeKind.Union:
-                // Look up TypeDef by CType identity, Origin, or by name
-                TypeDefinitionHandle sth = default;
-                if (!_structTypeDefs.TryGetValue(ty.TypeId, out sth))
-                {
-                    if (ty.Origin != null)
-                        _structTypeDefs.TryGetValue(ty.Origin.TypeId, out sth);
-                }
-                if (!sth.IsNil)
+                if (_structTypeDefs.TryGetValue(ty.TypeId, out var sth))
                     EncodeValueType(sig, sth);
                 else
                 {
@@ -1102,10 +1095,7 @@ public class CodeGen
                 return; // These types ARE their address
             case TypeKind.Struct: case TypeKind.Union:
                 // Convert address → value type via ldobj
-                TypeDefinitionHandle sTd = default;
-                if (!_structTypeDefs.TryGetValue(ty.TypeId, out sTd) && ty.Origin != null)
-                    _structTypeDefs.TryGetValue(ty.Origin.TypeId, out sTd);
-                if (!sTd.IsNil)
+                if (_structTypeDefs.TryGetValue(ty.TypeId, out var sTd))
                 {
                     _enc.OpCode(ILOpCode.Ldobj);
                     _enc.Token(sTd);
@@ -1138,10 +1128,7 @@ public class CodeGen
         {
             case TypeKind.Struct: case TypeKind.Union:
                 // Stack: [dest_addr, value_type] → stobj
-                TypeDefinitionHandle storeTd = default;
-                if (!_structTypeDefs.TryGetValue(ty.TypeId, out storeTd) && ty.Origin != null)
-                    _structTypeDefs.TryGetValue(ty.Origin.TypeId, out storeTd);
-                if (!storeTd.IsNil)
+                if (_structTypeDefs.TryGetValue(ty.TypeId, out var storeTd))
                 {
                     _enc.OpCode(ILOpCode.Stobj);
                     _enc.Token(storeTd);
