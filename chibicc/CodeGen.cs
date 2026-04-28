@@ -1747,6 +1747,11 @@ public class CodeGen
 
     private void EmitGlobalInitializers()
     {
+        // Build name→FieldDef index for relocation target lookups
+        var fieldByName = new Dictionary<string, FieldDefinitionHandle>();
+        foreach (var kvp in _fieldDefs)
+            fieldByName[kvp.Key.Name] = kvp.Value;
+
         foreach (var (global, initMethod) in _globalInitializers)
         {
             var enc = new RelocatableInstructionEncoder(
@@ -1840,7 +1845,7 @@ public class CodeGen
 
             string initCoffName = $"???__E{global.Name}@@YMXXZ@{GetTuHash()}@@$$FYMXXZ";
             _bodyEncoder.AddMethodBody(initMethod, initCoffName, enc,
-                maxStack: 2,
+                maxStack: 3,
                 debugName: $"`dynamic initializer for '{global.Name}''");
         }
     }
