@@ -382,6 +382,11 @@ public class CodeGen
         if (_arrayTypeDefs.TryGetValue(name, out var existing))
             return existing;
 
+        // This should have been pre-allocated. If we get here during IL emission,
+        // it means we missed a type during the pre-allocation walk.
+        // Create it now as a fallback (it will get wrong FieldList/MethodList).
+        System.Diagnostics.Debug.Fail($"Array TypeDef '{name}' was not pre-allocated");
+
         var handle = _md.AddTypeDefinition(
             TypeAttributes.NotPublic | TypeAttributes.SequentialLayout | TypeAttributes.Class |
             TypeAttributes.Sealed | TypeAttributes.AnsiClass | TypeAttributes.BeforeFieldInit,
@@ -464,7 +469,12 @@ public class CodeGen
             default,
             _md.GetOrAddBlob(mscorlibHash));
 
-        // <Module> must be TypeDef row 1 per ECMA-335
+        // Phase 1: Pre-allocate TypeDef handles for struct/union/array types.
+        // <Module> is row 1; struct TypeDefs start at row 2.
+        int nextTypeDefRow = 2; // row 1 reserved for <Module>
+        PreAllocateStructTypeDefs(prog, ref nextTypeDefRow);
+
+        // Phase 2: Add <Module> TypeDef (row 1).
         _moduleTypeDef = _md.AddTypeDefinition(
             TypeAttributes.Class,
             default,
@@ -473,14 +483,15 @@ public class CodeGen
             MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
             MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
 
-        // Register struct/union/array TypeDefs
-        RegisterStructTypeDefs(prog);
-
-        // Register all function MethodDefs
+        // Phase 3: Register all function MethodDefs (owned by <Module>).
         RegisterFunctions(prog);
 
-        // Register all global/static field FieldDefs
+        // Phase 4: Register all global/static field FieldDefs (owned by <Module>).
         RegisterGlobalFields(prog);
+
+        // Phase 5: Materialize struct/union/array TypeDefs with correct
+        // FieldList/MethodList pointing past all <Module>-owned rows.
+        MaterializeStructTypeDefs();
 
         // Module row
         _md.AddModule(0,
@@ -489,27 +500,30 @@ public class CodeGen
             default, default);
     }
 
-    private void RegisterStructTypeDefs(Obj prog)
+    // Ordered list of pre-allocated struct TypeDefs, for materialization
+    private readonly List<(CType ty, string ns, string name, TypeDefinitionHandle handle)> _pendingTypeDefs = new();
+
+    private void PreAllocateStructTypeDefs(Obj prog, ref int nextTypeDefRow)
     {
         var registered = new HashSet<CType>();
         for (Obj obj = prog; obj != null; obj = obj.Next)
         {
             if (obj.IsFunction && obj.IsDefinition && obj.IsLive)
             {
-                RegisterStructTypeDefsFromType(obj.Ty, registered);
+                PreAllocateTypeDefsFromType(obj.Ty, registered, ref nextTypeDefRow);
                 for (Obj local = obj.Locals; local != null; local = local.Next)
-                    RegisterStructTypeDefsFromType(local.Ty, registered);
+                    PreAllocateTypeDefsFromType(local.Ty, registered, ref nextTypeDefRow);
                 for (Obj param = obj.Params; param != null; param = param.Next)
-                    RegisterStructTypeDefsFromType(param.Ty, registered);
+                    PreAllocateTypeDefsFromType(param.Ty, registered, ref nextTypeDefRow);
             }
             else if (!obj.IsFunction && obj.IsDefinition)
             {
-                RegisterStructTypeDefsFromType(obj.Ty, registered);
+                PreAllocateTypeDefsFromType(obj.Ty, registered, ref nextTypeDefRow);
             }
         }
     }
 
-    private void RegisterStructTypeDefsFromType(CType ty, HashSet<CType> registered)
+    private void PreAllocateTypeDefsFromType(CType ty, HashSet<CType> registered, ref int nextTypeDefRow)
     {
         if (ty == null || !registered.Add(ty)) return;
         switch (ty.Kind)
@@ -518,32 +532,59 @@ public class CodeGen
                 if (!_structTypeDefs.ContainsKey(ty))
                 {
                     string name = GetStructName(ty);
-                    var handle = _md.AddTypeDefinition(
-                        TypeAttributes.NotPublic | TypeAttributes.SequentialLayout | TypeAttributes.Class |
-                        TypeAttributes.Sealed | TypeAttributes.AnsiClass | TypeAttributes.BeforeFieldInit,
-                        default,
-                        _md.GetOrAddString(name),
-                        GetValueTypeRef(),
-                        MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
-                        MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
-                    _md.AddTypeLayout(handle, 0, (uint)ty.Size);
-                    _md.AddCustomAttribute(handle, GetNativeCppCtorRef(), GetDefaultCtorAttrBlob());
-                    _md.AddCustomAttribute(handle, GetUnsafeVTCtorRef(), GetDefaultCtorAttrBlob());
+                    var handle = MetadataTokens.TypeDefinitionHandle(nextTypeDefRow++);
                     _structTypeDefs[ty] = handle;
+                    _pendingTypeDefs.Add((ty, null, name, handle));
                 }
                 for (Member m = ty.Members; m != null; m = m.Next)
-                    RegisterStructTypeDefsFromType(m.Ty, registered);
+                    PreAllocateTypeDefsFromType(m.Ty, registered, ref nextTypeDefRow);
                 break;
-            case TypeKind.Ptr: RegisterStructTypeDefsFromType(ty.Base, registered); break;
+            case TypeKind.Ptr:
+                PreAllocateTypeDefsFromType(ty.Base, registered, ref nextTypeDefRow);
+                break;
             case TypeKind.Array:
-                RegisterStructTypeDefsFromType(ty.Base, registered);
-                GetOrCreateArrayTypeDef(ty);
+                PreAllocateTypeDefsFromType(ty.Base, registered, ref nextTypeDefRow);
+                PreAllocateArrayTypeDef(ty, ref nextTypeDefRow);
                 break;
             case TypeKind.Func:
-                RegisterStructTypeDefsFromType(ty.ReturnTy, registered);
+                PreAllocateTypeDefsFromType(ty.ReturnTy, registered, ref nextTypeDefRow);
                 for (CType p = ty.Params; p != null; p = p.Next)
-                    RegisterStructTypeDefsFromType(p, registered);
+                    PreAllocateTypeDefsFromType(p, registered, ref nextTypeDefRow);
                 break;
+        }
+    }
+
+    private void PreAllocateArrayTypeDef(CType ty, ref int nextTypeDefRow)
+    {
+        string name = BuildArrayTypeName(ty);
+        if (_arrayTypeDefs.ContainsKey(name)) return;
+        var handle = MetadataTokens.TypeDefinitionHandle(nextTypeDefRow++);
+        _arrayTypeDefs[name] = handle;
+        _pendingTypeDefs.Add((ty, "<CppImplementationDetails>", name, handle));
+    }
+
+    private void MaterializeStructTypeDefs()
+    {
+        // Now that all <Module>-owned methods and fields have been added,
+        // create the actual TypeDef rows. Their FieldList/MethodList point
+        // past all Module-owned rows, so they own nothing.
+        foreach (var (ty, ns, name, expectedHandle) in _pendingTypeDefs)
+        {
+            var actualHandle = _md.AddTypeDefinition(
+                TypeAttributes.NotPublic | TypeAttributes.SequentialLayout | TypeAttributes.Class |
+                TypeAttributes.Sealed | TypeAttributes.AnsiClass | TypeAttributes.BeforeFieldInit,
+                ns != null ? _md.GetOrAddString(ns) : default,
+                _md.GetOrAddString(name),
+                GetValueTypeRef(),
+                MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
+                MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
+
+            System.Diagnostics.Debug.Assert(actualHandle == expectedHandle,
+                $"TypeDef handle mismatch: expected {MetadataTokens.GetRowNumber(expectedHandle)}, got {MetadataTokens.GetRowNumber(actualHandle)} for '{name}'");
+
+            _md.AddTypeLayout(actualHandle, 0, (uint)ty.Size);
+            _md.AddCustomAttribute(actualHandle, GetNativeCppCtorRef(), GetDefaultCtorAttrBlob());
+            _md.AddCustomAttribute(actualHandle, GetUnsafeVTCtorRef(), GetDefaultCtorAttrBlob());
         }
     }
 
@@ -818,6 +859,16 @@ public class CodeGen
             case NodeKind.Cond:
                 if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) { GenExpr(node); return; }
                 break;
+            case NodeKind.VlaPtr:
+                // VLA pointer is stored in a local slot
+                if (_localSlots.TryGetValue(node.Var, out int vlaSlot))
+                {
+                    _enc.LoadLocalAddress(vlaSlot);
+                    Push();
+                }
+                else
+                    Util.ErrorTok(node.Tok, "VLA variable not found");
+                return;
         }
         Util.ErrorTok(node.Tok, "not an lvalue");
     }
@@ -883,14 +934,20 @@ public class CodeGen
             case TypeKind.Char: _enc.OpCode(to.IsUnsigned ? ILOpCode.Conv_u1 : ILOpCode.Conv_i1); break;
             case TypeKind.Short: _enc.OpCode(to.IsUnsigned ? ILOpCode.Conv_u2 : ILOpCode.Conv_i2); break;
             case TypeKind.Int: case TypeKind.Enum:
-                if (from.Kind == TypeKind.Long || TypeSystem.IsFlonum(from)) _enc.OpCode(ILOpCode.Conv_i4); break;
+                if (from.Kind == TypeKind.Long || from.Kind == TypeKind.Ptr || TypeSystem.IsFlonum(from))
+                    _enc.OpCode(ILOpCode.Conv_i4);
+                break;
             case TypeKind.Long:
-                if (from.Size < 8) _enc.OpCode(from.IsUnsigned ? ILOpCode.Conv_u8 : ILOpCode.Conv_i8); break;
+                if (from.Kind == TypeKind.Ptr) _enc.OpCode(ILOpCode.Conv_i8);
+                else if (from.Size < 8) _enc.OpCode(from.IsUnsigned ? ILOpCode.Conv_u8 : ILOpCode.Conv_i8);
+                break;
             case TypeKind.Float:
-                if (from.IsUnsigned && from.Kind == TypeKind.Long) _enc.OpCode(ILOpCode.Conv_r_un);
+                if (from.IsUnsigned && (from.Kind == TypeKind.Long || from.Kind == TypeKind.Int))
+                    _enc.OpCode(ILOpCode.Conv_r_un);
                 _enc.OpCode(ILOpCode.Conv_r4); break;
             case TypeKind.Double: case TypeKind.LDouble:
-                if (from.IsUnsigned && from.Kind == TypeKind.Long) _enc.OpCode(ILOpCode.Conv_r_un);
+                if (from.IsUnsigned && (from.Kind == TypeKind.Long || from.Kind == TypeKind.Int))
+                    _enc.OpCode(ILOpCode.Conv_r_un);
                 _enc.OpCode(ILOpCode.Conv_r8); break;
             case TypeKind.Ptr:
                 if (TypeSystem.IsInteger(from)) _enc.OpCode(ILOpCode.Conv_i); break;
@@ -904,8 +961,51 @@ public class CodeGen
             case TypeKind.Float: _enc.LoadConstantR4(0.0f); break;
             case TypeKind.Double: case TypeKind.LDouble: _enc.LoadConstantR8(0.0); break;
             case TypeKind.Long: _enc.LoadConstantI8(0); break;
+            case TypeKind.Struct: case TypeKind.Union:
+                // For struct return default, load a zero-initialized local
+                int scratchSlot = GetOrAddScratchLocal(ty);
+                _enc.LoadLocal(scratchSlot);
+                break;
             default: _enc.LoadConstantI4(0); break;
         }
+    }
+
+    /// <summary>
+    /// Converts the value on top of the stack to an int32 boolean (0 or 1)
+    /// suitable for brfalse/brtrue. Handles float/double/long/pointer types.
+    /// </summary>
+    private void Booleanize(CType ty)
+    {
+        switch (ty.Kind)
+        {
+            case TypeKind.Float:
+                _enc.LoadConstantR4(0.0f); Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();       // 1 if equal to 0
+                _enc.LoadConstantI4(0); Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();       // negate: 1 if NOT zero
+                return;
+            case TypeKind.Double: case TypeKind.LDouble:
+                _enc.LoadConstantR8(0.0); Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                _enc.LoadConstantI4(0); Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                return;
+            case TypeKind.Long:
+                _enc.LoadConstantI4(0); Push();
+                _enc.OpCode(ILOpCode.Conv_i8);
+                _enc.OpCode(ILOpCode.Ceq); Pop();       // 1 if equal to 0
+                _enc.LoadConstantI4(0); Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();       // negate
+                return;
+            case TypeKind.Ptr:
+                _enc.LoadConstantI4(0); Push();
+                _enc.OpCode(ILOpCode.Conv_i);
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                _enc.LoadConstantI4(0); Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                return;
+        }
+        // int32 types: brfalse works directly, no conversion needed
     }
 
     private void CmpZero(CType ty)
@@ -967,28 +1067,22 @@ public class CodeGen
             case NodeKind.Deref: GenExpr(node.Lhs); Load(node.Ty); return;
             case NodeKind.Addr: GenAddr(node.Lhs); return;
             case NodeKind.Assign:
-                GenAddr(node.Lhs);  // stack: [addr]
-                GenExpr(node.Rhs);  // stack: [addr, val]
-                // Dup the value so assignment expression leaves its result
-                // Stack after: [addr, val, val]
-                _enc.OpCode(ILOpCode.Dup); Push();
-                // Rotate: we need [val, addr, val] for stind, but stind expects [addr, val].
-                // Simpler approach: store to a temp, then store, then reload temp.
-                // Actually: GenAddr pushes addr, GenExpr pushes val, we need addr,val for stind
-                // and want val left over. So: dup val → [addr, val, val], then use a temp local.
-                // Cleanest approach for struct: skip dup. For scalars: dup + stloc + stind + ldloc.
                 if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union)
                 {
-                    // For struct assign: addr, src_addr on stack → cpblk
-                    Pop(); // undo the dup
-                    Store(node.Ty);
-                    // Struct assignment as expression: reload address of lhs
+                    // Struct assign: dest_addr, src_addr, size → cpblk
+                    GenAddr(node.Lhs);  // [dest_addr]
+                    GenExpr(node.Rhs);  // [dest_addr, src_addr] (Load is no-op for structs)
+                    Store(node.Ty);     // [] — cpblk consumes dest, src, size
+                    // Struct assignment as expression leaves address of dest
                     GenAddr(node.Lhs);
                 }
                 else
                 {
-                    // [addr, val, val_copy] — store val_copy to a scratch local
+                    GenAddr(node.Lhs);  // [addr]
+                    GenExpr(node.Rhs);  // [addr, val]
+                    // Save val to scratch so assignment expression leaves its result
                     int scratchSlot = GetOrAddScratchLocal(node.Ty);
+                    _enc.OpCode(ILOpCode.Dup); Push(); // [addr, val, val]
                     _enc.StoreLocal(scratchSlot); Pop();  // [addr, val]
                     Store(node.Ty);                       // []
                     _enc.LoadLocal(scratchSlot); Push();   // [val]
@@ -1016,30 +1110,53 @@ public class CodeGen
             case NodeKind.Cond:
             {
                 var elseL = _enc.DefineLabel(); var endL = _enc.DefineLabel();
-                GenExpr(node.Cond); _enc.Branch(ILOpCode.Brfalse, elseL); Pop();
+                int depthBeforeCond = _stackDepth;
+                GenExpr(node.Cond); Booleanize(node.Cond.Ty);
+                _enc.Branch(ILOpCode.Brfalse, elseL); Pop();
                 GenExpr(node.Then); _enc.Branch(ILOpCode.Br, endL);
+                // Reset depth for else path — at elseL, stack is at depthBeforeCond
+                _stackDepth = depthBeforeCond;
                 _enc.MarkLabel(elseL); GenExpr(node.Els); _enc.MarkLabel(endL);
+                // After merge: depthBeforeCond + 1 (one result value)
                 return;
             }
             case NodeKind.Not:
-                GenExpr(node.Lhs); _enc.LoadConstantI4(0); Push(); _enc.OpCode(ILOpCode.Ceq); Pop(); return;
+                GenExpr(node.Lhs);
+                // Use type-aware comparison to zero
+                CmpZero(node.Lhs.Ty);
+                // CmpZero gives 1 if non-zero; we want Not, so negate
+                _enc.LoadConstantI4(0); Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                return;
             case NodeKind.BitNot: GenExpr(node.Lhs); _enc.OpCode(ILOpCode.Not); return;
             case NodeKind.LogAnd:
             {
                 var falseL = _enc.DefineLabel(); var endL = _enc.DefineLabel();
-                GenExpr(node.Lhs); _enc.Branch(ILOpCode.Brfalse, falseL); Pop();
-                GenExpr(node.Rhs); _enc.Branch(ILOpCode.Brfalse, falseL); Pop();
+                int depthBefore = _stackDepth;
+                GenExpr(node.Lhs); Booleanize(node.Lhs.Ty);
+                _enc.Branch(ILOpCode.Brfalse, falseL); Pop();
+                GenExpr(node.Rhs); Booleanize(node.Rhs.Ty);
+                _enc.Branch(ILOpCode.Brfalse, falseL); Pop();
                 _enc.LoadConstantI4(1); Push(); _enc.Branch(ILOpCode.Br, endL);
+                // Reset depth for false path
+                _stackDepth = depthBefore;
                 _enc.MarkLabel(falseL); _enc.LoadConstantI4(0); Push(); _enc.MarkLabel(endL);
+                // After merge: depthBefore + 1
                 return;
             }
             case NodeKind.LogOr:
             {
                 var trueL = _enc.DefineLabel(); var endL = _enc.DefineLabel();
-                GenExpr(node.Lhs); _enc.Branch(ILOpCode.Brtrue, trueL); Pop();
-                GenExpr(node.Rhs); _enc.Branch(ILOpCode.Brtrue, trueL); Pop();
+                int depthBefore = _stackDepth;
+                GenExpr(node.Lhs); Booleanize(node.Lhs.Ty);
+                _enc.Branch(ILOpCode.Brtrue, trueL); Pop();
+                GenExpr(node.Rhs); Booleanize(node.Rhs.Ty);
+                _enc.Branch(ILOpCode.Brtrue, trueL); Pop();
                 _enc.LoadConstantI4(0); Push(); _enc.Branch(ILOpCode.Br, endL);
+                // Reset depth for true path
+                _stackDepth = depthBefore;
                 _enc.MarkLabel(trueL); _enc.LoadConstantI4(1); Push(); _enc.MarkLabel(endL);
+                // After merge: depthBefore + 1
                 return;
             }
             case NodeKind.FunCall:
@@ -1167,7 +1284,8 @@ public class CodeGen
             case NodeKind.If:
             {
                 var elseL = _enc.DefineLabel(); var endL = _enc.DefineLabel();
-                GenExpr(node.Cond); _enc.Branch(ILOpCode.Brfalse, elseL); Pop();
+                GenExpr(node.Cond); Booleanize(node.Cond.Ty);
+                _enc.Branch(ILOpCode.Brfalse, elseL); Pop();
                 GenStmt(node.Then); _enc.Branch(ILOpCode.Br, endL);
                 _enc.MarkLabel(elseL); if (node.Els != null) GenStmt(node.Els); _enc.MarkLabel(endL);
                 return;
@@ -1179,9 +1297,9 @@ public class CodeGen
                 if (node.ContLabel != null) _labels[node.ContLabel] = contL;
                 if (node.Init != null) GenStmt(node.Init);
                 _enc.MarkLabel(beginL);
-                if (node.Cond != null) { GenExpr(node.Cond); _enc.Branch(ILOpCode.Brfalse, endL); Pop(); }
+                if (node.Cond != null) { GenExpr(node.Cond); Booleanize(node.Cond.Ty); _enc.Branch(ILOpCode.Brfalse, endL); Pop(); }
                 GenStmt(node.Then); _enc.MarkLabel(contL);
-                if (node.Inc != null) { GenExpr(node.Inc); if (node.Inc.Ty.Kind != TypeKind.Void) { _enc.OpCode(ILOpCode.Pop); Pop(); } }
+                if (node.Inc != null) { GenExpr(node.Inc); if (node.Inc.Ty != null && node.Inc.Ty.Kind != TypeKind.Void) { _enc.OpCode(ILOpCode.Pop); Pop(); } }
                 _enc.Branch(ILOpCode.Br, beginL); _enc.MarkLabel(endL);
                 return;
             }
@@ -1191,7 +1309,8 @@ public class CodeGen
                 if (node.BrkLabel != null) _labels[node.BrkLabel] = endL;
                 if (node.ContLabel != null) _labels[node.ContLabel] = contL;
                 _enc.MarkLabel(beginL); GenStmt(node.Then); _enc.MarkLabel(contL);
-                GenExpr(node.Cond); _enc.Branch(ILOpCode.Brtrue, beginL); Pop(); _enc.MarkLabel(endL);
+                GenExpr(node.Cond); Booleanize(node.Cond.Ty);
+                _enc.Branch(ILOpCode.Brtrue, beginL); Pop(); _enc.MarkLabel(endL);
                 return;
             }
             case NodeKind.Switch:
