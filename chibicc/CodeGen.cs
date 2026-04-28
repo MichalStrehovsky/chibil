@@ -220,10 +220,14 @@ public class CodeGen
 
     private string MangleFunctionName(Obj fn)
     {
+        bool isRealVariadic = fn.Ty.IsVariadic && fn.Ty.Params != null;
         var sb = new StringBuilder();
         sb.Append('?');
         sb.Append(fn.Name);
-        sb.Append("@@$$J0YM");
+        if (isRealVariadic)
+            sb.Append("@@$$J0YA"); // cdecl for vararg functions
+        else
+            sb.Append("@@$$J0YM"); // clrcall for normal functions
         AppendMangledType(sb, fn.Ty.ReturnTy, isReturn: true);
         bool hasParams = false;
         for (CType p = fn.Ty.Params; p != null; p = p.Next)
@@ -232,7 +236,10 @@ public class CodeGen
             hasParams = true;
         }
         if (!hasParams) sb.Append('X');
-        sb.Append("@Z");
+        if (isRealVariadic)
+            sb.Append("ZZ"); // vararg terminator
+        else
+            sb.Append("@Z"); // normal terminator
         return sb.ToString();
     }
 
@@ -724,10 +731,11 @@ public class CodeGen
             EncodeType(fieldSigEnc.Builder, v.Ty);
 
             bool hasReloc = v.Rel != null;
-            bool hasInitData = v.InitData != null && !hasReloc;
+            bool hasInitData = v.InitData != null;
 
             FieldAttributes attrs = FieldAttributes.Assembly | FieldAttributes.Static;
-            if (hasInitData)
+            // Globals with relocations use dynamic initializers, not HasFieldRVA
+            if (hasInitData && !hasReloc)
                 attrs |= FieldAttributes.HasFieldRVA;
 
             var fieldHandle = _md.AddFieldDefinition(
@@ -736,8 +744,9 @@ public class CodeGen
                 _md.GetOrAddBlob(fieldSig));
             _nextFieldRow++;
 
-            if (hasInitData)
+            if (hasInitData && !hasReloc)
             {
+                // Write byte image to rdata for static initialization
                 int rva = _dataStream.Count;
                 _dataStream.WriteBytes(v.InitData);
                 _md.AddFieldRelativeVirtualAddress(fieldHandle, rva);
@@ -1754,44 +1763,77 @@ public class CodeGen
 
             var fieldHandle = _fieldDefs[global];
 
-            if (global.Rel != null)
+            if (global.Rel != null && global.InitData != null)
             {
-                // Pointer-containing initializer: walk relocations
+                // Composite initializer: write scalar bytes and patch pointer slots
+                byte[] initData = global.InitData;
+                int pos = 0;
                 for (Relocation rel = global.Rel; rel != null; rel = rel.Next)
                 {
-                    // Find the target field (the symbol the relocation points to)
+                    // Write scalar bytes before this relocation
+                    for (int b = pos; b < rel.Offset; b++)
+                    {
+                        if (initData[b] != 0) // skip zero bytes (already zero-init)
+                        {
+                            enc.OpCode(ILOpCode.Ldsflda); enc.Token(fieldHandle);
+                            if (b != 0) { enc.LoadConstantI4(b); enc.OpCode(ILOpCode.Add); }
+                            enc.LoadConstantI4(initData[b]);
+                            enc.OpCode(ILOpCode.Stind_i1);
+                        }
+                    }
+
+                    // Write pointer at relocation offset
                     string targetName = rel.Label();
                     Obj targetObj = null;
                     foreach (var kvp in _fieldDefs)
-                    {
                         if (kvp.Key.Name == targetName) { targetObj = kvp.Key; break; }
-                    }
+
                     if (targetObj != null && _fieldDefs.TryGetValue(targetObj, out var targetField))
                     {
-                        // ldsflda <target> + addend → stsfld <global>
-                        enc.OpCode(ILOpCode.Ldsflda);
-                        enc.Token(targetField);
-                        if (rel.Addend != 0)
-                        {
-                            enc.LoadConstantI8(rel.Addend);
-                            enc.OpCode(ILOpCode.Add);
-                        }
-                        enc.OpCode(ILOpCode.Stsfld);
-                        enc.Token(fieldHandle);
+                        enc.OpCode(ILOpCode.Ldsflda); enc.Token(fieldHandle);
+                        if (rel.Offset != 0) { enc.LoadConstantI4(rel.Offset); enc.OpCode(ILOpCode.Add); }
+                        enc.OpCode(ILOpCode.Ldsflda); enc.Token(targetField);
+                        if (rel.Addend != 0) { enc.LoadConstantI8(rel.Addend); enc.OpCode(ILOpCode.Add); }
+                        enc.OpCode(ILOpCode.Stind_i);
                     }
                     else
                     {
                         Console.Error.WriteLine($"CRTMA: relocation target '{targetName}' not found for global '{global.Name}'");
                     }
+
+                    pos = rel.Offset + 8; // skip past the 8-byte pointer slot
+                }
+
+                // Write remaining scalar bytes after the last relocation
+                for (int b = pos; b < initData.Length; b++)
+                {
+                    if (initData[b] != 0)
+                    {
+                        enc.OpCode(ILOpCode.Ldsflda); enc.Token(fieldHandle);
+                        if (b != 0) { enc.LoadConstantI4(b); enc.OpCode(ILOpCode.Add); }
+                        enc.LoadConstantI4(initData[b]);
+                        enc.OpCode(ILOpCode.Stind_i1);
+                    }
                 }
             }
-            else if (global.InitData != null)
+            else if (global.Rel != null)
             {
-                // Non-zero scalar: load constant, stsfld
-                // For now handle simple int/long scalar inits
-                EmitScalarInitConstant(enc, global);
-                enc.OpCode(ILOpCode.Stsfld);
-                enc.Token(fieldHandle);
+                // Rel without InitData (shouldn't happen, but handle gracefully)
+                for (Relocation rel = global.Rel; rel != null; rel = rel.Next)
+                {
+                    string targetName = rel.Label();
+                    Obj targetObj = null;
+                    foreach (var kvp in _fieldDefs)
+                        if (kvp.Key.Name == targetName) { targetObj = kvp.Key; break; }
+                    if (targetObj != null && _fieldDefs.TryGetValue(targetObj, out var targetField))
+                    {
+                        enc.OpCode(ILOpCode.Ldsflda); enc.Token(fieldHandle);
+                        if (rel.Offset != 0) { enc.LoadConstantI4(rel.Offset); enc.OpCode(ILOpCode.Add); }
+                        enc.OpCode(ILOpCode.Ldsflda); enc.Token(targetField);
+                        if (rel.Addend != 0) { enc.LoadConstantI8(rel.Addend); enc.OpCode(ILOpCode.Add); }
+                        enc.OpCode(ILOpCode.Stind_i);
+                    }
+                }
             }
 
             enc.OpCode(ILOpCode.Ret);
