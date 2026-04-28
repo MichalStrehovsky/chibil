@@ -885,8 +885,15 @@ public class CodeGen
     {
         switch (ty.Kind)
         {
-            case TypeKind.Array: case TypeKind.Struct: case TypeKind.Union:
-            case TypeKind.Func: case TypeKind.Vla:
+            case TypeKind.Array: case TypeKind.Func: case TypeKind.Vla:
+                return; // These types ARE their address
+            case TypeKind.Struct: case TypeKind.Union:
+                // Convert address → value type via ldobj
+                if (_structTypeDefs.TryGetValue(ty, out var sTd))
+                {
+                    _enc.OpCode(ILOpCode.Ldobj);
+                    _enc.Token(sTd);
+                }
                 return;
             case TypeKind.Float:
                 _enc.OpCode(ILOpCode.Ldind_r4); return;
@@ -910,8 +917,19 @@ public class CodeGen
         switch (ty.Kind)
         {
             case TypeKind.Struct: case TypeKind.Union:
-                _enc.LoadConstantI4(ty.Size); Push();
-                _enc.OpCode(ILOpCode.Cpblk); Pop(3);
+                // Stack: [dest_addr, value_type] → stobj
+                if (_structTypeDefs.TryGetValue(ty, out var sTd))
+                {
+                    _enc.OpCode(ILOpCode.Stobj);
+                    _enc.Token(sTd);
+                    Pop(2);
+                }
+                else
+                {
+                    // Fallback to cpblk (shouldn't happen for typed structs)
+                    _enc.LoadConstantI4(ty.Size); Push();
+                    _enc.OpCode(ILOpCode.Cpblk); Pop(3);
+                }
                 return;
             case TypeKind.Float: _enc.OpCode(ILOpCode.Stind_r4); Pop(2); return;
             case TypeKind.Double: case TypeKind.LDouble: _enc.OpCode(ILOpCode.Stind_r8); Pop(2); return;
@@ -1072,23 +1090,37 @@ public class CodeGen
             case NodeKind.Assign:
                 if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union)
                 {
-                    // Struct assign: dest_addr, src_addr, size → cpblk
-                    GenAddr(node.Lhs);  // [dest_addr]
-                    GenExpr(node.Rhs);  // [dest_addr, src_addr] (Load is no-op for structs)
-                    Store(node.Ty);     // [] — cpblk consumes dest, src, size
-                    // Struct assignment as expression leaves address of dest
+                    // Struct assignment: dispatch based on LHS/RHS forms
+                    int lhsSlot = -1;
+                    bool lhsIsLocal = node.Lhs.Kind == NodeKind.Var && node.Lhs.Var.IsLocal
+                        && _localSlots.TryGetValue(node.Lhs.Var, out lhsSlot);
+
+                    if (lhsIsLocal)
+                    {
+                        // LHS is a local: GenExpr(rhs) produces value type → stloc
+                        GenExpr(node.Rhs);
+                        _enc.StoreLocal(lhsSlot); Pop();
+                    }
+                    else
+                    {
+                        // LHS is an address (pointer deref, global, etc.)
+                        // GenAddr(lhs) → address; GenExpr(rhs) → value type; stobj
+                        GenAddr(node.Lhs);
+                        GenExpr(node.Rhs);
+                        Store(node.Ty); // stobj
+                    }
+                    // Struct assignment expression result: address of dest
                     GenAddr(node.Lhs);
                 }
                 else
                 {
-                    GenAddr(node.Lhs);  // [addr]
-                    GenExpr(node.Rhs);  // [addr, val]
-                    // Save val to scratch so assignment expression leaves its result
+                    GenAddr(node.Lhs);
+                    GenExpr(node.Rhs);
                     int scratchSlot = GetOrAddScratchLocal(node.Ty);
-                    _enc.OpCode(ILOpCode.Dup); Push(); // [addr, val, val]
-                    _enc.StoreLocal(scratchSlot); Pop();  // [addr, val]
-                    Store(node.Ty);                       // []
-                    _enc.LoadLocal(scratchSlot); Push();   // [val]
+                    _enc.OpCode(ILOpCode.Dup); Push();
+                    _enc.StoreLocal(scratchSlot); Pop();
+                    Store(node.Ty);
+                    _enc.LoadLocal(scratchSlot); Push();
                 }
                 return;
             case NodeKind.StmtExpr:
@@ -1382,16 +1414,6 @@ public class CodeGen
                 if (node.Lhs != null)
                 {
                     GenExpr(node.Lhs);
-                    // For struct/union returns, GenExpr leaves an address on the stack
-                    // but ret expects a value type. Use ldobj to load the value.
-                    CType retTy = node.Lhs.Ty;
-                    if ((retTy.Kind == TypeKind.Struct || retTy.Kind == TypeKind.Union) &&
-                        _structTypeDefs.TryGetValue(retTy, out var retTypeDef))
-                    {
-                        _enc.OpCode(ILOpCode.Ldobj);
-                        _enc.Token(retTypeDef);
-                        // ldobj pops address, pushes value — net 0
-                    }
                     _enc.OpCode(ILOpCode.Ret); Pop();
                 }
                 else _enc.OpCode(ILOpCode.Ret);
