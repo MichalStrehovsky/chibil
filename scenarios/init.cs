@@ -214,7 +214,7 @@ public class InitTest
 
         // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ManagedCoffBuilder.ClrTextSectionNumber, ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
 
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
@@ -250,10 +250,8 @@ public class InitTest
             initializerList: initializerList);
 
         // Register field data symbols BEFORE emitting IL
-        int rdataSectionNum = coffBuilder.RDataSectionNumber;
-        int crtmaSectionNum = coffBuilder.CrtmaSectionNumber;
-        symtab.AddDataClrToken("$SG_literal", field1, rdataSectionNum, 0, out _);
-        symtab.AddDataClrToken("str$initializer$", field3, crtmaSectionNum, 0, out _);
+        symtab.AddDataClrToken("$SG_literal", field1, LogicalSection.RData, 0, out _);
+        symtab.AddDataClrToken("str$initializer$", field3, LogicalSection.Crtma, 0, out _);
 
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
             ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);

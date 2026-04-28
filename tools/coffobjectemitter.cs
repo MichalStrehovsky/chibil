@@ -59,8 +59,8 @@ namespace System.Reflection.PortableExecutable
             for (int i = 0; i < _initializers.Count; i++)
             {
                 int token = MetadataTokens.GetToken(_initializers[i]);
-                var tokenSymbol = _symbolTableBuilder.GetOrAddCoffSymbol(
-                    token.ToString("X8"), 0, 0, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 0);
+                var tokenSymbol = _symbolTableBuilder.GetOrAddUndefinedClrTokenSymbol(
+                    token.ToString("X8"));
                 new CoffRelocationEncoder(_coffHeaderBuilder, builder)
                     .AddTokenRelocation(i * SlotSize, tokenSymbol);
             }
@@ -1219,7 +1219,7 @@ namespace System.Reflection.PortableExecutable
 
             // CLR token symbols for inline IL references use section 0 (undefined).
             // The linker resolves them by the token value encoded in the symbol name.
-            CoffSymbolHandle tokenSymbol = SymbolTableBuilder.GetOrAddCoffSymbol(symbolName, 0, 0, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 0);
+            CoffSymbolHandle tokenSymbol = SymbolTableBuilder.GetOrAddUndefinedClrTokenSymbol(symbolName);
 
             new CoffRelocationEncoder(HeaderBuilder, Builder)
                 .AddTokenRelocation(offset, tokenSymbol);
@@ -1753,7 +1753,12 @@ namespace System.Reflection.PortableExecutable
             return offset;
         }
 
-        public CoffSymbolHandle GetOrAddCoffSymbol(string name, uint value, ushort sectionNumber, CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols)
+        protected CoffSymbolHandle GetOrAddCoffSymbol(string name, uint value, ushort sectionNumber, CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols)
+        {
+            return GetOrAddCoffSymbolCore(name, value, b => b.WriteUInt16(sectionNumber), type, storageClass, numberOfAuxSymbols);
+        }
+
+        protected CoffSymbolHandle GetOrAddCoffSymbolCore(string name, uint value, Action<BlobBuilder> writeSectionNumber, CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols)
         {
             if (_coffSymbols.TryGetValue(name, out CoffSymbolHandle result))
             {
@@ -1773,7 +1778,7 @@ namespace System.Reflection.PortableExecutable
             }
 
             _coffSymbolTableBuilder.WriteUInt32(value);
-            _coffSymbolTableBuilder.WriteUInt16(sectionNumber);
+            writeSectionNumber(_coffSymbolTableBuilder);
             _coffSymbolTableBuilder.WriteUInt16((ushort)type);
             _coffSymbolTableBuilder.WriteByte((byte)storageClass);
             _coffSymbolTableBuilder.WriteByte(numberOfAuxSymbols);
@@ -1783,7 +1788,7 @@ namespace System.Reflection.PortableExecutable
             return result;
         }
 
-        public void Serialize(BlobBuilder builder)
+        public virtual void Serialize(BlobBuilder builder)
         {
             builder.LinkSuffix(_coffSymbolTableBuilder);
             builder.WriteInt32(_coffStringTableBuilder.Count + 4);
@@ -1799,53 +1804,115 @@ namespace System.Reflection.PortableExecutable
 
     public class ManagedCoffSymbolTableBuilder : CoffSymbolTableBuilder
     {
-        internal readonly int _clrTextSectionNumber;
+        private readonly List<(Blob patch, LogicalSection section)> _deferredSectionFixups = new List<(Blob, LogicalSection)>();
+        private bool _deferredSectionsResolved;
 
-        public ManagedCoffSymbolTableBuilder(int clrTextSectionNumber, ObjectFeatures objectFeatures)
+        public ManagedCoffSymbolTableBuilder(ObjectFeatures objectFeatures)
             : base(objectFeatures)
         {
-            _clrTextSectionNumber = clrTextSectionNumber;
         }
 
         public CoffSymbolHandle AddFunctionClrToken(string name, EntityHandle handle, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol)
         {
             int token = MetadataTokens.GetToken(handle);
 
-            CoffSymbolHandle index = GetOrAddCoffSymbol(name, (uint)sectionOffset, (ushort)_clrTextSectionNumber, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0);
+            CoffSymbolHandle index = GetOrAddCoffSymbolDeferred(name, (uint)sectionOffset, LogicalSection.Text, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0);
 
             string tokenSymbolName = token.ToString("X8");
             if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
             {
-                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, (uint)sectionOffset, (ushort)_clrTextSectionNumber, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 1);
+                tokenCoffSymbol = GetOrAddCoffSymbolDeferred(tokenSymbolName, (uint)sectionOffset, LogicalSection.Text, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 1);
                 _coffSymbolTableBuilder.WriteByte(1);
                 _coffSymbolTableBuilder.WriteByte(0);
                 _coffSymbolTableBuilder.WriteInt32(index._value);
                 _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
+            }
+            else
+            {
+                // A prior undefined CLR token symbol exists (created by an IL relocation
+                // before this function token was registered). This means the caller violated
+                // the ordering requirement: AddFunctionClrToken must be called before any IL
+                // that references this token is emitted.
+                throw new InvalidOperationException(
+                    $"CLR token symbol '{tokenSymbolName}' for function '{name}' was already created as undefined. " +
+                    $"Register function tokens before emitting IL that references them.");
             }
 
             return index;
         }
 
         /// <summary>
-        /// Adds a CLR token symbol for a field definition in a data section.
+        /// Creates an undefined CLR token symbol (section 0) for inline IL references.
+        /// Used internally by relocation encoders.
         /// </summary>
-        public CoffSymbolHandle AddDataClrToken(string name, EntityHandle handle, int dataSectionNumber, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol)
+        public CoffSymbolHandle GetOrAddUndefinedClrTokenSymbol(string name)
+        {
+            return GetOrAddCoffSymbol(name, 0, 0, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 0);
+        }
+
+        /// <summary>
+        /// Adds a CLR token symbol for a field definition using a <see cref="LogicalSection"/>
+        /// whose actual section number is resolved later via <see cref="ResolveDeferredSections"/>.
+        /// </summary>
+        public CoffSymbolHandle AddDataClrToken(string name, EntityHandle handle, LogicalSection section, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol)
         {
             int token = MetadataTokens.GetToken(handle);
 
-            CoffSymbolHandle index = GetOrAddCoffSymbol(name, (uint)sectionOffset, (ushort)dataSectionNumber, CoffSymbolType.Null, CoffSymbolStorageClass.Static, 0);
+            CoffSymbolHandle index = GetOrAddCoffSymbolDeferred(name, (uint)sectionOffset, section, CoffSymbolType.Null, CoffSymbolStorageClass.Static, 0);
 
             string tokenSymbolName = token.ToString("X8");
             if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
             {
-                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, (uint)sectionOffset, (ushort)dataSectionNumber, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 1);
+                tokenCoffSymbol = GetOrAddCoffSymbolDeferred(tokenSymbolName, (uint)sectionOffset, section, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 1);
                 _coffSymbolTableBuilder.WriteByte(1);
                 _coffSymbolTableBuilder.WriteByte(0);
                 _coffSymbolTableBuilder.WriteInt32(index._value);
                 _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
             }
+            else
+            {
+                throw new InvalidOperationException(
+                    $"CLR token symbol '{tokenSymbolName}' for data '{name}' was already created as undefined. " +
+                    $"Register data tokens before emitting IL that references them.");
+            }
 
             return index;
+        }
+
+        private CoffSymbolHandle GetOrAddCoffSymbolDeferred(string name, uint value, LogicalSection section,
+            CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols)
+        {
+            if (_deferredSectionsResolved)
+                throw new InvalidOperationException("Cannot add deferred symbols after sections have been resolved.");
+            return GetOrAddCoffSymbolCore(name, value, b =>
+            {
+                Blob patch = b.ReserveBytes(2);
+                _deferredSectionFixups.Add((patch, section));
+            }, type, storageClass, numberOfAuxSymbols);
+        }
+
+        /// <summary>
+        /// Patches all deferred section number fields using the provided resolver.
+        /// Must be called exactly once, before the symbol table is serialized.
+        /// </summary>
+        public void ResolveDeferredSections(Func<LogicalSection, int> resolver)
+        {
+            if (_deferredSectionsResolved)
+                throw new InvalidOperationException("Deferred sections have already been resolved.");
+            _deferredSectionsResolved = true;
+
+            foreach (var (patch, section) in _deferredSectionFixups)
+            {
+                var writer = new BlobWriter(patch);
+                writer.WriteUInt16((ushort)resolver(section));
+            }
+        }
+
+        public override void Serialize(BlobBuilder builder)
+        {
+            if (!_deferredSectionsResolved && _deferredSectionFixups.Count > 0)
+                throw new InvalidOperationException("Deferred section fixups have not been resolved. Call ResolveDeferredSections before serializing.");
+            base.Serialize(builder);
         }
 
         /// <summary>
@@ -1860,6 +1927,12 @@ namespace System.Reflection.PortableExecutable
             GetOrAddCoffSymbol(token.ToString("X8"), 0, 0, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 0);
         }
     }
+
+    /// <summary>
+    /// Identifies a logical section whose actual 1-based COFF section number
+    /// is not known until ManagedCoffBuilder lays out its sections.
+    /// </summary>
+    public enum LogicalSection { Text, Data, RData, Crtma }
 
     public enum CoffSymbolType : short
     {
@@ -1971,7 +2044,7 @@ namespace System.Reflection.PortableExecutable
 
         protected abstract BlobBuilder SerializeRelocations(string name, SectionLocation location);
 
-        public BlobContentId Serialize(BlobBuilder builder)
+        public virtual BlobContentId Serialize(BlobBuilder builder)
         {
             // Define and serialize sections in two steps.
             // We need to know about all sections before serializing them.
@@ -2151,8 +2224,6 @@ namespace System.Reflection.PortableExecutable
         private readonly BlobBuilder _rdataStream;
         private readonly InitializerListSectionBuilder _initializerList;
 
-        public const int ClrTextSectionNumber = 1;
-
         public ManagedCoffBuilder(
             CoffHeaderBuilder header,
             MetadataRootBuilder metadataRootBuilder,
@@ -2182,11 +2253,6 @@ namespace System.Reflection.PortableExecutable
                 throw new ArgumentNullException(nameof(ilStream));
             }
 
-            if (symbolTable._clrTextSectionNumber != ClrTextSectionNumber)
-            {
-                throw new ArgumentException();
-            }
-
             _codeViewSymbols = codeViewSymbols;
             _metadataRootBuilder = metadataRootBuilder;
             _ilStream = ilStream;
@@ -2197,11 +2263,27 @@ namespace System.Reflection.PortableExecutable
             _initializerList = initializerList;
         }
 
+        public override BlobContentId Serialize(BlobBuilder builder)
+        {
+            if (SymbolTableBuilder is ManagedCoffSymbolTableBuilder managedSymtab)
+            {
+                managedSymtab.ResolveDeferredSections(section => section switch
+                {
+                    LogicalSection.Text => TextSectionNumber,
+                    LogicalSection.Data => DataSectionNumber,
+                    LogicalSection.RData => RDataSectionNumber,
+                    LogicalSection.Crtma => CrtmaSectionNumber,
+                    _ => throw new InvalidOperationException($"Unknown logical section: {section}")
+                });
+            }
+            return base.Serialize(builder);
+        }
+
         /// <summary>
         /// Returns the 1-based section number for a given section, computed from the section list.
         /// Returns -1 if the section is not present.
         /// </summary>
-        public int GetSectionNumber(string sectionName)
+        private int GetSectionNumber(string sectionName)
         {
             var sections = GetSections();
             for (int i = 0; i < sections.Length; i++)
@@ -2213,19 +2295,24 @@ namespace System.Reflection.PortableExecutable
         }
 
         /// <summary>
+        /// Returns the 1-based section number for the .text$mn section.
+        /// </summary>
+        private int TextSectionNumber => GetSectionNumber(TextSectionName);
+
+        /// <summary>
         /// Returns the 1-based section number for the .data section, or -1 if no .data section.
         /// </summary>
-        public int DataSectionNumber => GetSectionNumber(DataSectionName);
+        private int DataSectionNumber => GetSectionNumber(DataSectionName);
 
         /// <summary>
         /// Returns the 1-based section number for the .rdata section, or -1 if not present.
         /// </summary>
-        public int RDataSectionNumber => GetSectionNumber(RDataSectionName);
+        private int RDataSectionNumber => GetSectionNumber(RDataSectionName);
 
         /// <summary>
         /// Returns the 1-based section number for the .CRTMA$XCC section, or -1 if not present.
         /// </summary>
-        public int CrtmaSectionNumber => GetSectionNumber(CrtmaSectionName);
+        private int CrtmaSectionNumber => GetSectionNumber(CrtmaSectionName);
 
         protected override ImmutableArray<Section> CreateSections()
         {

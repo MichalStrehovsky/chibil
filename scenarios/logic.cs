@@ -83,7 +83,7 @@ public class LogicTest
         md.AddModule(0, md.GetOrAddString("logic.obj"), md.GetOrAddGuid(Guid.NewGuid()), default, default);
 
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ManagedCoffBuilder.ClrTextSectionNumber, ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
 

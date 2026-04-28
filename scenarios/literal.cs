@@ -158,7 +158,7 @@ public class LiteralTest
 
         // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ManagedCoffBuilder.ClrTextSectionNumber, ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
 
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
@@ -170,8 +170,8 @@ public class LiteralTest
         dataStreamBuilder.WriteBytes(new byte[] { 0x57, 0x6F, 0x72, 0x6C, 0x64, 0x21, 0x00 }); // "World!\0" at offset 8
 
         // Create COFF symbols for both field data entries BEFORE emitting IL
-        symtab.AddDataClrToken("$SG8557", field1, 2, 0, out _);
-        symtab.AddDataClrToken("$SG8558", field2, 2, 8, out _);
+        symtab.AddDataClrToken("$SG8557", field1, LogicalSection.Data, 0, out _);
+        symtab.AddDataClrToken("$SG8558", field2, LogicalSection.Data, 8, out _);
 
         // ─── CodeView debug info ──────────────────────────────────────────
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);

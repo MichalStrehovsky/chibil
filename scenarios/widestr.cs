@@ -97,7 +97,7 @@ public class WidestrTest
 
         // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ManagedCoffBuilder.ClrTextSectionNumber, ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
         var dataStreamBuilder = new BlobBuilder();
@@ -105,7 +105,7 @@ public class WidestrTest
         // .data: L"Hi" = 48 00 69 00 00 00 (UTF-16LE)
         dataStreamBuilder.WriteBytes(new byte[] { 0x48, 0x00, 0x69, 0x00, 0x00, 0x00 });
 
-        symtab.AddDataClrToken("$SG_widestr", field1, 2, 0, out _);
+        symtab.AddDataClrToken("$SG_widestr", field1, LogicalSection.Data, 0, out _);
 
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
         codeviewSymbols.AddObjNameAndCompile3("widestr.obj",
