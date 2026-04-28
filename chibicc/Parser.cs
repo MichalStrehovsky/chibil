@@ -349,10 +349,15 @@ public class Parser
     private CType Declarator(ref Token rest, Token tok, CType ty)
     {
         ty = Pointers(ref tok, tok, ty);
-        // Skip MSVC calling convention keywords — all functions are __clrcall in MSIL
+        // Track native calling convention keywords for mangling
+        bool isNativeCC = false;
         while (Util.Equal(tok, "__cdecl") || Util.Equal(tok, "__stdcall") ||
                Util.Equal(tok, "__clrcall") || Util.Equal(tok, "__fastcall"))
+        {
+            if (!Util.Equal(tok, "__clrcall"))
+                isNativeCC = true;
             tok = tok.Next;
+        }
         if (Util.Equal(tok, "("))
         {
             Token start = tok;
@@ -360,11 +365,15 @@ public class Parser
             Declarator(ref tok, start.Next, dummy);
             tok = Util.Skip(tok, ")");
             ty = TypeSuffix(ref rest, tok, ty);
+            if (isNativeCC && ty.Kind == TypeKind.Func)
+                ty.IsNativeCallConv = true;
             return Declarator(ref tok, start.Next, ty);
         }
         Token name = null, namePos = tok;
         if (tok.Kind == TokenKind.Ident) { name = tok; tok = tok.Next; }
         ty = TypeSuffix(ref rest, tok, ty);
+        if (isNativeCC && ty.Kind == TypeKind.Func)
+            ty.IsNativeCallConv = true;
         ty.Name = name; ty.NamePos = namePos;
         return ty;
     }
@@ -372,9 +381,14 @@ public class Parser
     private CType AbstractDeclarator(ref Token rest, Token tok, CType ty)
     {
         ty = Pointers(ref tok, tok, ty);
+        bool isNativeCC = false;
         while (Util.Equal(tok, "__cdecl") || Util.Equal(tok, "__stdcall") ||
                Util.Equal(tok, "__clrcall") || Util.Equal(tok, "__fastcall"))
+        {
+            if (!Util.Equal(tok, "__clrcall"))
+                isNativeCC = true;
             tok = tok.Next;
+        }
         if (Util.Equal(tok, "("))
         {
             Token start = tok;
@@ -382,9 +396,14 @@ public class Parser
             AbstractDeclarator(ref tok, start.Next, dummy);
             tok = Util.Skip(tok, ")");
             ty = TypeSuffix(ref rest, tok, ty);
+            if (isNativeCC && ty.Kind == TypeKind.Func)
+                ty.IsNativeCallConv = true;
             return AbstractDeclarator(ref tok, start.Next, ty);
         }
-        return TypeSuffix(ref rest, tok, ty);
+        ty = TypeSuffix(ref rest, tok, ty);
+        if (isNativeCC && ty.Kind == TypeKind.Func)
+            ty.IsNativeCallConv = true;
+        return ty;
     }
 
     private CType Typename(ref Token rest, Token tok)

@@ -128,6 +128,7 @@ public class CType
     public CType ReturnTy;
     public CType Params;
     public bool IsVariadic;
+    public bool IsNativeCallConv; // true if declared __stdcall/__cdecl/__fastcall (not __clrcall)
     public CType Next;
 
     public CType() { }

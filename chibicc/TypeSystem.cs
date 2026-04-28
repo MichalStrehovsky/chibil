@@ -100,6 +100,7 @@ public static class TypeSystem
             ReturnTy = ty.ReturnTy,
             Params = ty.Params,
             IsVariadic = ty.IsVariadic,
+            IsNativeCallConv = ty.IsNativeCallConv,
             Next = ty.Next,
             Origin = ty,
             TypeId = ty.TypeId, // preserve identity for metadata lookup

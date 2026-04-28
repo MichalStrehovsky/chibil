@@ -38,6 +38,7 @@ public class CodeGen
     private TypeReferenceHandle _nativeCppClassAttrRef;
     private TypeReferenceHandle _unsafeValueTypeAttrRef;
     private TypeReferenceHandle _fixedAddressAttrRef;
+    private TypeReferenceHandle _callConvCdeclRef;
     private MemberReferenceHandle _nativeCppCtorRef;
     private MemberReferenceHandle _unsafeVTCtorRef;
     private MemberReferenceHandle _fixedAddrCtorRef;
@@ -172,6 +173,44 @@ public class CodeGen
         return _isVolatileRef;
     }
 
+    private TypeReferenceHandle GetCallConvCdeclRef()
+    {
+        if (_callConvCdeclRef.IsNil)
+            _callConvCdeclRef = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString("System.Runtime.CompilerServices"), _md.GetOrAddString("CallConvCdecl"));
+        return _callConvCdeclRef;
+    }
+
+    private MemberReferenceHandle _decoratedNameCtorRef;
+    private TypeReferenceHandle _decoratedNameAttrRef;
+
+    private MemberReferenceHandle GetDecoratedNameCtorRef()
+    {
+        if (_decoratedNameCtorRef.IsNil)
+        {
+            _decoratedNameAttrRef = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString("System.Runtime.CompilerServices"), _md.GetOrAddString("DecoratedNameAttribute"));
+            // .ctor(string) signature
+            var ctorSig = new BlobBuilder();
+            ctorSig.WriteByte(0x20); // HASTHIS
+            ctorSig.WriteByte(0x01); // 1 param
+            ctorSig.WriteByte(0x01); // VOID return
+            ctorSig.WriteByte(0x0E); // STRING param
+            _decoratedNameCtorRef = _md.AddMemberReference(_decoratedNameAttrRef,
+                _md.GetOrAddString(".ctor"), _md.GetOrAddBlob(ctorSig));
+        }
+        return _decoratedNameCtorRef;
+    }
+
+    private BlobHandle EncodeDecoratedNameBlob(string name)
+    {
+        var blob = new BlobBuilder();
+        blob.WriteUInt16(0x0001); // prolog
+        blob.WriteSerializedString(name);
+        blob.WriteUInt16(0x0000); // no named args
+        return _md.GetOrAddBlob(blob);
+    }
+
     private MemberReferenceHandle GetNativeCppCtorRef()
     {
         if (_nativeCppCtorRef.IsNil)
@@ -237,13 +276,17 @@ public class CodeGen
     private string MangleFunctionName(Obj fn)
     {
         bool isRealVariadic = fn.Ty.IsVariadic && fn.Ty.Params != null;
+        // Defined vararg functions use YA (cdecl) per MSVC convention.
+        // Non-defined (extern) functions with native CC (__stdcall/__cdecl) also use YA.
+        // All other defined functions use YM (clrcall) in /clr:pure.
+        bool useNativeCC = isRealVariadic || (!fn.IsDefinition && fn.Ty.IsNativeCallConv);
         var sb = new StringBuilder();
         sb.Append('?');
         sb.Append(fn.Name);
-        if (isRealVariadic)
-            sb.Append("@@$$J0YA"); // cdecl for vararg functions
+        if (useNativeCC)
+            sb.Append("@@$$J0YA"); // cdecl for native-CC and vararg functions
         else
-            sb.Append("@@$$J0YM"); // clrcall for normal functions
+            sb.Append("@@$$J0YM"); // clrcall for managed functions
         AppendMangledType(sb, fn.Ty.ReturnTy, isReturn: true);
         bool hasParams = false;
         for (CType p = fn.Ty.Params; p != null; p = p.Next)
@@ -1543,18 +1586,43 @@ public class CodeGen
 
     private MemberReferenceHandle CreateExternalMemberRef(Obj fn)
     {
-        var sig = new BlobBuilder();
-        var sigEnc = new BlobEncoder(sig).MethodSignature();
         int paramCount = 0;
         for (CType p = fn.Ty.Params; p != null; p = p.Next) paramCount++;
-        sigEnc.Parameters(paramCount, out var retEnc, out var parEnc);
-        if (fn.Ty.ReturnTy.Kind == TypeKind.Void) retEnc.Void();
-        else { var r = retEnc.Type(); EncodeType(r.Builder, fn.Ty.ReturnTy); }
-        for (CType p = fn.Ty.Params; p != null; p = p.Next) { var pe = parEnc.AddParameter().Type(); EncodeType(pe.Builder, p); }
-        var memberRef = _md.AddMemberReference(_moduleTypeDef, _md.GetOrAddString(fn.Name), _md.GetOrAddBlob(sig));
-        string mangledName = MangleFunctionName(fn);
-        _symtab.AddExternalClrToken(mangledName, memberRef);
-        return memberRef;
+
+        if (fn.Ty.IsNativeCallConv)
+        {
+            // Build signature manually to include CMOD_OPT CallConvCdecl on return type
+            var sig = new BlobBuilder();
+            sig.WriteByte(0x00); // DEFAULT calling convention
+            sig.WriteCompressedInteger(paramCount);
+            // Return type with CMOD_OPT
+            sig.WriteByte(0x20); // ELEMENT_TYPE_CMOD_OPT
+            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetCallConvCdeclRef()));
+            EncodeType(sig, fn.Ty.ReturnTy);
+            // Parameters
+            for (CType p = fn.Ty.Params; p != null; p = p.Next)
+                EncodeType(sig, p);
+            var memberRef = _md.AddMemberReference(_moduleTypeDef, _md.GetOrAddString(fn.Name), _md.GetOrAddBlob(sig));
+            string mangledName = MangleFunctionName(fn);
+            _symtab.AddExternalClrToken(mangledName, memberRef);
+            // DecoratedNameAttribute is required for the linker to map MemberRef to COFF symbol
+            _md.AddCustomAttribute((EntityHandle)memberRef, GetDecoratedNameCtorRef(),
+                EncodeDecoratedNameBlob(mangledName));
+            return memberRef;
+        }
+        else
+        {
+            var sig = new BlobBuilder();
+            var sigEnc = new BlobEncoder(sig).MethodSignature();
+            sigEnc.Parameters(paramCount, out var retEnc, out var parEnc);
+            if (fn.Ty.ReturnTy.Kind == TypeKind.Void) retEnc.Void();
+            else { var r = retEnc.Type(); EncodeType(r.Builder, fn.Ty.ReturnTy); }
+            for (CType p = fn.Ty.Params; p != null; p = p.Next) { var pe = parEnc.AddParameter().Type(); EncodeType(pe.Builder, p); }
+            var memberRef = _md.AddMemberReference(_moduleTypeDef, _md.GetOrAddString(fn.Name), _md.GetOrAddBlob(sig));
+            string mangledName = MangleFunctionName(fn);
+            _symtab.AddExternalClrToken(mangledName, memberRef);
+            return memberRef;
+        }
     }
 
     /// <summary>
