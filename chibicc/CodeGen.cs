@@ -827,6 +827,11 @@ public class CodeGen
 
     private void RegisterGlobalFields(Obj prog)
     {
+        // Name-based dedup: multiple Obj nodes for the same C global
+        // (extern decl + definition) must share one FieldDef.
+        var fieldByName = new Dictionary<string, FieldDefinitionHandle>();
+
+        // Pass A: register definitions first (they may have init data, HasFieldRVA, etc.)
         for (Obj v = prog; v != null; v = v.Next)
         {
             if (v.IsFunction || !v.IsDefinition) continue;
@@ -865,6 +870,7 @@ public class CodeGen
             }
 
             _fieldDefs[v] = fieldHandle;
+            fieldByName[v.Name] = fieldHandle;
 
             // Globals needing runtime initialization
             if (useCrtmaInit)
@@ -906,6 +912,41 @@ public class CodeGen
                 _nextFieldRow++;
                 _md.AddFieldRelativeVirtualAddress(crtmaField, 0);
                 _symtab.AddDataClrToken(crtmaFieldName, crtmaField, LogicalSection.Crtma, 0, out _);
+            }
+        }
+
+        // Pass B: register extern (non-definition) globals that don't have a definition
+        for (Obj v = prog; v != null; v = v.Next)
+        {
+            if (v.IsFunction || v.IsDefinition) continue;
+            if (_fieldDefs.ContainsKey(v)) continue; // already mapped (e.g., duplicate Obj)
+
+            if (v.IsTls)
+                Util.ErrorTok(v.Tok, "thread-local storage not supported in MSIL");
+
+            if (fieldByName.TryGetValue(v.Name, out var existingField))
+            {
+                // Definition already created the field — just alias this Obj to it
+                _fieldDefs[v] = existingField;
+            }
+            else
+            {
+                // Extern-only global — create field with local storage.
+                // NOTE: this emits a Static COFF symbol, not External. Same-TU
+                // externs get zero-init storage. Cross-TU extern data linking is
+                // not yet supported (would need AddExternalClrToken but that
+                // breaks single-TU builds with undefined externs like doom.c).
+                var extSig = new BlobBuilder();
+                var extSigEnc = new BlobEncoder(extSig).Field().Type();
+                EncodeType(extSigEnc.Builder, v.Ty);
+                var extField = _md.AddFieldDefinition(
+                    FieldAttributes.Assembly | FieldAttributes.Static,
+                    _md.GetOrAddString(v.Name),
+                    _md.GetOrAddBlob(extSig));
+                _nextFieldRow++;
+                _fieldDefs[v] = extField;
+                fieldByName[v.Name] = extField;
+                _symtab.AddDataClrToken(v.Name, extField, LogicalSection.Data, 0, out _);
             }
         }
     }
@@ -1679,6 +1720,10 @@ public class CodeGen
 
         if (_fieldDefs.TryGetValue(v, out var existing))
             return existing;
+
+        // This should not happen — extern globals should be registered in Pass 1.
+        // Creating fields during Pass 2 causes incorrect TypeDef field ownership.
+        System.Diagnostics.Debug.Fail($"Extern global '{v.Name}' not pre-registered in Pass 1");
 
         var fieldSig = new BlobBuilder();
         var fieldSigEnc = new BlobEncoder(fieldSig).Field().Type();
