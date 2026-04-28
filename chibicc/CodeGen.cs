@@ -1032,7 +1032,7 @@ public class CodeGen
 
     private void Cast(CType from, CType to)
     {
-        if (to.Kind == TypeKind.Void) { _enc.OpCode(ILOpCode.Pop); Pop(); return; }
+        if (to.Kind == TypeKind.Void) { if (from.Kind != TypeKind.Void) { _enc.OpCode(ILOpCode.Pop); Pop(); } return; }
         if (to.Kind == TypeKind.Bool) { CmpZero(from); return; }
         switch (to.Kind)
         {
@@ -1198,14 +1198,16 @@ public class CodeGen
                 {
                     // Bitfield write: read-modify-write
                     Member mem = node.Lhs.Member;
+                    bool is64 = mem.Ty.Size == 8;
                     GenExpr(node.Rhs);                          // [new_val]
                     int valScratch = GetOrAddScratchLocal(node.Ty);
                     _enc.OpCode(ILOpCode.Dup); Push();
                     _enc.StoreLocal(valScratch); Pop();          // [new_val]
 
                     // Mask new value to bitfield width and shift into position
-                    long mask = (1L << mem.BitWidth) - 1;
-                    _enc.LoadConstantI4((int)mask); Push();
+                    long mask = (mem.BitWidth >= 64) ? -1L : (1L << mem.BitWidth) - 1;
+                    if (is64) _enc.LoadConstantI8(mask); else _enc.LoadConstantI4((int)mask);
+                    Push();
                     _enc.OpCode(ILOpCode.And); Pop();            // [new_val & mask]
                     if (mem.BitOffset > 0)
                     {
@@ -1222,7 +1224,8 @@ public class CodeGen
 
                     // Clear the bitfield bits in old value
                     long clearMask = ~(mask << mem.BitOffset);
-                    _enc.LoadConstantI4((int)clearMask); Push();
+                    if (is64) _enc.LoadConstantI8(clearMask); else _enc.LoadConstantI4((int)clearMask);
+                    Push();
                     _enc.OpCode(ILOpCode.And); Pop();            // [addr, old_val & ~field_mask]
 
                     // OR in the new shifted value
@@ -1388,12 +1391,16 @@ public class CodeGen
             case NodeKind.Ne: _enc.OpCode(ILOpCode.Ceq); Pop(); _enc.LoadConstantI4(0); Push(); _enc.OpCode(ILOpCode.Ceq); Pop(); return;
             case NodeKind.Lt:
             {
-                bool useUn = node.Lhs.Ty.IsUnsigned || node.Lhs.Ty.Kind == TypeKind.Ptr || TypeSystem.IsFlonum(node.Lhs.Ty);
+                // For floats: use ordered clt (returns false for NaN)
+                // For unsigned/pointer: use clt.un
+                bool useUn = node.Lhs.Ty.IsUnsigned || node.Lhs.Ty.Kind == TypeKind.Ptr;
                 _enc.OpCode(useUn ? ILOpCode.Clt_un : ILOpCode.Clt); Pop(); return;
             }
             case NodeKind.Le:
             {
-                bool useUn = node.Lhs.Ty.IsUnsigned || node.Lhs.Ty.Kind == TypeKind.Ptr || TypeSystem.IsFlonum(node.Lhs.Ty);
+                // !(a > b): for floats use cgt (ordered, returns false for NaN) then negate
+                // For unsigned/pointer: use cgt.un then negate
+                bool useUn = node.Lhs.Ty.IsUnsigned || node.Lhs.Ty.Kind == TypeKind.Ptr;
                 _enc.OpCode(useUn ? ILOpCode.Cgt_un : ILOpCode.Cgt); Pop(); _enc.LoadConstantI4(0); Push(); _enc.OpCode(ILOpCode.Ceq); Pop(); return;
             }
         }
@@ -1418,7 +1425,9 @@ public class CodeGen
 
     private FieldDefinitionHandle GetOrCreateExternalField(Obj v)
     {
-        // Check if already registered
+        if (v.IsTls)
+            Util.ErrorTok(v.Tok, "thread-local storage not supported in MSIL");
+
         if (_fieldDefs.TryGetValue(v, out var existing))
             return existing;
 
