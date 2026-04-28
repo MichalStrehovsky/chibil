@@ -605,23 +605,37 @@ public class CodeGen
             if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
 
             var sig = new BlobBuilder();
-            var sigEnc = new BlobEncoder(sig).MethodSignature();
             int paramCount = 0;
             for (CType p = fn.Ty.Params; p != null; p = p.Next) paramCount++;
 
-            sigEnc.Parameters(paramCount, out var retEnc, out var parEnc);
-            if (fn.Ty.ReturnTy.Kind == TypeKind.Void)
-                retEnc.Void();
+            // Only use VARARG for explicit ... declarations, not old-style empty parens
+            bool isRealVariadic = fn.Ty.IsVariadic && fn.Ty.Params != null;
+
+            if (isRealVariadic)
+            {
+                // VARARG MethodDef signature: only fixed params, no sentinel
+                sig.WriteByte(0x05); // VARARG calling convention
+                sig.WriteCompressedInteger(paramCount);
+                EncodeType(sig, fn.Ty.ReturnTy);
+                for (CType p = fn.Ty.Params; p != null; p = p.Next)
+                    EncodeType(sig, p);
+            }
             else
             {
-                var retTypeEnc = retEnc.Type();
-                EncodeType(retTypeEnc.Builder, fn.Ty.ReturnTy);
-            }
-
-            for (CType p = fn.Ty.Params; p != null; p = p.Next)
-            {
-                var pEnc = parEnc.AddParameter().Type();
-                EncodeType(pEnc.Builder, p);
+                var sigEnc = new BlobEncoder(sig).MethodSignature();
+                sigEnc.Parameters(paramCount, out var retEnc, out var parEnc);
+                if (fn.Ty.ReturnTy.Kind == TypeKind.Void)
+                    retEnc.Void();
+                else
+                {
+                    var retTypeEnc = retEnc.Type();
+                    EncodeType(retTypeEnc.Builder, fn.Ty.ReturnTy);
+                }
+                for (CType p = fn.Ty.Params; p != null; p = p.Next)
+                {
+                    var pEnc = parEnc.AddParameter().Type();
+                    EncodeType(pEnc.Builder, p);
+                }
             }
 
             var methodHandle = _md.AddMethodDefinition(
@@ -1329,10 +1343,15 @@ public class CodeGen
                 int argCount = 0;
                 for (Node arg = node.Args; arg != null; arg = arg.Next) { GenExpr(arg); argCount++; }
                 EntityHandle callTarget = default;
+                bool isVariadic = node.FuncTy != null && node.FuncTy.IsVariadic && node.FuncTy.Params != null;
                 if (node.Lhs.Kind == NodeKind.Var && node.Lhs.Var.Ty.Kind == TypeKind.Func)
                 {
                     Obj fnVar = node.Lhs.Var;
-                    if (_methodDefs.TryGetValue(fnVar, out var mh)) callTarget = mh;
+                    if (isVariadic)
+                    {
+                        callTarget = CreateVarargCallSiteMemberRef(fnVar, node.Args);
+                    }
+                    else if (_methodDefs.TryGetValue(fnVar, out var mh)) callTarget = mh;
                     else
                     {
                         if (!_externalFuncRefs.TryGetValue(fnVar.Name, out var mr))
@@ -1368,8 +1387,12 @@ public class CodeGen
                 }
                 return;
             }
-            case NodeKind.Cas: case NodeKind.Exch:
-                _enc.LoadConstantI4(0); Push(); return;
+            case NodeKind.Cas:
+                Util.ErrorTok(node.Tok, "atomic compare-and-swap not yet supported in MSIL");
+                return;
+            case NodeKind.Exch:
+                Util.ErrorTok(node.Tok, "atomic exchange not yet supported in MSIL");
+                return;
             case NodeKind.LabelVal:
                 Util.ErrorTok(node.Tok, "labels-as-values not supported in MSIL"); return;
         }
@@ -1418,6 +1441,53 @@ public class CodeGen
         else { var r = retEnc.Type(); EncodeType(r.Builder, fn.Ty.ReturnTy); }
         for (CType p = fn.Ty.Params; p != null; p = p.Next) { var pe = parEnc.AddParameter().Type(); EncodeType(pe.Builder, p); }
         var memberRef = _md.AddMemberReference(_moduleTypeDef, _md.GetOrAddString(fn.Name), _md.GetOrAddBlob(sig));
+        string mangledName = MangleFunctionName(fn);
+        _symtab.AddExternalClrToken(mangledName, memberRef);
+        return memberRef;
+    }
+
+    /// <summary>
+    /// Creates a VARARG call-site MemberRef with SENTINEL separating fixed from variadic args.
+    /// Each unique call site needs its own MemberRef.
+    /// </summary>
+    private MemberReferenceHandle CreateVarargCallSiteMemberRef(Obj fn, Node args)
+    {
+        // Count fixed params from the function type
+        int fixedCount = 0;
+        for (CType p = fn.Ty.Params; p != null; p = p.Next) fixedCount++;
+
+        // Count total args at call site
+        int totalArgs = 0;
+        for (Node a = args; a != null; a = a.Next) totalArgs++;
+
+        // Build VARARG call-site signature manually
+        var sig = new BlobBuilder();
+        sig.WriteByte(0x05); // VARARG calling convention
+        sig.WriteCompressedInteger(totalArgs); // total param count
+
+        // Return type
+        EncodeType(sig, fn.Ty.ReturnTy);
+
+        // Fixed parameters (from function declaration)
+        for (CType p = fn.Ty.Params; p != null; p = p.Next)
+            EncodeType(sig, p);
+
+        // SENTINEL
+        sig.WriteByte(0x41);
+
+        // Variadic arguments (from actual call-site types)
+        int idx = 0;
+        for (Node a = args; a != null; a = a.Next)
+        {
+            if (idx >= fixedCount)
+                EncodeType(sig, a.Ty);
+            idx++;
+        }
+
+        var memberRef = _md.AddMemberReference(_moduleTypeDef,
+            _md.GetOrAddString(fn.Name), _md.GetOrAddBlob(sig));
+
+        // COFF symbol: vararg functions use YA (cdecl) not YM (clrcall) and end with ZZ
         string mangledName = MangleFunctionName(fn);
         _symtab.AddExternalClrToken(mangledName, memberRef);
         return memberRef;
