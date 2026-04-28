@@ -1517,6 +1517,7 @@ public class Parser
     private static CType CopyStructType(CType ty)
     {
         ty = TypeSystem.CopyType(ty);
+        ty.TypeId = CType.AllocateTypeId(); // fresh ID — this is a structurally different type
         Member head = new(), cur = head;
         for (Member mem = ty.Members; mem != null; mem = mem.Next)
         {

@@ -102,6 +102,7 @@ public static class TypeSystem
             IsVariadic = ty.IsVariadic,
             Next = ty.Next,
             Origin = ty,
+            TypeId = ty.TypeId, // preserve identity for metadata lookup
         };
         return ret;
     }

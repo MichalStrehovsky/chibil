@@ -93,6 +93,11 @@ public class Hideset
 
 public class CType
 {
+    private static int _nextTypeId;
+    public int TypeId = System.Threading.Interlocked.Increment(ref _nextTypeId);
+
+    public static int AllocateTypeId() => System.Threading.Interlocked.Increment(ref _nextTypeId);
+
     public TypeKind Kind;
     public int Size;
     public int Align;

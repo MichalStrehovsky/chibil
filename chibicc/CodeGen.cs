@@ -47,7 +47,7 @@ public class CodeGen
     private MethodDefinitionHandle _entryMethodDef; // __CxxPureMSILEntry if main exists
     private readonly Dictionary<Obj, FieldDefinitionHandle> _fieldDefs = new();
     private readonly Dictionary<string, MemberReferenceHandle> _externalFuncRefs = new();
-    private readonly Dictionary<CType, TypeDefinitionHandle> _structTypeDefs = new();
+    private readonly Dictionary<int, TypeDefinitionHandle> _structTypeDefs = new();
     private readonly Dictionary<string, TypeDefinitionHandle> _arrayTypeDefs = new();
     private readonly Dictionary<string, TypeReferenceHandle> _forwardDeclTypeRefs = new();
 
@@ -318,7 +318,7 @@ public class CodeGen
     {
         if (ty.Name != null)
             return Util.GetTokenText(ty.Name);
-        return $"__anon_{ty.GetHashCode():x}";
+        return $"__anon_{ty.TypeId}";
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -378,11 +378,18 @@ public class CodeGen
                 }
                 break;
             case TypeKind.Struct: case TypeKind.Union:
-                if (_structTypeDefs.TryGetValue(ty, out var sth))
+                // Look up TypeDef by CType identity, Origin, or by name
+                TypeDefinitionHandle sth = default;
+                if (!_structTypeDefs.TryGetValue(ty.TypeId, out sth))
+                {
+                    if (ty.Origin != null)
+                        _structTypeDefs.TryGetValue(ty.Origin.TypeId, out sth);
+                }
+                if (!sth.IsNil)
                     EncodeValueType(sig, sth);
                 else
                 {
-                    // Forward-declared/incomplete struct — use cached TypeRef with null scope
+                    // Forward-declared/incomplete struct — use TypeRef (matches MSVC behavior)
                     string fwdName = GetStructName(ty);
                     if (!_forwardDeclTypeRefs.TryGetValue(fwdName, out var fwdRef))
                     {
@@ -573,8 +580,33 @@ public class CodeGen
                     PreAllocateTypeDefsFromType(local.Ty, registered, ref nextTypeDefRow);
                 for (Obj param = obj.Params; param != null; param = param.Next)
                     PreAllocateTypeDefsFromType(param.Ty, registered, ref nextTypeDefRow);
+                // Walk the function body AST to discover types in expressions
+                if (obj.Body != null)
+                    PreAllocateTypeDefsFromNode(obj.Body, new HashSet<Node>(), registered, ref nextTypeDefRow);
             }
         }
+    }
+
+    private void PreAllocateTypeDefsFromNode(Node node, HashSet<Node> seenNodes, HashSet<CType> seenTypes, ref int nextTypeDefRow)
+    {
+        if (node == null || !seenNodes.Add(node)) return;
+        PreAllocateTypeDefsFromType(node.Ty, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromType(node.FuncTy, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromNode(node.Lhs, seenNodes, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromNode(node.Rhs, seenNodes, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromNode(node.Cond, seenNodes, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromNode(node.Then, seenNodes, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromNode(node.Els, seenNodes, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromNode(node.Init, seenNodes, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromNode(node.Inc, seenNodes, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromNode(node.CasAddr, seenNodes, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromNode(node.CasOld, seenNodes, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromNode(node.CasNew, seenNodes, seenTypes, ref nextTypeDefRow);
+        PreAllocateTypeDefsFromNode(node.AtomicExpr, seenNodes, seenTypes, ref nextTypeDefRow);
+        for (Node n = node.Body; n != null; n = n.Next)
+            PreAllocateTypeDefsFromNode(n, seenNodes, seenTypes, ref nextTypeDefRow);
+        for (Node n = node.Args; n != null; n = n.Next)
+            PreAllocateTypeDefsFromNode(n, seenNodes, seenTypes, ref nextTypeDefRow);
     }
 
     private void PreAllocateTypeDefsFromType(CType ty, HashSet<CType> registered, ref int nextTypeDefRow)
@@ -583,11 +615,11 @@ public class CodeGen
         switch (ty.Kind)
         {
             case TypeKind.Struct: case TypeKind.Union:
-                if (!_structTypeDefs.ContainsKey(ty) && ty.Size > 0)
+                if (!_structTypeDefs.ContainsKey(ty.TypeId) && ty.Size > 0)
                 {
                     string name = GetStructName(ty);
                     var handle = MetadataTokens.TypeDefinitionHandle(nextTypeDefRow++);
-                    _structTypeDefs[ty] = handle;
+                    _structTypeDefs[ty.TypeId] = handle;
                     _pendingTypeDefs.Add((ty, null, name, handle));
                 }
                 for (Member m = ty.Members; m != null; m = m.Next)
@@ -1070,7 +1102,10 @@ public class CodeGen
                 return; // These types ARE their address
             case TypeKind.Struct: case TypeKind.Union:
                 // Convert address → value type via ldobj
-                if (_structTypeDefs.TryGetValue(ty, out var sTd))
+                TypeDefinitionHandle sTd = default;
+                if (!_structTypeDefs.TryGetValue(ty.TypeId, out sTd) && ty.Origin != null)
+                    _structTypeDefs.TryGetValue(ty.Origin.TypeId, out sTd);
+                if (!sTd.IsNil)
                 {
                     _enc.OpCode(ILOpCode.Ldobj);
                     _enc.Token(sTd);
@@ -1103,10 +1138,13 @@ public class CodeGen
         {
             case TypeKind.Struct: case TypeKind.Union:
                 // Stack: [dest_addr, value_type] → stobj
-                if (_structTypeDefs.TryGetValue(ty, out var sTd))
+                TypeDefinitionHandle storeTd = default;
+                if (!_structTypeDefs.TryGetValue(ty.TypeId, out storeTd) && ty.Origin != null)
+                    _structTypeDefs.TryGetValue(ty.Origin.TypeId, out storeTd);
+                if (!storeTd.IsNil)
                 {
                     _enc.OpCode(ILOpCode.Stobj);
-                    _enc.Token(sTd);
+                    _enc.Token(storeTd);
                     Pop(2);
                 }
                 else
