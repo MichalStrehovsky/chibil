@@ -429,12 +429,22 @@ public class CodeGen
     {
         switch (ty.Kind)
         {
+            case TypeKind.Bool: sb.Append("_N"); break;
             case TypeKind.Char: sb.Append(ty.IsUnsigned ? 'E' : 'D'); break;
             case TypeKind.Short: sb.Append(ty.IsUnsigned ? 'G' : 'F'); break;
             case TypeKind.Int: case TypeKind.Enum: sb.Append(ty.IsUnsigned ? 'I' : 'H'); break;
             case TypeKind.Long: sb.Append(ty.IsUnsigned ? "_K" : "_J"); break;
             case TypeKind.Float: sb.Append('M'); break;
             case TypeKind.Double: sb.Append('N'); break;
+            case TypeKind.Ptr:
+                sb.Append("PEA");
+                AppendElementTypeCode(sb, ty.Base);
+                break;
+            case TypeKind.Struct: case TypeKind.Union:
+                sb.Append('U');
+                sb.Append(GetStructName(ty));
+                sb.Append("@@");
+                break;
             default: sb.Append('H'); break;
         }
     }
@@ -640,6 +650,9 @@ public class CodeGen
         for (Obj v = prog; v != null; v = v.Next)
         {
             if (v.IsFunction || !v.IsDefinition) continue;
+
+            if (v.IsTls)
+                Util.ErrorTok(v.Tok, "thread-local storage not supported in MSIL");
 
             var fieldSig = new BlobBuilder();
             var fieldSigEnc = new BlobEncoder(fieldSig).Field().Type();
@@ -860,7 +873,15 @@ public class CodeGen
                 break;
             case NodeKind.Assign:
             case NodeKind.Cond:
-                if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) { GenExpr(node); return; }
+                if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union)
+                {
+                    // GenExpr produces a value type; spill to scratch local to get address
+                    GenExpr(node);
+                    int scratch = GetOrAddScratchLocal(node.Ty);
+                    _enc.StoreLocal(scratch); Pop();
+                    _enc.LoadLocalAddress(scratch); Push();
+                    return;
+                }
                 break;
             case NodeKind.VlaPtr:
                 // VLA pointer is stored in a local slot
@@ -893,6 +914,10 @@ public class CodeGen
                 {
                     _enc.OpCode(ILOpCode.Ldobj);
                     _enc.Token(sTd);
+                }
+                else
+                {
+                    System.Diagnostics.Debug.Fail($"Struct TypeDef not found for '{GetStructName(ty)}' in Load()");
                 }
                 return;
             case TypeKind.Float:
@@ -948,7 +973,7 @@ public class CodeGen
 
     private void Cast(CType from, CType to)
     {
-        if (to.Kind == TypeKind.Void) return;
+        if (to.Kind == TypeKind.Void) { _enc.OpCode(ILOpCode.Pop); Pop(); return; }
         if (to.Kind == TypeKind.Bool) { CmpZero(from); return; }
         switch (to.Kind)
         {
@@ -1097,20 +1122,59 @@ public class CodeGen
 
                     if (lhsIsLocal)
                     {
-                        // LHS is a local: GenExpr(rhs) produces value type → stloc
                         GenExpr(node.Rhs);
                         _enc.StoreLocal(lhsSlot); Pop();
+                        _enc.LoadLocal(lhsSlot); Push();
                     }
                     else
                     {
-                        // LHS is an address (pointer deref, global, etc.)
-                        // GenAddr(lhs) → address; GenExpr(rhs) → value type; stobj
                         GenAddr(node.Lhs);
                         GenExpr(node.Rhs);
-                        Store(node.Ty); // stobj
+                        Store(node.Ty);
+                        GenAddr(node.Lhs);
+                        Load(node.Ty);
                     }
-                    // Struct assignment expression result: address of dest
-                    GenAddr(node.Lhs);
+                }
+                else if (node.Lhs.Kind == NodeKind.Member && node.Lhs.Member.IsBitfield)
+                {
+                    // Bitfield write: read-modify-write
+                    Member mem = node.Lhs.Member;
+                    GenExpr(node.Rhs);                          // [new_val]
+                    int valScratch = GetOrAddScratchLocal(node.Ty);
+                    _enc.OpCode(ILOpCode.Dup); Push();
+                    _enc.StoreLocal(valScratch); Pop();          // [new_val]
+
+                    // Mask new value to bitfield width and shift into position
+                    long mask = (1L << mem.BitWidth) - 1;
+                    _enc.LoadConstantI4((int)mask); Push();
+                    _enc.OpCode(ILOpCode.And); Pop();            // [new_val & mask]
+                    if (mem.BitOffset > 0)
+                    {
+                        _enc.LoadConstantI4(mem.BitOffset); Push();
+                        _enc.OpCode(ILOpCode.Shl); Pop();       // [(new_val & mask) << bitOffset]
+                    }
+                    int shiftedScratch = GetOrAddScratchLocal(node.Ty);
+                    _enc.StoreLocal(shiftedScratch); Pop();      // []
+
+                    // Load old value from the storage unit
+                    GenAddr(node.Lhs);                           // [addr]
+                    _enc.OpCode(ILOpCode.Dup); Push();           // [addr, addr]
+                    Load(mem.Ty);                                // [addr, old_val]
+
+                    // Clear the bitfield bits in old value
+                    long clearMask = ~(mask << mem.BitOffset);
+                    _enc.LoadConstantI4((int)clearMask); Push();
+                    _enc.OpCode(ILOpCode.And); Pop();            // [addr, old_val & ~field_mask]
+
+                    // OR in the new shifted value
+                    _enc.LoadLocal(shiftedScratch); Push();
+                    _enc.OpCode(ILOpCode.Or); Pop();             // [addr, combined]
+
+                    // Store back
+                    Store(mem.Ty);                               // []
+
+                    // Expression result: the original new value
+                    _enc.LoadLocal(valScratch); Push();
                 }
                 else
                 {
@@ -1263,8 +1327,16 @@ public class CodeGen
             case NodeKind.Shr: _enc.OpCode(node.Lhs.Ty.IsUnsigned ? ILOpCode.Shr_un : ILOpCode.Shr); Pop(); return;
             case NodeKind.Eq: _enc.OpCode(ILOpCode.Ceq); Pop(); return;
             case NodeKind.Ne: _enc.OpCode(ILOpCode.Ceq); Pop(); _enc.LoadConstantI4(0); Push(); _enc.OpCode(ILOpCode.Ceq); Pop(); return;
-            case NodeKind.Lt: _enc.OpCode(node.Lhs.Ty.IsUnsigned || node.Lhs.Ty.Kind == TypeKind.Ptr ? ILOpCode.Clt_un : ILOpCode.Clt); Pop(); return;
-            case NodeKind.Le: _enc.OpCode(node.Lhs.Ty.IsUnsigned || node.Lhs.Ty.Kind == TypeKind.Ptr ? ILOpCode.Cgt_un : ILOpCode.Cgt); Pop(); _enc.LoadConstantI4(0); Push(); _enc.OpCode(ILOpCode.Ceq); Pop(); return;
+            case NodeKind.Lt:
+            {
+                bool useUn = node.Lhs.Ty.IsUnsigned || node.Lhs.Ty.Kind == TypeKind.Ptr || TypeSystem.IsFlonum(node.Lhs.Ty);
+                _enc.OpCode(useUn ? ILOpCode.Clt_un : ILOpCode.Clt); Pop(); return;
+            }
+            case NodeKind.Le:
+            {
+                bool useUn = node.Lhs.Ty.IsUnsigned || node.Lhs.Ty.Kind == TypeKind.Ptr || TypeSystem.IsFlonum(node.Lhs.Ty);
+                _enc.OpCode(useUn ? ILOpCode.Cgt_un : ILOpCode.Cgt); Pop(); _enc.LoadConstantI4(0); Push(); _enc.OpCode(ILOpCode.Ceq); Pop(); return;
+            }
         }
         Util.ErrorTok(node.Tok, "invalid expression");
     }
