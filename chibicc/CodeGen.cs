@@ -44,6 +44,7 @@ public class CodeGen
 
     // Function and field registrations from Pass 1
     private readonly Dictionary<Obj, MethodDefinitionHandle> _methodDefs = new();
+    private MethodDefinitionHandle _entryMethodDef; // __CxxPureMSILEntry if main exists
     private readonly Dictionary<Obj, FieldDefinitionHandle> _fieldDefs = new();
     private readonly Dictionary<string, MemberReferenceHandle> _externalFuncRefs = new();
     private readonly Dictionary<CType, TypeDefinitionHandle> _structTypeDefs = new();
@@ -469,17 +470,15 @@ public class CodeGen
 
     private void RegisterMetadata(Obj prog, string objName)
     {
-        byte[] mscorlibHash = new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
-
         _mscorlibRef = _md.AddAssemblyReference(
             _md.GetOrAddString("mscorlib"),
             new Version(4, 0, 0, 0),
             default,
             _md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default,
-            _md.GetOrAddBlob(mscorlibHash));
+            default);
 
-        // Phase 1: Pre-allocate TypeDef handles for struct/union/array types.
+        // Phase 1: Pre-allocate TypeDef handlesfor struct/union/array types.
         // <Module> is row 1; struct TypeDefs start at row 2.
         int nextTypeDefRow = 2; // row 1 reserved for <Module>
         PreAllocateStructTypeDefs(prog, ref nextTypeDefRow);
@@ -494,6 +493,7 @@ public class CodeGen
             MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
 
         // Phase 3: Register all function MethodDefs (owned by <Module>).
+        // __CxxPureMSILEntry is registered inline right after main.
         RegisterFunctions(prog);
 
         // Phase 4: Register all global/static field FieldDefs (owned by <Module>).
@@ -625,7 +625,7 @@ public class CodeGen
             }
 
             var methodHandle = _md.AddMethodDefinition(
-                MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
+                MethodAttributes.Assembly | MethodAttributes.Static,
                 MethodImplAttributes.IL | MethodImplAttributes.Managed,
                 _md.GetOrAddString(fn.Name),
                 _md.GetOrAddBlob(sig),
@@ -642,7 +642,54 @@ public class CodeGen
             }
 
             _methodDefs[fn] = methodHandle;
+
+            // Register __CxxPureMSILEntry immediately after main so it's
+            // owned by <Module> (before struct TypeDefs are materialized)
+            if (fn.Name == "main")
+                RegisterCxxPureMSILEntry(fn);
         }
+    }
+
+    private void RegisterCxxPureMSILEntry(Obj mainFn)
+    {
+        int mainParamCount = 0;
+        for (CType p = mainFn.Ty.Params; p != null; p = p.Next) mainParamCount++;
+
+        // Build __CxxPureMSILEntry(int argc, char** argv, char** envp) -> int
+        var entrySig = new BlobBuilder();
+        var entrySigEnc = new BlobEncoder(entrySig).MethodSignature();
+        entrySigEnc.Parameters(3, out var eRetEnc, out var eParEnc);
+        eRetEnc.Type().Int32();
+        // argc: int32
+        eParEnc.AddParameter().Type().Int32();
+        // argv: Ptr Ptr modopt(IsSignUnspecifiedByte) int8
+        var ep2 = eParEnc.AddParameter().Type();
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        ep2.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
+        ep2.Builder.WriteByte((byte)SignatureTypeCode.SByte);
+        // envp: same type
+        var ep3 = eParEnc.AddParameter().Type();
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        ep3.Builder.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
+        ep3.Builder.WriteByte((byte)SignatureTypeCode.SByte);
+
+        var entryMethod = _md.AddMethodDefinition(
+            MethodAttributes.Assembly | MethodAttributes.Static,
+            MethodImplAttributes.IL | MethodImplAttributes.Managed,
+            _md.GetOrAddString("__CxxPureMSILEntry"),
+            _md.GetOrAddBlob(entrySig),
+            0,
+            MetadataTokens.ParameterHandle(_nextParamRow));
+        _nextMethodRow++;
+        _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("argc"), 1); _nextParamRow++;
+        _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("argv"), 2); _nextParamRow++;
+        _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("envp"), 3); _nextParamRow++;
+
+        _entryMethodDef = entryMethod;
     }
 
     private void RegisterGlobalFields(Obj prog)
@@ -779,11 +826,23 @@ public class CodeGen
 
         var methodHandle = _methodDefs[fn];
         string mangledName = MangleFunctionName(fn);
+
+        // Build CodeView local variable slots for user-defined locals (not scratch/compiler temps)
+        var localSlotsList = new List<CodeViewManSlot>();
+        int localsSigToken = _localsSigHandle.IsNil ? 0 : MetadataTokens.GetToken(_localsSigHandle);
+        for (Obj local = fn.Locals; local != null; local = local.Next)
+        {
+            if (!_localSlots.TryGetValue(local, out int slot)) continue;
+            if (string.IsNullOrEmpty(local.Name)) continue; // skip anonymous/compiler temps
+            localSlotsList.Add(new CodeViewManSlot(slot, localsSigToken, local.Name));
+        }
+
         _bodyEncoder.AddMethodBody(methodHandle, mangledName, _enc,
             maxStack: Math.Max(1, _maxStack),
             localVariablesSignature: _localsSigHandle,
             attributes: MethodBodyAttributes.InitLocals,
-            debugName: fn.Name);
+            debugName: fn.Name,
+            localSlots: localSlotsList.Count > 0 ? localSlotsList : null);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1540,6 +1599,7 @@ public class CodeGen
 
         RegisterMetadata(prog, objName);
         EmitFunctions(prog);
+        EmitCxxPureMSILEntry(prog);
 
         var coffBuilder = new ManagedCoffBuilder(_coffHeader, new MetadataRootBuilder(_md), _symtab,
             _codeviewSymbols, _ilStreamBuilder, _ilRelocBuilder,
@@ -1547,5 +1607,50 @@ public class CodeGen
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
         return output.ToArray();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  __CxxPureMSILEntry generation
+    // ═══════════════════════════════════════════════════════════════
+
+    private void EmitCxxPureMSILEntry(Obj prog)
+    {
+        if (_entryMethodDef.IsNil) return;
+
+        // Find main
+        Obj mainFn = null;
+        for (Obj fn = prog; fn != null; fn = fn.Next)
+            if (fn.IsFunction && fn.IsDefinition && fn.IsLive && fn.Name == "main")
+            { mainFn = fn; break; }
+        if (mainFn == null || !_methodDefs.TryGetValue(mainFn, out var mainMethodHandle)) return;
+
+        int mainParamCount = 0;
+        for (CType p = mainFn.Ty.Params; p != null; p = p.Next) mainParamCount++;
+
+        // Locals: 1 x int32 (for return value)
+        var localsSig = new BlobBuilder();
+        new BlobEncoder(localsSig).LocalVariableSignature(1).AddVariable().Type().Int32();
+        var localsSigHandle = _md.AddStandaloneSignature(_md.GetOrAddBlob(localsSig));
+
+        var enc = new RelocatableInstructionEncoder(
+            new BlobBuilder(), new MethodRelocationBuilder(),
+            new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+
+        if (mainParamCount >= 1) enc.OpCode(ILOpCode.Ldarg_0);
+        if (mainParamCount >= 2) enc.OpCode(ILOpCode.Ldarg_1);
+
+        enc.Call(mainMethodHandle);
+        if (mainFn.Ty.ReturnTy.Kind == TypeKind.Void)
+            enc.LoadConstantI4(0);
+        enc.OpCode(ILOpCode.Stloc_0);
+        enc.OpCode(ILOpCode.Ldloc_0);
+        enc.OpCode(ILOpCode.Ret);
+
+        _bodyEncoder.AddMethodBody(_entryMethodDef,
+            "?__CxxPureMSILEntry@@$$J0YMHHPEAPEAD0@Z", enc,
+            maxStack: Math.Max(2, mainParamCount),
+            localVariablesSignature: localsSigHandle,
+            attributes: 0,
+            debugName: "__CxxPureMSILEntry");
     }
 }

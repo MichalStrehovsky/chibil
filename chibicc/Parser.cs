@@ -348,6 +348,10 @@ public class Parser
     private CType Declarator(ref Token rest, Token tok, CType ty)
     {
         ty = Pointers(ref tok, tok, ty);
+        // Skip MSVC calling convention keywords — all functions are __clrcall in MSIL
+        while (Util.Equal(tok, "__cdecl") || Util.Equal(tok, "__stdcall") ||
+               Util.Equal(tok, "__clrcall") || Util.Equal(tok, "__fastcall"))
+            tok = tok.Next;
         if (Util.Equal(tok, "("))
         {
             Token start = tok;
@@ -367,6 +371,9 @@ public class Parser
     private CType AbstractDeclarator(ref Token rest, Token tok, CType ty)
     {
         ty = Pointers(ref tok, tok, ty);
+        while (Util.Equal(tok, "__cdecl") || Util.Equal(tok, "__stdcall") ||
+               Util.Equal(tok, "__clrcall") || Util.Equal(tok, "__fastcall"))
+            tok = tok.Next;
         if (Util.Equal(tok, "("))
         {
             Token start = tok;
