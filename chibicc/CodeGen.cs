@@ -766,10 +766,19 @@ public class CodeGen
 
             bool hasReloc = v.Rel != null;
             bool hasInitData = v.InitData != null;
+            bool isAllZero = hasInitData && !hasReloc && v.InitData.All(b => b == 0);
+            // Anonymous globals (string literals) always use HasFieldRVA.
+            // Named scalar globals (size <= 8) with non-zero init use CRTMA (single stsfld).
+            // Named aggregate globals without relocs use HasFieldRVA (read-only is fine
+            // because the initializer data is the complete value, never modified piecemeal).
+            // Globals with relocations use CRTMA to patch pointer slots.
+            bool isAnonymous = v.Name.StartsWith("__chibicc_anon_");
+            bool isSmallScalar = v.Ty.Size <= 8 && v.Ty.Kind != TypeKind.Struct && v.Ty.Kind != TypeKind.Union && v.Ty.Kind != TypeKind.Array;
+            bool useFieldRVA = hasInitData && !hasReloc && (!isSmallScalar || isAnonymous);
+            bool useCrtmaInit = !isAllZero && ((hasInitData && isSmallScalar && !isAnonymous) || hasReloc);
 
             FieldAttributes attrs = FieldAttributes.Assembly | FieldAttributes.Static;
-            // Globals with relocations use dynamic initializers, not HasFieldRVA
-            if (hasInitData && !hasReloc)
+            if (useFieldRVA)
                 attrs |= FieldAttributes.HasFieldRVA;
 
             var fieldHandle = _md.AddFieldDefinition(
@@ -778,9 +787,8 @@ public class CodeGen
                 _md.GetOrAddBlob(fieldSig));
             _nextFieldRow++;
 
-            if (hasInitData && !hasReloc)
+            if (useFieldRVA)
             {
-                // Write byte image to rdata for static initialization
                 int rva = _dataStream.Count;
                 _dataStream.WriteBytes(v.InitData);
                 _md.AddFieldRelativeVirtualAddress(fieldHandle, rva);
@@ -789,9 +797,11 @@ public class CodeGen
 
             _fieldDefs[v] = fieldHandle;
 
-            // For globals with relocations, generate a dynamic initializer
-            if (hasReloc)
+            // Globals needing runtime initialization
+            if (useCrtmaInit)
             {
+                System.Diagnostics.Debug.Assert(v.InitData != null || v.Rel != null,
+                    $"CRTMA init for '{v.Name}' with no InitData or Rel");
                 // Create initializer MethodDef: void ??__E<name>@@YMXXZ()
                 var initSig = new BlobBuilder();
                 new BlobEncoder(initSig).MethodSignature()
@@ -1881,6 +1891,13 @@ public class CodeGen
                     }
                     enc.OpCode(ILOpCode.Stind_i);
                 }
+            }
+            else if (global.InitData != null)
+            {
+                // Small scalar init: single ldc + stsfld
+                EmitScalarInitConstant(enc, global);
+                enc.OpCode(ILOpCode.Stsfld);
+                enc.Token(fieldHandle);
             }
 
             enc.OpCode(ILOpCode.Ret);
