@@ -68,6 +68,7 @@ public class CodeGen
     private Obj _currentFn;
     private RelocatableInstructionEncoder _enc;
     private CodeViewFileHandle _cvFile;
+    private readonly Dictionary<string, CodeViewFileHandle> _cvFileCache = new();
 
     // Local variable slot mapping: Obj → IL slot index
     private readonly Dictionary<Obj, int> _localSlots = new();
@@ -112,6 +113,19 @@ public class CodeGen
     }
 
     private int Count() => _labelCount++;
+
+    private CodeViewFileHandle GetCvFile(Token tok)
+    {
+        if (tok?.File == null) return _cvFile;
+        string name = tok.File.DisplayName ?? tok.File.Name;
+        if (_cvFileCache.TryGetValue(name, out var handle)) return handle;
+        byte[] hash;
+        try { hash = SHA256.HashData(tok.File.Contents ?? File.ReadAllBytes(name)); }
+        catch { hash = new byte[32]; }
+        handle = _codeviewSymbols.GetOrAddFile(name, CodeViewChecksumType.SHA256, hash);
+        _cvFileCache[name] = handle;
+        return handle;
+    }
 
     // ═══════════════════════════════════════════════════════════════
     //  Stack depth tracking
@@ -860,7 +874,7 @@ public class CodeGen
         _scratchLocalBase = localIdx;
 
         if (fn.Body != null && fn.Body.Tok != null)
-            _enc.MarkLineNumber(_cvFile, fn.Body.Tok.LineNo);
+            _enc.MarkLineNumber(GetCvFile(fn.Body.Tok), fn.Body.Tok.LineNo);
 
         GenStmt(fn.Body);
 
@@ -1220,7 +1234,7 @@ public class CodeGen
     private void GenExpr(Node node)
     {
         if (node == null) return;
-        if (node.Tok != null) _enc.MarkLineNumber(_cvFile, node.Tok.LineNo);
+        if (node.Tok != null) _enc.MarkLineNumber(GetCvFile(node.Tok), node.Tok.LineNo);
         switch (node.Kind)
         {
             case NodeKind.NullExpr: return;
@@ -1584,7 +1598,7 @@ public class CodeGen
     private void GenStmt(Node node)
     {
         if (node == null) return;
-        if (node.Tok != null) _enc.MarkLineNumber(_cvFile, node.Tok.LineNo);
+        if (node.Tok != null) _enc.MarkLineNumber(GetCvFile(node.Tok), node.Tok.LineNo);
         switch (node.Kind)
         {
             case NodeKind.If:
