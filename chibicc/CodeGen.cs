@@ -527,8 +527,15 @@ public class CodeGen
             case TypeKind.Long: sb.Append(ty.IsUnsigned ? "_K" : "_J"); break;
             case TypeKind.Float: sb.Append('M'); break;
             case TypeKind.Double: sb.Append('N'); break;
+            case TypeKind.LDouble: sb.Append("_T"); break;
             case TypeKind.Ptr:
                 sb.Append("PEA");
+                AppendElementTypeCode(sb, ty.Base);
+                break;
+            case TypeKind.Array:
+                sb.Append("$$BY");
+                sb.Append('0');
+                AppendMsvcNumber(sb, ty.ArrayLen);
                 AppendElementTypeCode(sb, ty.Base);
                 break;
             case TypeKind.Struct: case TypeKind.Union:
