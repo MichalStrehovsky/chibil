@@ -104,11 +104,17 @@ public class CodeGen
     /// </summary>
     private int GetOrAddScratchLocal(CType ty)
     {
-        // Reuse existing scratch local of same type
+        // Reuse existing scratch local of same type.
+        // For structs/unions, also match TypeId to avoid aliasing distinct value types.
         for (int i = 0; i < _scratchLocals.Count; i++)
         {
-            if (_scratchLocals[i].Kind == ty.Kind && _scratchLocals[i].Size == ty.Size)
+            var s = _scratchLocals[i];
+            if (s.Kind == ty.Kind && s.Size == ty.Size)
+            {
+                if ((ty.Kind == TypeKind.Struct || ty.Kind == TypeKind.Union) && s.TypeId != ty.TypeId)
+                    continue;
                 return _scratchLocalBase + i;
+            }
         }
         _scratchLocals.Add(ty);
         return _scratchLocalBase + _scratchLocals.Count - 1;
@@ -1405,9 +1411,11 @@ public class CodeGen
                     {
                         GenAddr(node.Lhs);
                         GenExpr(node.Rhs);
+                        int scratchSlot = GetOrAddScratchLocal(node.Ty);
+                        _enc.OpCode(ILOpCode.Dup); Push();
+                        _enc.StoreLocal(scratchSlot); Pop();
                         Store(node.Ty);
-                        GenAddr(node.Lhs);
-                        Load(node.Ty);
+                        _enc.LoadLocal(scratchSlot); Push();
                     }
                 }
                 else if (node.Lhs.Kind == NodeKind.Member && node.Lhs.Member.IsBitfield)
