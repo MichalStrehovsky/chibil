@@ -683,6 +683,13 @@ public class Parser
                 if (node.Var.Ty.Kind != TypeKind.Array && node.Var.Ty.Kind != TypeKind.Func) Util.ErrorTok(node.Tok, "invalid initializer");
                 { Obj v = node.Var; label = () => v.Name; }
                 return 0;
+            case NodeKind.Deref:
+                // Array subscript on global: *(arr + i) where result is array type (decays to pointer)
+                if (Unsafe.IsNullRef(ref label)) Util.ErrorTok(node.Tok, "not a compile-time constant");
+                if (node.Ty.Kind == TypeKind.Array || node.Ty.Kind == TypeKind.Func)
+                    return Eval2(node.Lhs, out label);
+                Util.ErrorTok(node.Tok, "not a compile-time constant");
+                return 0;
             case NodeKind.Num: return node.Val;
         }
         Util.ErrorTok(node.Tok, "not a compile-time constant");
