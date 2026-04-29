@@ -96,19 +96,27 @@ namespace System.Reflection.PortableExecutable
             if (_entries.Count == 0)
                 return;
 
-            int fileId = _entries[0].File._index;
-
-            builder.WriteInt32(fileId);
-            builder.WriteInt32(_entries.Count);
-            builder.WriteInt32(12 + 8 * _entries.Count);
-
-            foreach (LineNumberEntry entry in _entries)
+            // Group entries by file — CodeView requires one block per file
+            int blockStart = 0;
+            while (blockStart < _entries.Count)
             {
-                if (entry.File._index != fileId)
-                    throw new NotSupportedException();
+                int fileId = _entries[blockStart].File._index;
+                int blockEnd = blockStart + 1;
+                while (blockEnd < _entries.Count && _entries[blockEnd].File._index == fileId)
+                    blockEnd++;
+                int count = blockEnd - blockStart;
 
-                builder.WriteInt32(entry.CodeOffset);
-                builder.WriteUInt32(0x80000000 | (uint)entry.LineNumber);
+                builder.WriteInt32(fileId);
+                builder.WriteInt32(count);
+                builder.WriteInt32(12 + 8 * count);
+
+                for (int i = blockStart; i < blockEnd; i++)
+                {
+                    builder.WriteInt32(_entries[i].CodeOffset);
+                    builder.WriteUInt32(0x80000000 | (uint)_entries[i].LineNumber);
+                }
+
+                blockStart = blockEnd;
             }
         }
     }
