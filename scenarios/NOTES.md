@@ -135,6 +135,94 @@ globals (BSS) work without initializers.
 
 See the `init` and `global` scenarios for the full CRTMA pattern.
 
+Note this is a mismatch with C where global initialization fiasco is
+not possible. It would be possible to express C initialization
+semantics with IL:
+
+```
+.assembly extern mscorlib {}
+.assembly relocsmethod {}
+
+.class explicit sealed '$ArrayType7'
+       extends [mscorlib]System.ValueType
+{
+    .pack 1
+    .size 7
+}
+
+// --- RVA data ---
+.data D_literal   = bytearray(48)
+.data D_literal_1 = bytearray(65 6C 6C 6F 21 00)
+
+.data D_hello = &(D_literal)
+.data D_e     = &(D_literal_1)
+
+// VTable slot and fixup â€” pointer-sized
+#ifdef TARGET_64BIT
+.data D_m = int64(0)
+.vtfixup [1] int64 at D_m
+#else
+.data D_m = int32(0)
+.vtfixup [1] int32 at D_m
+#endif
+
+// --- RVA-mapped fields ---
+.field static valuetype '$ArrayType7' '$literal' at D_literal
+.field static int8*      hello at D_hello
+.field static int8*      e     at D_e
+.field static native int m     at D_m
+
+.method static int32 get() cil managed
+{
+    .vtentry 1 : 1
+    ldc.i4 42
+    ret
+}
+
+.method static int32 main() cil managed
+{
+    .entrypoint
+    .maxstack 2
+
+    ldsfld     native int m
+    calli      int32()
+
+    ldsfld     int8* hello
+    ldind.i1
+    add
+
+    ldsfld     int8* e
+    ldind.i1
+    add
+
+    ret
+}
+```
+
+The above corresponds to:
+
+```
+char hello[] = "Hello!";
+char* e = &hello[1];
+
+int get()
+{
+    return 42;
+}
+
+int (*m)() = &get;
+
+int main()
+{
+    return m() + hello[0] + *e;
+}
+```
+
+However, the CLR only supports this on Windows (it's refused on Linux)
+and there's problems with tooling too (trimming doesn't understand this),
+native AOT doesn't understand this. ReadyToRun doesn't understand this.
+It would all be likely fixable though.
+
 ## Atomic operations map to System.Threading.Interlocked
 
 MSVC intrinsics `_InterlockedExchange` and `_InterlockedCompareExchange`
