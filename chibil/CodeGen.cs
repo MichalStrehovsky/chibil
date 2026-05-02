@@ -5,7 +5,7 @@ using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Chibicc;
+namespace Chibil;
 
 /// <summary>
 /// MSIL code generator — emits managed COFF .obj files from the AST.
@@ -1900,7 +1900,7 @@ public class CodeGen
         _codeviewSymbols.AddObjNameAndCompile3(objName,
             language: CodeViewLanguage.C, machine: CodeViewMachine.Amd64,
             feMajor: 1, feMinor: 0, feBuild: 0, beMajor: 1, beMinor: 0, beBuild: 0,
-            "chibicc MSIL",
+            "chibil",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
         CFile[] files = _tokenizer.GetInputFiles();
@@ -2063,7 +2063,7 @@ public class CodeGen
                 {
                     // Large aggregate init: cpblk from anonymous RVA source
                     // Create an anonymous field with the init data in rdata
-                    var srcName = $"__chibicc_anon_init_{global.Name}";
+                    var srcName = $"__chibil_anon_init_{global.Name}";
                     FieldDefinitionHandle srcField;
                     if (!fieldByName.TryGetValue(srcName, out srcField))
                     {

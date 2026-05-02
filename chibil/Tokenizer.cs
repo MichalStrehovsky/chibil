@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace Chibicc;
+namespace Chibil;
 
 /// <summary>
 /// Tokenizer — port of tokenize.c.

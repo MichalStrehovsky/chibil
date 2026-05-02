@@ -1,6 +1,6 @@
 # Scenarios
 
-This directory contains small C programs compiled with MSVC's `/clr:pure` option, alongside C# emitters that produce functionally equivalent COFF object files using our emitter library (`tools/coffobjectemitter.cs`). An xUnit test suite validates that the emitted `.obj` files match the MSVC reference objects.
+This directory contains small C programs compiled with MSVC's `/clr:pure` option, alongside C# emitters that produce functionally equivalent COFF object files using our emitter library (`chibil/coffobjectemitter.cs`). An xUnit test suite validates that the emitted `.obj` files match the MSVC reference objects.
 
 ## Goal
 
@@ -223,7 +223,7 @@ The `init.c` scenario demonstrates global variables with initializers (e.g., `ch
 | Tool | Location | Purpose |
 |------|----------|---------|
 | `coffobjdumper.cs` | `tools/` | Dump IL, metadata tokens, COFF symbols, and `.debug$S` from `.obj` files |
-| `coffobjectemitter.cs` | `tools/` | Library for emitting managed COFF `.obj` files |
+| `coffobjectemitter.cs` | `chibil/` | Library for emitting managed COFF `.obj` files |
 | `ObjDumper.cs` | `scenarios/` | Normalized `.obj` dumper for test comparison |
 | `cvdump.exe` | `references/microsoft-pdb/cvdump/` | Microsoft's CodeView/PDB dumper |
 | `dumpbin.exe` | MSVC toolset | COFF/PE dumper (headers, symbols, sections, relocations) |

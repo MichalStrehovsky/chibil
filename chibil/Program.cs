@@ -1,4 +1,4 @@
-namespace Chibicc;
+namespace Chibil;
 
 public static class Program
 {
@@ -9,7 +9,7 @@ public static class Program
             new Driver().Run(args);
             return 0;
         }
-        catch (ChibiccException ex)
+        catch (ChibiException ex)
         {
             Console.Error.Write(ex.Message);
             return 1;

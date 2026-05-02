@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Chibicc;
+namespace Chibil;
 
 /// <summary>
 /// C preprocessor — port of preprocess.c.
@@ -1051,7 +1051,7 @@ public class Preprocessor
         DefineMacro("__alignof__", "_Alignof");
         DefineMacro("__amd64", "1");
         DefineMacro("__amd64__", "1");
-        DefineMacro("__chibicc__", "1");
+        DefineMacro("__chibil__", "1");
         DefineMacro("__const__", "const");
         DefineMacro("__gnu_linux__", "1");
         DefineMacro("__inline__", "inline");

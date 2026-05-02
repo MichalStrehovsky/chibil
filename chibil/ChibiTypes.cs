@@ -1,7 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
-namespace Chibicc;
+namespace Chibil;
 
 // ═══════════════════════════════════════════════════════════════════
 //  Enums
@@ -390,10 +390,10 @@ public class CompilerOptions
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  ChibiccException
+//  ChibiException
 // ═══════════════════════════════════════════════════════════════════
 
-public class ChibiccException : Exception
+public class ChibiException : Exception
 {
-    public ChibiccException(string message) : base(message) { }
+    public ChibiException(string message) : base(message) { }
 }

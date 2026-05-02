@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\tools\coffobjectemitter.cs" />
+    <Compile Include="..\chibil\coffobjectemitter.cs" />
   </ItemGroup>
 
 </Project>

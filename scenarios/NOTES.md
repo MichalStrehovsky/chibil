@@ -227,7 +227,7 @@ It would all be likely fixable though.
 
 MSVC intrinsics `_InterlockedExchange` and `_InterlockedCompareExchange`
 compile to `call System.Threading.Interlocked::Exchange(int32&, int32)`
-and `CompareExchange(int32&, int32, int32)` in MSIL. The chibicc GCC-
+and `CompareExchange(int32&, int32, int32)` in MSIL. The chibil GCC-
 style `__atomic_exchange_n` / `__atomic_compare_exchange_n` builtins
 should map to the same Interlocked methods.
 
@@ -239,7 +239,7 @@ See the `atomic` scenario for the full pattern.
 ## TLS is blocked in /clr:pure
 
 `__declspec(thread)`, `_Thread_local`, and C11 `thread_local` are all
-rejected by MSVC in `/clr:pure` mode (error C3389/C3403). The chibicc
+rejected by MSVC in `/clr:pure` mode (error C3389/C3403). The chibil
 backend would need to either reject TLS variables or map them to
 `[ThreadStatic]` attributes (managed thread-local storage).
 
@@ -648,7 +648,7 @@ Static locals and anonymous globals are scoped to a translation-unit
 anonymous namespace using `?A0x<hash>`. The hash is a CRC-32 derived
 from source file paths with complex logic for reproducible builds.
 
-For the chibicc backend, we do NOT need to match MSVC's exact hash. We
+For the chibil backend, we do NOT need to match MSVC's exact hash. We
 should choose a hash that avoids conflicts with MSVC objects (e.g., a
 hash of the source file contents). The hash only matters for:
 - Static local field names: `?A0x<hash>.?<var>@?1??<func>@@9@9`
@@ -690,7 +690,7 @@ The x86 CodeGen uses register-based codegen with push/pop. The MSIL
 backend needs to:
 - Count locals and build a local variable signature
 - Track max stack depth for the fat header
-- Map chibicc's `Obj.Offset` (stack frame offsets) to IL local slot indices
+- Map chibil's `Obj.Offset` (stack frame offsets) to IL local slot indices
 - Handle struct temporaries as valuetype locals
 
 ### 3. Global variable strategy
@@ -716,7 +716,7 @@ TLS variables with an error, or map them to `[ThreadStatic]` fields
 (which have different semantics from native TLS).
 
 ### 7. VLA and dynamic stack allocation
-chibicc supports VLAs (`int arr[n]`) which lower to `alloca`. MSVC
+chibil supports VLAs (`int arr[n]`) which lower to `alloca`. MSVC
 rejects VLA syntax in `/BC` mode, but `_alloca()` compiles to the
 `localloc` IL instruction. The MSIL backend should:
 - Lower VLAs to `localloc` (which allocates from the IL evaluation stack)
@@ -727,10 +727,10 @@ rejects VLA syntax in `/BC` mode, but `_alloca()` compiles to the
 See the `alloca` scenario for the `localloc` pattern.
 
 ### 8. Unsupported C features in MSIL
-The following chibicc-supported features have NO MSIL equivalent and
+The following chibil-supported features have NO MSIL equivalent and
 must be handled by the backend:
 
-| Feature | chibicc support | MSIL strategy |
+| Feature | chibil support | MSIL strategy |
 |---------|----------------|---------------|
 | `asm("...")` | NodeKind.Asm | Reject with error — no inline assembly in managed code |
 | `({...})` statement exprs | NodeKind.StmtExpr | GCC extension; lower to sequential IL with value on stack |
@@ -738,7 +738,7 @@ must be handled by the backend:
 | `_Atomic` compound assign | NodeKind.Cas/Exch | Generate `Interlocked.CompareExchange` CAS loop |
 
 ### 9. Compile-time-only features
-These chibicc features resolve entirely at compile time and produce
+These chibil features resolve entirely at compile time and produce
 NO runtime artifact in MSIL:
 
 - `_Alignof(type)` → constant integer
@@ -755,7 +755,7 @@ ClassLayout metadata. `__attribute__((packed))` maps to `.pack 1`.
 ### 11. Inline functions
 The `inline` keyword is advisory in CLR — the JIT decides whether to
 inline. For `static inline` functions that are never referenced
-externally, chibicc marks them as not `IsLive` and does not emit them.
+externally, chibil marks them as not `IsLive` and does not emit them.
 The MSIL backend should similarly skip dead `static inline` functions.
 
 ## restrict qualifier is silently dropped
@@ -925,7 +925,7 @@ and never instantiated or dereferenced. If another translation unit provides
 the complete struct definition (and thus a TypeDef), the linker resolves the
 TypeRef silently with no warning.
 
-Minimal reproducer (generates LNK4248 with both MSVC and chibicc):
+Minimal reproducer (generates LNK4248 with both MSVC and chibil):
 
 ```c
 // incomplete.c
