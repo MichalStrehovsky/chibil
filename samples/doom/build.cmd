@@ -76,5 +76,6 @@ echo Build successful!
 echo   bin\doom.exe  - DOOM executable (MSIL, compiled with chibil)
 echo   bin\pal.dll   - Platform Abstraction Layer (native)
 echo.
-echo To run: place doom1.wad in this directory, then:
+echo To run: place doom1.wad in this directory, and set HOME environment
+echo variable to where you want .doomrc, then:
 echo   bin\doom.exe
