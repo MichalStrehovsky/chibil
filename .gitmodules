@@ -1,0 +1,3 @@
+[submodule "samples/doom/PureDOOM"]
+	path = samples/doom/PureDOOM
+	url = https://github.com/Daivuk/PureDOOM.git
