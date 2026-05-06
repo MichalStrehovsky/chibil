@@ -18,6 +18,7 @@ jobs:
       - name: Build PureDOOM
         shell: cmd
         run: |
+          cl /?
           cd samples\doom
           build.cmd
       - name: Build PureDOOM (checksum)
