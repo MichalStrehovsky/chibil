@@ -112,11 +112,31 @@ if errorlevel 1 (
     exit /b 1
 )
 
+(
+    echo {
+    echo   "runtimeOptions": {
+    echo     "tfm": "net10.0",
+    echo     "rollForward": "Major",
+    echo     "framework": {
+    echo       "name": "Microsoft.NETCore.App",
+    echo       "version": "10.0.0"
+    echo     }
+    echo   }
+    echo }
+) > bin\doom.runtimeconfig.json
+if errorlevel 1 (
+    echo ERROR: Failed to write bin\doom.runtimeconfig.json
+    exit /b 1
+)
+
 echo(
 echo Build successful
 echo   bin\doom.exe  - DOOM executable (MSIL, compiled with chibil)
+echo   bin\doom.runtimeconfig.json - runtime configuration for modern .NET
 if "%HARNESS_BUILD%"=="1" echo   mode          - %BUILD_MODE% harness
 if not "%HARNESS_BUILD%"=="1" echo   bin\pal.dll   - Platform Abstraction Layer (native)
 echo To run: cd into PureDOOM directory, set HOME environment
 echo variable to where you want .doomrc, then:
 echo   ..\bin\doom.exe
+echo Or, to run with modern .NET:
+echo   dotnet exec ..\bin\doom.exe
