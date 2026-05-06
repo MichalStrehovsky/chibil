@@ -14,19 +14,21 @@ jobs:
     name: Build and test ${{ matrix.vm }}
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
+        with:
+          submodules: true
       - name: Build PureDOOM
         shell: cmd
         run: |
           call .github\workflows\vcvars.cmd x64
-          cl /?
           cd samples\doom
-          build.cmd
+          call build.cmd
       - name: Build PureDOOM (checksum)
         shell: cmd
         run: |
+          call .github\workflows\vcvars.cmd x64
           cd samples\doom
-          build.cmd checksum
+          call build.cmd checksum
       - name: Run PureDOOM (checksum)
         shell: cmd
         run: |
