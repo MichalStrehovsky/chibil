@@ -34,4 +34,4 @@ jobs:
         run: |
           cd samples\doom\PureDOOM
           set HOME=%CD%
-          dotnet exec ..\bin\doom.exe
+          ..\bin\doom.exe
