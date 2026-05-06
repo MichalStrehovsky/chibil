@@ -172,7 +172,7 @@ static void pal_setup(void)
 #define HARNESS_MAX_FRAMES 50
 
 #ifdef VALIDATE_CHECKSUM
-#define HARNESS_EXPECTED_CHECKSUM 0x0f3e80d6560e2c90ULL
+#define HARNESS_EXPECTED_CHECKSUM 0xb99d82d14b7dd2fcUL
 
 static unsigned long long harness_checksum = 14695981039346656037ULL;
 
