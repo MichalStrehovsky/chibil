@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build_and_test:
+    strategy:
+      matrix:
+        include:
+          - vm: windows-latest
+    runs-on: ${{ matrix.vm }}
+    name: Build and test ${{ matrix.vm }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+      - name: Build PureDOOM
+        shell: cmd
+        run: |
+          cd samples\doom
+          build.cmd
+      - name: Build PureDOOM (checksum)
+        shell: cmd
+        run: |
+          cd samples\doom
+          build.cmd checksum
+      - name: Run PureDOOM (checksum)
+        shell: cmd
+        run: |
+          cd samples\doom\PureDOOM
+          set HOME=%CD%
+          dotnet exec ..\bin\doom.exe
