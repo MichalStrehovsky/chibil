@@ -14,6 +14,12 @@ Chibil will probably have its own linker later, if for no other reason, just so 
 
 Line numbers and locals work as expected. You can step through the C code in a .NET debugger.
 
+## Standard C library
+
+There isn't one.
+
+There is a minimal stub of a C runtime library in [minicrt.cc](scenarios/minicrt.cc). This provides a runnable `main` that takes `string[]` of arguments and dispatches to the C-standard `main` with `argc` and `argv`. It also provides an initializer runner to support initialized globals since we need a workaround (https://github.com/MichalStrehovsky/chibil/issues/1).
+
 ## Consuming C code from .NET code
 
 This is not complete yet. The code is generated into global namespace so if you want to consume the compiled code from elsewhere (i.e. don't intend to just run the EXE), you'll need to use reflection such as [Module.GetMethod](https://learn.microsoft.com/dotnet/api/system.reflection.module.getmethod) to find the methods and reflection-invoke them.
