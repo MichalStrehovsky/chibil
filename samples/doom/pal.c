@@ -105,6 +105,8 @@ DWORD  __stdcall GetEnvironmentVariableA(const char* lpName,
 // Win32 windowing types
 // ---------------------------------------------------------------------------
 
+#ifndef REPRODUCIBLE_HARNESS
+
 #ifdef _WIN64
 typedef long long          LONG_PTR;
 typedef unsigned long long UINT_PTR;
@@ -261,6 +263,8 @@ int  __stdcall StretchDIBits(HDC, int, int, int, int,
 HDC  __stdcall BeginPaint(HWND, PAINTSTRUCT *);
 BOOL __stdcall EndPaint(HWND, const PAINTSTRUCT *);
 int  __stdcall SetStretchBltMode(HDC, int);
+
+#endif // !REPRODUCIBLE_HARNESS
 
 // ---------------------------------------------------------------------------
 // PAL event types  (shared with doom.c via matching #defines)

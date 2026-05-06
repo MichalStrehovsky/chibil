@@ -2,32 +2,40 @@
 #include "PureDOOM/PureDOOM.h"
 
 // PAL function declarations (implemented in pal.c)
-void  __cdecl pal_print(const char* str);
-void* __cdecl pal_malloc(int size);
-void  __cdecl pal_free(void* ptr);
-void* __cdecl pal_open(const char* filename, const char* mode);
-void  __cdecl pal_close(void* handle);
-int   __cdecl pal_read(void* handle, void* buf, int count);
-int   __cdecl pal_write(void* handle, const void* buf, int count);
-int   __cdecl pal_seek(void* handle, int offset, doom_seek_t origin);
-int   __cdecl pal_tell(void* handle);
-int   __cdecl pal_eof(void* handle);
-void  __cdecl pal_gettime(int* sec, int* usec);
-void  __cdecl pal_exit(int code);
-char* __cdecl pal_getenv(const char* var);
+#ifdef REPRODUCIBLE_HARNESS
+#define PAL_CALL
+#else
+#define PAL_CALL __cdecl
+#endif
+
+void  PAL_CALL pal_print(const char* str);
+void* PAL_CALL pal_malloc(int size);
+void  PAL_CALL pal_free(void* ptr);
+void* PAL_CALL pal_open(const char* filename, const char* mode);
+void  PAL_CALL pal_close(void* handle);
+int   PAL_CALL pal_read(void* handle, void* buf, int count);
+int   PAL_CALL pal_write(void* handle, const void* buf, int count);
+int   PAL_CALL pal_seek(void* handle, int offset, doom_seek_t origin);
+int   PAL_CALL pal_tell(void* handle);
+int   PAL_CALL pal_eof(void* handle);
+void  PAL_CALL pal_gettime(int* sec, int* usec);
+void  PAL_CALL pal_exit(int code);
+char* PAL_CALL pal_getenv(const char* var);
 
 // PAL window / input
-void __cdecl pal_window_create(int client_w, int client_h, const char* title);
-int  __cdecl pal_window_pump(void);
-void __cdecl pal_window_present(const unsigned char* rgba, int src_w, int src_h);
-int  __cdecl pal_poll_event(int* type, int* p1, int* p2);
+void PAL_CALL pal_window_create(int client_w, int client_h, const char* title);
+int  PAL_CALL pal_window_pump(void);
+void PAL_CALL pal_window_present(const unsigned char* rgba, int src_w, int src_h);
+int  PAL_CALL pal_poll_event(int* type, int* p1, int* p2);
 
 #ifdef REPRODUCIBLE_HARNESS
-void __cdecl pal_harness_advance_tick(void);
-void __cdecl pal_harness_save_bmp(const char* filename,
-                          const unsigned char* rgb,
-                          int width, int height);
+void PAL_CALL pal_harness_advance_tick(void);
+void PAL_CALL pal_harness_save_bmp(const char* filename,
+                           const unsigned char* rgb,
+                           int width, int height);
 #endif
+
+#ifndef REPRODUCIBLE_HARNESS
 
 // PAL event types (must match pal.c)
 #define PAL_EVENT_KEYDOWN   1
@@ -146,6 +154,8 @@ static void process_pal_events(void)
     }
 }
 
+#endif
+
 static void pal_setup(void)
 {
     doom_set_print(pal_print);
@@ -160,6 +170,47 @@ static void pal_setup(void)
 #ifdef REPRODUCIBLE_HARNESS
 
 #define HARNESS_MAX_FRAMES 50
+
+#ifdef VALIDATE_CHECKSUM
+#define HARNESS_EXPECTED_CHECKSUM 0x0f3e80d6560e2c90ULL
+
+static unsigned long long harness_checksum = 14695981039346656037ULL;
+
+static void harness_hash_frame(const unsigned char* rgb, int size)
+{
+    int i;
+    for (i = 0; i < size; i++) {
+        harness_checksum ^= (unsigned long long)rgb[i];
+        harness_checksum *= 1099511628211ULL;
+    }
+}
+
+static void harness_write_hex(char* dst, unsigned long long value)
+{
+    const char* hex = "0123456789abcdef";
+    int i;
+
+    for (i = 0; i < 16; i++) {
+        dst[15 - i] = hex[(int)(value & 15)];
+        value >>= 4;
+    }
+}
+
+static void harness_validate_checksum(void)
+{
+    if (harness_checksum != HARNESS_EXPECTED_CHECKSUM) {
+        char actual[] = "actual:   0000000000000000\n";
+        char expected[] = "expected: 0000000000000000\n";
+
+        harness_write_hex(actual + 10, harness_checksum);
+        harness_write_hex(expected + 10, HARNESS_EXPECTED_CHECKSUM);
+        pal_print("checksum mismatch\n");
+        pal_print(actual);
+        pal_print(expected);
+        pal_exit(1);
+    }
+}
+#endif
 
 int main()
 {
@@ -193,6 +244,9 @@ int main()
         {
             doom_memcpy(prev_frame, fb, SCREENWIDTH * SCREENHEIGHT * 3);
 
+#ifdef VALIDATE_CHECKSUM
+            harness_hash_frame(fb, SCREENWIDTH * SCREENHEIGHT * 3);
+#else
             // Build filename: frame_0000.bmp .. frame_0049.bmp
             char name[] = "frame_0000.bmp";
             {
@@ -204,9 +258,14 @@ int main()
             }
 
             pal_harness_save_bmp(name, fb, SCREENWIDTH, SCREENHEIGHT);
+#endif
             saved++;
         }
     }
+
+#ifdef VALIDATE_CHECKSUM
+    harness_validate_checksum();
+#endif
 
     pal_exit(0);
 }
