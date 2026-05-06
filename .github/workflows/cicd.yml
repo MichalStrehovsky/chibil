@@ -18,6 +18,7 @@ jobs:
       - name: Build PureDOOM
         shell: cmd
         run: |
+          call .github\workflows\vcvars.cmd
           cl /?
           cd samples\doom
           build.cmd
