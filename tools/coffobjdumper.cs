@@ -120,6 +120,16 @@ readonly struct MethodBodyLocation
         => (SectionNumber, Offset) = (sectionNumber, offset);
 }
 
+readonly struct FieldDataLocation
+{
+    public int SectionNumber { get; }
+    public int Offset { get; }
+    public string SymbolName { get; }
+
+    public FieldDataLocation(int sectionNumber, int offset, string symbolName)
+        => (SectionNumber, Offset, SymbolName) = (sectionNumber, offset, symbolName);
+}
+
 // ─── COFF File Parser ─────────────────────────────────────────────────────────
 
 class CoffFile
@@ -319,6 +329,55 @@ class CoffFile
         }
 
         return map;
+    }
+
+    public Dictionary<int, FieldDataLocation> BuildFieldDataLocationMap()
+    {
+        var map = new Dictionary<int, FieldDataLocation>();
+
+        for (int i = 0; i < Symbols.Length; i++)
+        {
+            var sym = Symbols[i];
+            if (sym.StorageClass != IMAGE_SYM_CLASS_CLR_TOKEN ||
+                sym.Name.Length != 8 ||
+                !int.TryParse(sym.Name, System.Globalization.NumberStyles.HexNumber, null, out int token) ||
+                (token & unchecked((int)0xFF000000)) != 0x04000000)
+            {
+                continue;
+            }
+
+            if (sym.SectionNumber > 0)
+            {
+                var section = GetSection(sym.SectionNumber);
+                if (sym.Value >= section.SizeOfRawData)
+                    continue;
+            }
+
+            map[token] = new FieldDataLocation(sym.SectionNumber, (int)sym.Value, FindAssociatedSymbolName(i, sym));
+        }
+
+        return map;
+    }
+
+    string FindAssociatedSymbolName(int tokenSymbolIndex, CoffSymbol tokenSymbol)
+    {
+        for (int i = tokenSymbolIndex - 1; i >= 0; i--)
+        {
+            var sym = Symbols[i];
+            if (sym.Name == "<aux>")
+                continue;
+
+            if (sym.StorageClass != IMAGE_SYM_CLASS_CLR_TOKEN &&
+                sym.SectionNumber == tokenSymbol.SectionNumber &&
+                sym.Value == tokenSymbol.Value)
+            {
+                return sym.Name;
+            }
+
+            break;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -535,10 +594,148 @@ class Program
             }
         }
 
+        DumpRvaFields(coff, reader);
+
         // ─── Debug Information ────────────────────────────────────────────────
         DumpDebugInfo(coff, reader);
 
         return 0;
+    }
+
+    static void DumpRvaFields(CoffFile coff, MetadataReader reader)
+    {
+        var fieldLocations = coff.BuildFieldDataLocationMap();
+        if (fieldLocations.Count == 0)
+            return;
+
+        Console.WriteLine("========================================");
+        Console.WriteLine("=== RVA Fields / Data Symbols ===");
+        Console.WriteLine("========================================");
+        Console.WriteLine();
+
+        foreach (var fieldHandle in reader.FieldDefinitions)
+        {
+            FieldDefinition field = reader.GetFieldDefinition(fieldHandle);
+            int token = MetadataTokens.GetToken(fieldHandle);
+            int rva = field.GetRelativeVirtualAddress();
+
+            if (rva == 0 && !fieldLocations.ContainsKey(token))
+                continue;
+
+            Console.WriteLine($"=== Field: {FormatFieldName(reader, field)} ({token:X8}) ===");
+            Console.WriteLine($"  Attributes: {field.Attributes}");
+            Console.WriteLine($"  Metadata RVA: 0x{rva:X8}");
+
+            if (fieldLocations.TryGetValue(token, out FieldDataLocation location))
+            {
+                Console.WriteLine($"  COFF symbol: {(location.SymbolName ?? "(none)")}");
+                Console.WriteLine($"  Location: {FormatFieldLocation(coff, location)}");
+
+                if (location.SectionNumber > 0)
+                    DumpFieldData(coff, reader, fieldLocations, location);
+            }
+
+            Console.WriteLine();
+        }
+    }
+
+    static string FormatFieldName(MetadataReader reader, FieldDefinition field)
+    {
+        string name = reader.GetString(field.Name);
+        var declaringType = field.GetDeclaringType();
+        if (declaringType.IsNil)
+            return name;
+
+        var typeDef = reader.GetTypeDefinition(declaringType);
+        string typeName = reader.GetString(typeDef.Name);
+        string ns = reader.GetString(typeDef.Namespace);
+        if (!string.IsNullOrEmpty(ns))
+            typeName = $"{ns}.{typeName}";
+
+        return $"{typeName}::{name}";
+    }
+
+    static string FormatFieldLocation(CoffFile coff, FieldDataLocation location)
+    {
+        if (location.SectionNumber > 0)
+        {
+            var section = coff.GetSection(location.SectionNumber);
+            return $"section[{location.SectionNumber - 1}] {section.Name} + 0x{location.Offset:X4}";
+        }
+
+        if (location.SectionNumber == 0)
+            return $"undefined + 0x{location.Offset:X4}";
+
+        if (location.SectionNumber == -1)
+            return $"absolute + 0x{location.Offset:X4}";
+
+        return $"special section {location.SectionNumber} + 0x{location.Offset:X4}";
+    }
+
+    static void DumpFieldData(CoffFile coff, MetadataReader reader, Dictionary<int, FieldDataLocation> fieldLocations, FieldDataLocation location)
+    {
+        var section = coff.GetSection(location.SectionNumber);
+        var sectionData = coff.GetPatchedSectionData(section);
+        if (location.Offset >= sectionData.Length)
+            return;
+
+        int end = sectionData.Length;
+        foreach (var other in fieldLocations.Values)
+        {
+            if (other.SectionNumber == location.SectionNumber &&
+                other.Offset > location.Offset &&
+                other.Offset < end)
+            {
+                end = other.Offset;
+            }
+        }
+
+        int length = Math.Min(end - location.Offset, 64);
+        var data = sectionData.AsSpan(location.Offset, length);
+        Console.WriteLine($"  Data ({length} bytes): {FormatHexBytes(data)}");
+
+        string ascii = FormatAscii(data);
+        if (ascii.Length > 0)
+            Console.WriteLine($"  ASCII: {ascii}");
+
+        var tokenRelocs = coff.BuildTokenRelocationMap(section);
+        foreach (var (offset, token) in tokenRelocs)
+        {
+            if (offset >= location.Offset && offset < location.Offset + length)
+                Console.WriteLine($"  Reloc +0x{offset - location.Offset:X4}: {FormatToken(reader, token)}");
+        }
+    }
+
+    static string FormatHexBytes(ReadOnlySpan<byte> data)
+    {
+        var sb = new StringBuilder(data.Length * 3);
+        for (int i = 0; i < data.Length; i++)
+        {
+            if (i != 0)
+                sb.Append(' ');
+            sb.Append(data[i].ToString("X2"));
+        }
+        return sb.ToString();
+    }
+
+    static string FormatAscii(ReadOnlySpan<byte> data)
+    {
+        var sb = new StringBuilder(data.Length);
+        bool hasPrintable = false;
+        for (int i = 0; i < data.Length; i++)
+        {
+            byte b = data[i];
+            if (b >= 0x20 && b <= 0x7E)
+            {
+                sb.Append((char)b);
+                hasPrintable = true;
+            }
+            else
+            {
+                sb.Append('.');
+            }
+        }
+        return hasPrintable ? sb.ToString() : "";
     }
 
     static void DumpIL(MetadataReader reader, byte[] ilBytes)
