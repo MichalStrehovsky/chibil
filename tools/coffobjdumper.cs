@@ -111,6 +111,15 @@ struct CoffSymbol
     public byte NumberOfAuxSymbols;
 }
 
+readonly struct MethodBodyLocation
+{
+    public int SectionNumber { get; }
+    public int Offset { get; }
+
+    public MethodBodyLocation(int sectionNumber, int offset)
+        => (SectionNumber, Offset) = (sectionNumber, offset);
+}
+
 // ─── COFF File Parser ─────────────────────────────────────────────────────────
 
 class CoffFile
@@ -239,6 +248,14 @@ class CoffFile
         return FileData.AsSpan((int)section.PointerToRawData, (int)section.SizeOfRawData);
     }
 
+    public CoffSectionHeader GetSection(int sectionNumber)
+    {
+        if (sectionNumber <= 0 || sectionNumber > Sections.Length)
+            throw new ArgumentOutOfRangeException(nameof(sectionNumber));
+
+        return Sections[sectionNumber - 1];
+    }
+
     public CoffRelocation[] GetRelocations(CoffSectionHeader section)
     {
         if (section.NumberOfRelocations == 0)
@@ -276,6 +293,29 @@ class CoffFile
             {
                 map[(int)r.VirtualAddress] = token;
             }
+        }
+
+        return map;
+    }
+
+    public Dictionary<int, MethodBodyLocation> BuildMethodBodyLocationMap()
+    {
+        var map = new Dictionary<int, MethodBodyLocation>();
+
+        foreach (var sym in Symbols)
+        {
+            if (sym.StorageClass != IMAGE_SYM_CLASS_CLR_TOKEN ||
+                sym.SectionNumber <= 0 ||
+                sym.Name.Length != 8 ||
+                !int.TryParse(sym.Name, System.Globalization.NumberStyles.HexNumber, null, out int token) ||
+                (token & unchecked((int)0xFF000000)) != 0x06000000)
+            {
+                continue;
+            }
+
+            var section = GetSection(sym.SectionNumber);
+            if (sym.Value < section.SizeOfRawData)
+                map[token] = new MethodBodyLocation(sym.SectionNumber, (int)sym.Value);
         }
 
         return map;
@@ -381,33 +421,35 @@ class Program
 
         // Collect all .text$mn and .text$di sections for IL method bodies
         // MSVC COMDAT objs have each method in its own section; our emitter merges them into one
-        var textSections = new List<CoffSectionHeader>();
+        var textSectionNumbers = new List<int>();
         for (int i = 0; i < coff.Sections.Length; i++)
         {
             if (coff.Sections[i].Name == ".text$mn" || coff.Sections[i].Name == ".text$di")
-                textSections.Add(coff.Sections[i]);
+                textSectionNumbers.Add(i + 1);
         }
 
-        if (textSections.Count == 0)
+        if (textSectionNumbers.Count == 0)
         {
             Console.Error.WriteLine("No .text$mn section found.");
             return 1;
         }
 
-        // Concatenate patched IL data from all text sections
-        var ilDataBuilder = new List<byte>();
+        // MSVC emits one or more .text$mn COMDAT sections and records each method
+        // body location with a CLR token symbol. Metadata method order is unrelated.
+        var patchedSectionData = new Dictionary<int, byte[]>();
+        var methodBodyLocations = coff.BuildMethodBodyLocationMap();
+        int totalTextBytes = 0;
         int totalTokenRelocs = 0;
-        foreach (var ts in textSections)
+        foreach (int sectionNumber in textSectionNumbers)
         {
+            var ts = coff.GetSection(sectionNumber);
             byte[] patched = coff.GetPatchedSectionData(ts);
             totalTokenRelocs += coff.BuildTokenRelocationMap(ts).Count;
-            // Align to 4 before appending (fat headers require 4-byte alignment)
-            while (ilDataBuilder.Count % 4 != 0) ilDataBuilder.Add(0);
-            ilDataBuilder.AddRange(patched);
+            patchedSectionData[sectionNumber] = patched;
+            totalTextBytes += patched.Length;
         }
-        byte[] ilData = ilDataBuilder.ToArray();
 
-        Console.WriteLine($".text sections: {textSections.Count} ({ilData.Length} bytes, {totalTokenRelocs} token relocations applied)");
+        Console.WriteLine($".text sections: {textSectionNumbers.Count} ({totalTextBytes} bytes, {totalTokenRelocs} token relocations applied, {methodBodyLocations.Count} method locations)");
         Console.WriteLine();
 
         // Read metadata
@@ -421,8 +463,6 @@ class Program
             }
         }
 
-        // Parse method bodies sequentially from the concatenated text sections
-        int ilOffset = 0;
         foreach (var methodHandle in reader.MethodDefinitions)
         {
             MethodDefinition method = reader.GetMethodDefinition(methodHandle);
@@ -445,24 +485,35 @@ class Program
                 continue;
             }
 
-            if (ilOffset >= ilData.Length)
+            if (!methodBodyLocations.TryGetValue(token, out MethodBodyLocation location))
             {
                 Console.WriteLine($"=== Method: {name} ({token:X8}) ===");
-                Console.WriteLine($"  (no more IL data in .text$mn)");
+                Console.WriteLine($"  (no method body location in COFF symbols)");
                 Console.WriteLine();
                 continue;
             }
 
-            // Parse method body at current offset
+            var section = coff.GetSection(location.SectionNumber);
+            if (!patchedSectionData.TryGetValue(location.SectionNumber, out byte[] ilData))
+                ilData = coff.GetPatchedSectionData(section);
+
+            if (location.Offset >= ilData.Length)
+            {
+                Console.WriteLine($"=== Method: {name} ({token:X8}) ===");
+                Console.WriteLine($"  (method body offset 0x{location.Offset:X4} is outside section {location.SectionNumber})");
+                Console.WriteLine();
+                continue;
+            }
+
             unsafe
             {
                 fixed (byte* ptr = ilData)
                 {
-                    var bodyReader = new BlobReader(ptr + ilOffset, ilData.Length - ilOffset);
+                    var bodyReader = new BlobReader(ptr + location.Offset, ilData.Length - location.Offset);
                     MethodBodyBlock body = MethodBodyBlock.Create(bodyReader);
 
                     Console.WriteLine($"=== Method: {name} ({token:X8}) ===");
-                    Console.WriteLine($"  Offset in .text$mn: 0x{ilOffset:X4}");
+                    Console.WriteLine($"  Location: section[{location.SectionNumber - 1}] {section.Name} + 0x{location.Offset:X4}");
                     Console.WriteLine($"  MaxStack: {body.MaxStack}");
                     Console.WriteLine($"  LocalsInit: {body.LocalVariablesInitialized}");
                     Console.WriteLine($"  LocalSignature: {(body.LocalSignature.IsNil ? "(none)" : $"0x{MetadataTokens.GetToken(body.LocalSignature):X8}")}");
@@ -480,10 +531,6 @@ class Program
                     }
 
                     Console.WriteLine();
-
-                    // Advance past this method body, align to 4 for the next fat header
-                    ilOffset += body.Size;
-                    ilOffset = (ilOffset + 3) & ~3;
                 }
             }
         }
