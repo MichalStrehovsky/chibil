@@ -404,6 +404,26 @@ class CoffFile
         return map;
     }
 
+    public Dictionary<int, (string Name, short Section, ushort Type)> BuildNonTokenRelocationMap(CoffSectionHeader section)
+    {
+        var map = new Dictionary<int, (string, short, ushort)>();
+        var relocs = GetRelocations(section);
+
+        foreach (var r in relocs)
+        {
+            if (r.SymbolTableIndex >= (uint)Symbols.Length)
+                continue;
+
+            var sym = Symbols[r.SymbolTableIndex];
+            if (sym.StorageClass != IMAGE_SYM_CLASS_CLR_TOKEN)
+            {
+                map[(int)r.VirtualAddress] = (sym.Name, sym.SectionNumber, r.Type);
+            }
+        }
+
+        return map;
+    }
+
     /// <summary>
     /// Apply token relocations to a copy of section data, returning patched bytes
     /// where CLR token operand slots are filled in with actual token values.
@@ -595,6 +615,7 @@ class Program
         }
 
         DumpRvaFields(coff, reader);
+        DumpIlFixups(coff);
 
         // ─── Debug Information ────────────────────────────────────────────────
         DumpDebugInfo(coff, reader);
@@ -704,6 +725,57 @@ class Program
             if (offset >= location.Offset && offset < location.Offset + length)
                 Console.WriteLine($"  Reloc +0x{offset - location.Offset:X4}: {FormatToken(reader, token)}");
         }
+
+        var nonTokenRelocs = coff.BuildNonTokenRelocationMap(section);
+        var nonTokenOffsets = new List<int>(nonTokenRelocs.Keys);
+        nonTokenOffsets.Sort();
+        foreach (int offset in nonTokenOffsets)
+        {
+            if (offset >= location.Offset && offset < location.Offset + length)
+            {
+                var reloc = nonTokenRelocs[offset];
+                Console.WriteLine($"  Reloc +0x{offset - location.Offset:X4}: {FormatRelocationType(coff.Header.Machine, reloc.Type)} {reloc.Name}");
+            }
+        }
+    }
+
+    static void DumpIlFixups(CoffFile coff)
+    {
+        bool wroteHeader = false;
+
+        for (int i = 0; i < coff.Sections.Length; i++)
+        {
+            var section = coff.Sections[i];
+            if (section.Name != ".rdata$ilfixup")
+                continue;
+
+            if (!wroteHeader)
+            {
+                Console.WriteLine("========================================");
+                Console.WriteLine("=== ILFixups (.rdata$ilfixup) ===");
+                Console.WriteLine("========================================");
+                Console.WriteLine();
+                wroteHeader = true;
+            }
+
+            byte[] data = coff.GetSectionData(section).ToArray();
+            var relocs = coff.BuildNonTokenRelocationMap(section);
+
+            Console.WriteLine($"Section[{i}] {section.Name}: {data.Length} bytes, {section.NumberOfRelocations} relocations");
+            for (int offset = 0; offset + 8 <= data.Length; offset += 8)
+            {
+                uint rawRva = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset));
+                ushort count = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset + 4));
+                ushort type = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset + 6));
+
+                string target = relocs.TryGetValue(offset, out var reloc)
+                    ? $"{reloc.Name} ({FormatRelocationType(coff.Header.Machine, reloc.Type)})"
+                    : $"RVA=0x{rawRva:X8}";
+
+                Console.WriteLine($"  +0x{offset:X4}: Target={target}, Count={count}, Type=0x{type:X4}");
+            }
+            Console.WriteLine();
+        }
     }
 
     static string FormatHexBytes(ReadOnlySpan<byte> data)
@@ -736,6 +808,44 @@ class Program
             }
         }
         return hasPrintable ? sb.ToString() : "";
+    }
+
+    static string FormatRelocationType(ushort machine, ushort type)
+    {
+        return machine switch
+        {
+            0x014C => type switch
+            {
+                0x0006 => "DIR32",
+                0x0007 => "DIR32NB",
+                0x000A => "SECTION",
+                0x000B => "SECREL",
+                0x000C => "TOKEN",
+                0x0014 => "REL32",
+                _ => $"0x{type:X4}",
+            },
+            0x8664 => type switch
+            {
+                0x0001 => "ADDR64",
+                0x0003 => "ADDR32NB",
+                0x0004 => "REL32",
+                0x000A => "SECTION",
+                0x000B => "SECREL",
+                0x000D => "TOKEN",
+                _ => $"0x{type:X4}",
+            },
+            0xAA64 => type switch
+            {
+                0x0002 => "ADDR32NB",
+                0x0003 => "BRANCH26",
+                0x0008 => "SECREL",
+                0x000C => "TOKEN",
+                0x000D => "SECTION",
+                0x000E => "ADDR64",
+                _ => $"0x{type:X4}",
+            },
+            _ => $"0x{type:X4}",
+        };
     }
 
     static void DumpIL(MetadataReader reader, byte[] ilBytes)

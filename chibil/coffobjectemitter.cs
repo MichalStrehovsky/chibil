@@ -1210,6 +1210,32 @@ namespace System.Reflection.PortableExecutable
                 _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
             });
         }
+
+        public void AddAddressRelocation(int offset, CoffSymbolHandle coffSymbol)
+        {
+            Builder.WriteInt32(offset);
+            Builder.WriteInt32(coffSymbol._value);
+            Builder.WriteUInt16(HeaderBuilder.Machine switch
+            {
+                Machine.I386 => 0x0006,      // IMAGE_REL_I386_DIR32
+                Machine.Amd64 => 0x0001,     // IMAGE_REL_AMD64_ADDR64
+                Machine.Arm64 => 0x000E,     // IMAGE_REL_ARM64_ADDR64
+                _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
+            });
+        }
+
+        public void AddImageRelativeRelocation(int offset, CoffSymbolHandle coffSymbol)
+        {
+            Builder.WriteInt32(offset);
+            Builder.WriteInt32(coffSymbol._value);
+            Builder.WriteUInt16(HeaderBuilder.Machine switch
+            {
+                Machine.I386 => 0x0007,      // IMAGE_REL_I386_DIR32NB
+                Machine.Amd64 => 0x0003,     // IMAGE_REL_AMD64_ADDR32NB
+                Machine.Arm64 => 0x0002,     // IMAGE_REL_ARM64_ADDR32NB
+                _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
+            });
+        }
     }
 
     public readonly struct ManagedCoffRelocationEncoder
@@ -1970,6 +1996,11 @@ namespace System.Reflection.PortableExecutable
             return index;
         }
 
+        public CoffSymbolHandle AddDataSymbol(string name, LogicalSection section, int sectionOffset)
+        {
+            return GetOrAddCoffSymbolDeferred(name, (uint)sectionOffset, section, CoffSymbolType.Null, CoffSymbolStorageClass.Static, 0);
+        }
+
         private CoffSymbolHandle GetOrAddCoffSymbolDeferred(string name, uint value, LogicalSection section,
             CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols)
         {
@@ -2023,7 +2054,7 @@ namespace System.Reflection.PortableExecutable
     /// Identifies a logical section whose actual 1-based COFF section number
     /// is not known until ManagedCoffBuilder lays out its sections.
     /// </summary>
-    public enum LogicalSection { Text, Data, RData, Crtma }
+    public enum LogicalSection { Text, Data, RData, Crtma, IlFixup }
 
     public enum CoffSymbolType : short
     {
@@ -2304,6 +2335,7 @@ namespace System.Reflection.PortableExecutable
         private const string DataSectionName = ".data";
         private const string RDataSectionName = ".rdata";
         private const string CrtmaSectionName = ".CRTMA$XCC";
+        private const string IlFixupSectionName = ".rdata$ilfixup";
         private const string CodeViewSymbolsSectionName = ".debug$S";
 
         private readonly CodeViewSymbolBuilder _codeViewSymbols;
@@ -2314,6 +2346,8 @@ namespace System.Reflection.PortableExecutable
         private readonly BlobBuilder _dataRelocs;
         private readonly BlobBuilder _rdataStream;
         private readonly InitializerListSectionBuilder _initializerList;
+        private readonly BlobBuilder _ilFixupStream;
+        private readonly BlobBuilder _ilFixupRelocs;
 
         public ManagedCoffBuilder(
             CoffHeaderBuilder header,
@@ -2326,6 +2360,8 @@ namespace System.Reflection.PortableExecutable
             BlobBuilder dataRelocs = null,
             BlobBuilder rdataStream = null,
             InitializerListSectionBuilder initializerList = null,
+            BlobBuilder ilFixupStream = null,
+            BlobBuilder ilFixupRelocs = null,
             Func<IEnumerable<Blob>, BlobContentId> deterministicIdProvider = null)
             : base(header, symbolTable, deterministicIdProvider)
         {
@@ -2352,6 +2388,8 @@ namespace System.Reflection.PortableExecutable
             _dataRelocs = dataRelocs;
             _rdataStream = rdataStream;
             _initializerList = initializerList;
+            _ilFixupStream = ilFixupStream;
+            _ilFixupRelocs = ilFixupRelocs;
         }
 
         public override BlobContentId Serialize(BlobBuilder builder)
@@ -2364,6 +2402,7 @@ namespace System.Reflection.PortableExecutable
                     LogicalSection.Data => DataSectionNumber,
                     LogicalSection.RData => RDataSectionNumber,
                     LogicalSection.Crtma => CrtmaSectionNumber,
+                    LogicalSection.IlFixup => IlFixupSectionNumber,
                     _ => throw new InvalidOperationException($"Unknown logical section: {section}")
                 });
             }
@@ -2405,6 +2444,11 @@ namespace System.Reflection.PortableExecutable
         /// </summary>
         private int CrtmaSectionNumber => GetSectionNumber(CrtmaSectionName);
 
+        /// <summary>
+        /// Returns the 1-based section number for the .rdata$ilfixup section, or -1 if not present.
+        /// </summary>
+        private int IlFixupSectionNumber => GetSectionNumber(IlFixupSectionName);
+
         protected override ImmutableArray<Section> CreateSections()
         {
             var builder = ImmutableArray.CreateBuilder<Section>();
@@ -2427,6 +2471,10 @@ namespace System.Reflection.PortableExecutable
                 var crtmaAlign = Header.Machine == Machine.I386 ? SectionCharacteristics.Align4Bytes : SectionCharacteristics.Align8Bytes;
                 builder.Add(new Section(CrtmaSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | crtmaAlign));
             }
+            if (_ilFixupStream != null && _ilFixupStream.Count > 0)
+            {
+                builder.Add(new Section(IlFixupSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes));
+            }
 
             return builder.ToImmutable();
         }
@@ -2440,6 +2488,7 @@ namespace System.Reflection.PortableExecutable
                 CorMetaSectionName => SerializeCorMetaSection(location),
                 CodeViewSymbolsSectionName => SerializeCodeViewSymbols(location),
                 CrtmaSectionName => SerializeCrtmaSection(),
+                IlFixupSectionName => _ilFixupStream,
                 _ => throw new ArgumentException(),
             };
 
@@ -2458,6 +2507,10 @@ namespace System.Reflection.PortableExecutable
                 var b = new BlobBuilder();
                 _initializerList.SerializeRelocations(b);
                 return b;
+            }
+            else if (name == IlFixupSectionName)
+            {
+                return _ilFixupRelocs;
             }
             else if (name == CodeViewSymbolsSectionName)
             {

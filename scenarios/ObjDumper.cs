@@ -252,6 +252,20 @@ class CoffFile
         return map;
     }
 
+    public Dictionary<int, (string Name, short Section, ushort Type)> BuildNonTokenRelocationMap(CoffSectionHeader section)
+    {
+        var map = new Dictionary<int, (string, short, ushort)>();
+        var relocs = GetRelocations(section);
+        foreach (var r in relocs)
+        {
+            if (r.SymbolTableIndex >= (uint)Symbols.Length) continue;
+            var sym = Symbols[r.SymbolTableIndex];
+            if (sym.StorageClass != IMAGE_SYM_CLASS_CLR_TOKEN)
+                map[(int)r.VirtualAddress] = (sym.Name, sym.SectionNumber, r.Type);
+        }
+        return map;
+    }
+
     public byte[] GetPatchedSectionData(CoffSectionHeader section)
     {
         var data = GetSectionData(section).ToArray();
@@ -472,6 +486,7 @@ static class ObjDumper
 
                 DumpTypeDefs(sb, reader);
                 DumpFieldDefs(sb, reader, coff);
+                DumpIlFixups(sb, coff);
                 DumpMethodBodies(sb, reader, coff);
                 DumpDebugInfo(sb, reader, coff);
             }
@@ -635,6 +650,16 @@ static class ObjDumper
                             byte[] fieldData = patchedData[(int)loc.Offset..end];
                             sb.AppendLine($"  Data[{fieldData.Length}]: {FormatHexBytes(fieldData)}");
                         }
+
+                        var nonTokenRelocs = coff.BuildNonTokenRelocationMap(section);
+                        foreach (var (relocOff, reloc) in nonTokenRelocs.OrderBy(kvp => kvp.Key))
+                        {
+                            if (relocOff >= (int)loc.Offset && relocOff < (int)loc.Offset + loc.DataSize)
+                            {
+                                int fieldRelocOffset = relocOff - (int)loc.Offset;
+                                sb.AppendLine($"  Reloc +0x{fieldRelocOffset:X4}: {FormatRelocationType(coff.Header.Machine, reloc.Type)} {NormalizeName(reloc.Name)}");
+                            }
+                        }
                     }
                 }
             }
@@ -647,6 +672,67 @@ static class ObjDumper
             }
         }
         sb.AppendLine();
+    }
+
+    static void DumpIlFixups(StringBuilder sb, CoffFile coff)
+    {
+        sb.AppendLine("=== ILFixups ===");
+        foreach (var section in coff.Sections)
+        {
+            if (section.Name != ".rdata$ilfixup")
+                continue;
+
+            byte[] data = coff.GetSectionData(section).ToArray();
+            var relocs = coff.BuildNonTokenRelocationMap(section);
+            for (int offset = 0; offset + 8 <= data.Length; offset += 8)
+            {
+                ushort count = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset + 4));
+                ushort type = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset + 6));
+                string target = relocs.TryGetValue(offset, out var reloc)
+                    ? $"{NormalizeName(reloc.Name)} ({FormatRelocationType(coff.Header.Machine, reloc.Type)})"
+                    : $"RVA=0x{BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset)):X8}";
+                sb.AppendLine($"  Target={target}, Count={count}, Type=0x{type:X4}");
+            }
+        }
+        sb.AppendLine();
+    }
+
+    static string FormatRelocationType(ushort machine, ushort type)
+    {
+        return machine switch
+        {
+            0x014C => type switch
+            {
+                0x0006 => "DIR32",
+                0x0007 => "DIR32NB",
+                0x000A => "SECTION",
+                0x000B => "SECREL",
+                0x000C => "TOKEN",
+                0x0014 => "REL32",
+                _ => $"0x{type:X4}",
+            },
+            0x8664 => type switch
+            {
+                0x0001 => "ADDR64",
+                0x0003 => "ADDR32NB",
+                0x0004 => "REL32",
+                0x000A => "SECTION",
+                0x000B => "SECREL",
+                0x000D => "TOKEN",
+                _ => $"0x{type:X4}",
+            },
+            0xAA64 => type switch
+            {
+                0x0002 => "ADDR32NB",
+                0x0003 => "BRANCH26",
+                0x0008 => "SECREL",
+                0x000C => "TOKEN",
+                0x000D => "SECTION",
+                0x000E => "ADDR64",
+                _ => $"0x{type:X4}",
+            },
+            _ => $"0x{type:X4}",
+        };
     }
 
     // ─── Method bodies ────────────────────────────────────────────────────
