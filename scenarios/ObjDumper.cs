@@ -411,7 +411,19 @@ class CoffFile
             if (!int.TryParse(sym.Name, System.Globalization.NumberStyles.HexNumber, null, out int token)) continue;
             if ((token >> 24) != 0x06) continue; // only method tokens
 
-            // Find the preceding real symbol
+            // The 06 CLR token symbol normally carries the (section, offset) of
+            // the method body directly — this is true for chibil's emitter (see
+            // AddFunctionClrToken) and for MSVC /clr mixed-mode output. MSVC
+            // /clr:pure reference objects, however, leave Sect=0 on the 06 token
+            // and rely on the function symbol that immediately precedes it. Try
+            // the direct path first, then fall back to the preceding-symbol
+            // heuristic.
+            if (sym.SectionNumber > 0)
+            {
+                result[token] = (sym.SectionNumber, sym.Value);
+                continue;
+            }
+
             int realIdx = i - 1;
             while (realIdx >= 0 && Symbols[realIdx].Name == "<aux>") realIdx--;
             if (realIdx < 0) continue;
@@ -511,6 +523,21 @@ static class ObjDumper
         return false;
     }
 
+    /// <summary>
+    /// MSVC /clr (mixed-mode) emits per-function thunk symbols and the field/relocation
+    /// machinery that wires them up: <c>__m2mep@</c> (managed-to-managed entry point
+    /// function-pointer field), <c>__mep@</c> (native entry-point thunk symbol) and
+    /// <c>__unep@</c> (unmanaged entry-point function-pointer field). The linker does
+    /// not require these to resolve cross-obj IL <c>call</c>s, so we ignore them when
+    /// comparing /clr:pure-style emitter output against /clr reference objects.
+    /// </summary>
+    static bool IsClrThunkSymbol(string name)
+    {
+        return name.StartsWith("__m2mep@", StringComparison.Ordinal)
+            || name.StartsWith("__mep@", StringComparison.Ordinal)
+            || name.StartsWith("__unep@", StringComparison.Ordinal);
+    }
+
     static HashSet<TypeDefinitionHandle> GetBoilerplateTypes(MetadataReader reader)
     {
         var result = new HashSet<TypeDefinitionHandle>();
@@ -582,6 +609,11 @@ static class ObjDumper
             if (!declaringType.IsNil && boilerplate.Contains(declaringType)) continue;
 
             string fieldName = reader.GetString(fieldDef.Name);
+
+            // Skip /clr mixed-mode thunk fields (__m2mep@, __unep@); the linker doesn't
+            // require them for cross-obj IL call resolution.
+            if (IsClrThunkSymbol(fieldName)) continue;
+
             string typeName = declaringType.IsNil ? "" : reader.GetString(reader.GetTypeDefinition(declaringType).Name);
             string fullName = string.IsNullOrEmpty(typeName) ? fieldName : $"{typeName}::{fieldName}";
 
@@ -686,9 +718,15 @@ static class ObjDumper
             var relocs = coff.BuildNonTokenRelocationMap(section);
             for (int offset = 0; offset + 8 <= data.Length; offset += 8)
             {
+                bool hasReloc = relocs.TryGetValue(offset, out var reloc);
+
+                // Skip ILFixup entries pointing at /clr mixed-mode thunk symbols
+                // (__mep@, __m2mep@) — they bind to fields we filter out above.
+                if (hasReloc && IsClrThunkSymbol(reloc.Name)) continue;
+
                 ushort count = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset + 4));
                 ushort type = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset + 6));
-                string target = relocs.TryGetValue(offset, out var reloc)
+                string target = hasReloc
                     ? $"{NormalizeName(reloc.Name)} ({FormatRelocationType(coff.Header.Machine, reloc.Type)})"
                     : $"RVA=0x{BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset)):X8}";
                 sb.AppendLine($"  Target={target}, Count={count}, Type=0x{type:X4}");
