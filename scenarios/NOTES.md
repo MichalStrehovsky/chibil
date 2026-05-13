@@ -674,6 +674,25 @@ Dynamic initializer functions for global variables follow the pattern:
 The `__F` variant (`??__F<var>@@YMXXZ`) is the corresponding `atexit`
 destructor, if one is needed.
 
+
+### Anonymous globals
+
+**The prefixes:**
+
+| Symbol | Meaning |
+|--------|---------|
+| `$SG` | **S**tring **G**lobal — string literals, constant arrays, format strings |
+| `$S` | **S**tatic temp — compiler-generated static data |
+| `$T` | **T**emp — generic compiler-generated temporary |
+| `$E` | **E**ntry — unnamed function entry points |
+
+**The number** is either:
+- the symbol's unique key in the global symbol table (for global symbols)
+- a per-function sequential ID (for function-local symbols)
+
+These keys are assigned sequentially as the backend processes symbols, so the numbers
+are not stable across builds.
+
 ## Backend Implementation Gaps
 
 The following areas need implementation work beyond what the scenarios
@@ -963,3 +982,56 @@ A real-world example is PureDOOM.h, which declares `struct hostent* hostentry`
 guards. Since `struct hostent` is never defined, the linker warns — but the
 pointer is never dereferenced when networking is disabled, so the warning is
 benign.
+
+## /clr mixed-mode IJW entry-point thunks (`__nep@` / `__mep@` / `__unep@`)
+
+When a function is compiled under `/clr` (mixed mode, *not* `/clr:pure`), the
+MSVC compiler emits a set of IJW ("It Just Works") **managed/native transition
+entry points** so that the same function can be called from both native and
+managed callers:
+
+| Symbol | Full name | Where | Purpose |
+|--------|-----------|-------|---------|
+| `__unep@` | **U**nmanaged **N**ative **E**ntry **P**oint | A data slot in `.data` | Holds the metadata token initially; the CLR patches it with the JIT-compiled function pointer at load time. This is the vtable-fixup slot. |
+| `__nep@` | **N**ative **E**ntry **P**oint | A code thunk in `.text` (under the bare-name symbol, e.g. `get` / `_get`) | The native entry point — a `jmp [__unep@…]` indirect jump through the fixup slot. Native callers, and unmanaged `calli` from managed code, call this. |
+| `__mep@` | **M**anaged **E**ntry **P**oint | A data slot in `.data` | Points to the managed function's entry. Used for managed→native→managed transitions (the "double thunk avoidance" cookie). |
+
+The full mechanism for a managed function `foo()` compiled under `/clr`:
+
+```
+(1) Managed-to-Native transition:
+    .text:    _foo: jmp [__unep@?mfoo]     ← native thunk
+    .data:    __unep@?mfoo: <token>         ← CLR fills with JIT'd address
+
+(2) Native-to-Managed entry data:
+    .data:    __mep@?mfoo: <managed addr>   ← managed entry point
+
+(3) VTable fixup (tells CLR about the slot):
+    .rdata$ilfixup: vtable_fixup@?mfoo: &__unep@?mfoo
+```
+
+**The flow:**
+
+- **Native code calling managed `foo()`** — calls `_foo` → hits the
+  `jmp [__unep@…]` thunk → CLR has already resolved the token in the
+  `__unep` slot to a JIT-compiled pointer → lands in managed code.
+
+- **Managed code calling managed `foo()`** — uses the `__mep@` entry
+  directly to avoid the double-thunk penalty (managed → native thunk →
+  managed). The compiler checks the `__mep` cookie to determine if the
+  target is managed and skips the native roundtrip.
+
+- **`__clrcall` functions skip all of this** — pure managed calling
+  convention needs no native thunks.
+
+chibil emits a minimal subset of this machinery for `/clr` scenarios: one
+`__mep@?fn` fixup slot per managed function (in `.data`, stamped with a TOKEN
+reloc to the function's MethodDef so the linker writes the token bytes), one
+single indirect-jump `.nep` thunk per function targeting the slot (with a
+bare-name COFF alias so `&foo` data relocations resolve), and one
+`.rdata$ilfixup` entry of the appropriate `COR_VTABLE_*` type. The x64
+double-thunk-avoidance second-slot (`__m2mep@?fn` plus the additional
+`jmp [__m2mep@?fn]` inside `.nep`) and the loader-populated `__unep@?fn`
+declaration field are skipped — they're pure performance optimizations, not
+required for linker or runtime correctness in the single-indirect-jump path.
+
