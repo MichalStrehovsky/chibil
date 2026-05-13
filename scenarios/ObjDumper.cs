@@ -205,6 +205,14 @@ class CoffFile
 
     public ReadOnlySpan<byte> GetSectionData(CoffSectionHeader section)
     {
+        // .bss-style uninitialized sections have IMAGE_SCN_CNT_UNINITIALIZED_DATA
+        // set and no file content (PointerToRawData = 0); the loader
+        // zero-fills the SizeOfRawData bytes at load time. Reading from
+        // file offset 0 would return COFF header bytes — return zeros
+        // instead to give callers the loaded-image view of the section.
+        const uint IMAGE_SCN_CNT_UNINITIALIZED_DATA = 0x00000080;
+        if ((section.Characteristics & IMAGE_SCN_CNT_UNINITIALIZED_DATA) != 0)
+            return new byte[section.SizeOfRawData];
         return FileData.AsSpan((int)section.PointerToRawData, (int)section.SizeOfRawData);
     }
 

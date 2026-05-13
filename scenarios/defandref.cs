@@ -298,7 +298,7 @@ public class DefAndRefTest
         int slotOffset = dataStream.Count;
         for (int i = 0; i < ptrSize; i++) dataStream.WriteByte(0);
 
-        var mepDataSym = symtab.AddDataSymbol("__mep@" + mangledSuffix, LogicalSection.Data, slotOffset);
+        var mepDataSym = symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, LogicalSection.Data, slotOffset);
 
         var tokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(methodToken.ToString("X8"));
         new CoffRelocationEncoder(coffHeader, dataRelocs).AddTokenRelocation(slotOffset, tokenSym);
@@ -327,7 +327,7 @@ public class DefAndRefTest
         }
 
         // (3) Bare-name COFF alias for the thunk (e.g. `arith` / `_arith`).
-        symtab.AddDataSymbol(symPrefix + bareName, LogicalSection.Nep, thunkOffset);
+        symtab.AddExternalDataSymbol(symPrefix + bareName, LogicalSection.Nep, thunkOffset);
 
         // (4) One 8-byte ILFixup entry pointing at the slot: { RVA, Count=1, Type }.
         int ilfixupOffset = ilFixupStream.Count;

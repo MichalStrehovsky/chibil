@@ -240,8 +240,8 @@ public class GlobalAdvancedTest
         // .data slots that the .nep thunks indirect through. The CLR fills these
         // slots with from-unmanaged stub addresses at load time, driven by the
         // ilfixup entries below.
-        var mepGetDataSym  = symtab.AddDataSymbol("__mep@?get@@$$J0YAHXZ",  LogicalSection.Data, mepGetOffset);
-        var mepMainDataSym = symtab.AddDataSymbol("__mep@?main@@$$J0YAHXZ", LogicalSection.Data, mepMainOffset);
+        var mepGetDataSym  = symtab.AddExternalDataSymbol("__mep@?get@@$$J0YAHXZ",  LogicalSection.Data, mepGetOffset);
+        var mepMainDataSym = symtab.AddExternalDataSymbol("__mep@?main@@$$J0YAHXZ", LogicalSection.Data, mepMainOffset);
 
         // ─── .nep layout ─────────────────────────────────────────────────
         // One indirect-jump thunk per method (no double-thunk-avoidance optimization).

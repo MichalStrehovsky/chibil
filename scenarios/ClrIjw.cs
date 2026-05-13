@@ -83,7 +83,7 @@ internal static class ClrIjw
         int slotOffset = dataStream.Count;
         for (int i = 0; i < ptrSize; i++) dataStream.WriteByte(0);
 
-        var mepDataSym = symtab.AddDataSymbol("__mep@" + mangledSuffix, LogicalSection.Data, slotOffset);
+        var mepDataSym = symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, LogicalSection.Data, slotOffset);
 
         var tokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(methodToken.ToString("X8"));
         new CoffRelocationEncoder(coffHeader, dataRelocs).AddTokenRelocation(slotOffset, tokenSym);
@@ -113,7 +113,9 @@ internal static class ClrIjw
         }
 
         // (3) Bare-name COFF alias for the thunk (e.g. `foo` / `_foo`).
-        symtab.AddDataSymbol(symPrefix + bareName, LogicalSection.Nep, thunkOffset);
+        //     Externally linked — other translation units reference C functions
+        //     by this bare name.
+        symtab.AddExternalDataSymbol(symPrefix + bareName, LogicalSection.Nep, thunkOffset);
 
         // (4) One 8-byte ILFixup entry pointing at the slot.
         int ilfixupOffset = ilFixupStream.Count;

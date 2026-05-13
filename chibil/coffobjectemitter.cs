@@ -2002,6 +2002,17 @@ namespace System.Reflection.PortableExecutable
         }
 
         /// <summary>
+        /// Adds a section-bound data symbol with <see cref="CoffSymbolStorageClass.External"/>.
+        /// Use for symbols that other translation units may reference by name, e.g. the
+        /// bare-name aliases for /clr NEP thunks (which expose externally linked C
+        /// functions to native callers) and the <c>__mep@</c> fixup slots they point at.
+        /// </summary>
+        public CoffSymbolHandle AddExternalDataSymbol(string name, LogicalSection section, int sectionOffset)
+        {
+            return GetOrAddCoffSymbolDeferred(name, (uint)sectionOffset, section, CoffSymbolType.Null, CoffSymbolStorageClass.External, 0);
+        }
+
+        /// <summary>
         /// Adds a "common" data symbol for an uninitialized global — a Sect=0
         /// External symbol whose Value field holds the symbol's size in bytes
         /// (per the COFF spec; the linker allocates space at link time). Used
@@ -2087,7 +2098,7 @@ namespace System.Reflection.PortableExecutable
     /// Identifies a logical section whose actual 1-based COFF section number
     /// is not known until ManagedCoffBuilder lays out its sections.
     /// </summary>
-    public enum LogicalSection { Text, Data, RData, Crtma, IlFixup, Nep }
+    public enum LogicalSection { Text, Data, Bss, RData, Crtma, IlFixup, Nep }
 
     public enum CoffSymbolType : short
     {
@@ -2129,8 +2140,22 @@ namespace System.Reflection.PortableExecutable
         {
             public readonly string Name;
             public readonly SectionCharacteristics Characteristics;
+            /// <summary>
+            /// For uninitialized-data sections (.bss-style) this is the
+            /// in-memory size to record in the section header; <see cref="SerializeSection"/>
+            /// is not called for such sections, no file bytes are written,
+            /// and <c>PointerToRawData</c> is set to 0. For ordinary
+            /// sections this is 0 and the size comes from the serialized
+            /// builder's byte count.
+            /// </summary>
+            public readonly int UninitializedDataSize;
 
             public Section(string name, SectionCharacteristics characteristics)
+                : this(name, characteristics, 0)
+            {
+            }
+
+            public Section(string name, SectionCharacteristics characteristics, int uninitializedDataSize)
             {
                 if (name == null)
                 {
@@ -2139,6 +2164,7 @@ namespace System.Reflection.PortableExecutable
 
                 Name = name;
                 Characteristics = characteristics;
+                UninitializedDataSize = uninitializedDataSize;
             }
         }
 
@@ -2260,8 +2286,27 @@ namespace System.Reflection.PortableExecutable
 
             foreach (var section in sections)
             {
-                var builder = SerializeSection(section.Name, new SectionLocation(0, nextPointer));
-                var relocs = SerializeRelocations(section.Name, new SectionLocation(0, nextPointer));
+                BlobBuilder builder;
+                BlobBuilder relocs;
+                int sizeOfRawData;
+                int pointerToRawData;
+                if (section.UninitializedDataSize > 0)
+                {
+                    // .bss-style: no file content, SizeOfRawData carries the
+                    // in-memory size, PointerToRawData is 0. Section can still
+                    // own symbols but emits no bytes and no relocations.
+                    builder = new BlobBuilder();
+                    relocs = null;
+                    sizeOfRawData = section.UninitializedDataSize;
+                    pointerToRawData = 0;
+                }
+                else
+                {
+                    builder = SerializeSection(section.Name, new SectionLocation(0, nextPointer));
+                    relocs = SerializeRelocations(section.Name, new SectionLocation(0, nextPointer));
+                    sizeOfRawData = Align(builder.Count, 4);
+                    pointerToRawData = nextPointer;
+                }
 
                 var serialized = new SerializedSection(
                     builder,
@@ -2269,14 +2314,17 @@ namespace System.Reflection.PortableExecutable
                     section.Name,
                     section.Characteristics,
                     relativeVirtualAddress: 0,
-                    sizeOfRawData: Align(builder.Count, 4),
-                    pointerToRawData: nextPointer);
+                    sizeOfRawData: sizeOfRawData,
+                    pointerToRawData: pointerToRawData);
 
                 result.Add(serialized);
 
-                nextPointer = serialized.PointerToRawData + serialized.SizeOfRawData;
-                if (relocs != null)
-                    nextPointer += Align(relocs.Count, 4);
+                if (section.UninitializedDataSize == 0)
+                {
+                    nextPointer = serialized.PointerToRawData + serialized.SizeOfRawData;
+                    if (relocs != null)
+                        nextPointer += Align(relocs.Count, 4);
+                }
             }
 
             return result.MoveToImmutable();
@@ -2366,6 +2414,7 @@ namespace System.Reflection.PortableExecutable
         private const string CorMetaSectionName = ".cormeta";
         private const string TextSectionName = ".text$mn";
         private const string DataSectionName = ".data";
+        private const string BssSectionName = ".bss";
         private const string RDataSectionName = ".rdata";
         private const string CrtmaSectionName = ".CRTMA$XCC";
         private const string IlFixupSectionName = ".rdata$ilfixup";
@@ -2378,6 +2427,7 @@ namespace System.Reflection.PortableExecutable
         private readonly BlobBuilder _ilRelocs;
         private readonly BlobBuilder _dataStream;
         private readonly BlobBuilder _dataRelocs;
+        private readonly int _bssSize;
         private readonly BlobBuilder _rdataStream;
         private readonly InitializerListSectionBuilder _initializerList;
         private readonly BlobBuilder _ilFixupStream;
@@ -2394,6 +2444,7 @@ namespace System.Reflection.PortableExecutable
             BlobBuilder ilRelocs,
             BlobBuilder dataStream = null,
             BlobBuilder dataRelocs = null,
+            int bssSize = 0,
             BlobBuilder rdataStream = null,
             InitializerListSectionBuilder initializerList = null,
             BlobBuilder ilFixupStream = null,
@@ -2424,6 +2475,7 @@ namespace System.Reflection.PortableExecutable
             _ilRelocs = ilRelocs;
             _dataStream = dataStream;
             _dataRelocs = dataRelocs;
+            _bssSize = bssSize;
             _rdataStream = rdataStream;
             _initializerList = initializerList;
             _ilFixupStream = ilFixupStream;
@@ -2440,6 +2492,7 @@ namespace System.Reflection.PortableExecutable
                 {
                     LogicalSection.Text => TextSectionNumber,
                     LogicalSection.Data => DataSectionNumber,
+                    LogicalSection.Bss => BssSectionNumber,
                     LogicalSection.RData => RDataSectionNumber,
                     LogicalSection.Crtma => CrtmaSectionNumber,
                     LogicalSection.IlFixup => IlFixupSectionNumber,
@@ -2476,6 +2529,11 @@ namespace System.Reflection.PortableExecutable
         private int DataSectionNumber => GetSectionNumber(DataSectionName);
 
         /// <summary>
+        /// Returns the 1-based section number for the .bss section, or -1 if not present.
+        /// </summary>
+        private int BssSectionNumber => GetSectionNumber(BssSectionName);
+
+        /// <summary>
         /// Returns the 1-based section number for the .rdata section, or -1 if not present.
         /// </summary>
         private int RDataSectionNumber => GetSectionNumber(RDataSectionName);
@@ -2506,6 +2564,12 @@ namespace System.Reflection.PortableExecutable
             if (_dataStream != null && _dataStream.Count > 0)
             {
                 builder.Add(new Section(DataSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes));
+            }
+            if (_bssSize > 0)
+            {
+                builder.Add(new Section(BssSectionName,
+                    SectionCharacteristics.ContainsUninitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes,
+                    uninitializedDataSize: _bssSize));
             }
             builder.Add(new Section(CorMetaSectionName, SectionCharacteristics.LinkerInfo | SectionCharacteristics.Align1Bytes));
             if (_codeViewSymbols != null)
