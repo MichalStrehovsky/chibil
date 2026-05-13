@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC voidptr.c
-// LINK: link voidptr.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC voidptr.c
+// LINK: link voidptr.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 //
 // Tests void pointer patterns.  void* in MSIL signatures encodes as
 // Ptr Void (ELEMENT_TYPE_PTR ELEMENT_TYPE_VOID).  Casting void* to

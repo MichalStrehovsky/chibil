@@ -1521,6 +1521,25 @@ static class ObjDumper
         int row = token & 0x00FFFFFF;
         if (row == 0) return $"0x{token:X8}";
 
+        // Self-MemberRefs (Parent = MethodDef, an MSVC /clr IJW pattern) are
+        // rendered with the same `Method:` prefix and name as the MethodDef
+        // itself — chibil emits the direct MethodDef token in IL while MSVC
+        // routes the call through the self-MemberRef, and the two should
+        // compare equal in scenario dumps.
+        if (table == 0x0A)
+        {
+            try
+            {
+                var mr = reader.GetMemberReference(MetadataTokens.MemberReferenceHandle(row));
+                if (mr.Parent.Kind == HandleKind.MethodDefinition)
+                {
+                    int parentToken = MetadataTokens.GetToken(mr.Parent);
+                    return ResolveTokenForDisplay(reader, parentToken);
+                }
+            }
+            catch { }
+        }
+
         string prefix = table switch
         {
             0x01 => "TypeRef",

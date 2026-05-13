@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC enum.c
-// LINK: link enum.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC enum.c
+// LINK: link enum.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 enum Color { RED, GREEN = 5, BLUE };
 

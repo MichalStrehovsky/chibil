@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC flexible-array.c
-// LINK: link flexible-array.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC flexible-array.c
+// LINK: link flexible-array.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 typedef struct _FlexBuf {
     int len;

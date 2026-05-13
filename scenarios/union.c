@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC union.c
-// LINK: link union.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC union.c
+// LINK: link union.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 typedef union _Number
 {

@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC const-param.c
-// LINK: link const-param.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC const-param.c
+// LINK: link const-param.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 int sum_array(const int* arr, int len)
 {

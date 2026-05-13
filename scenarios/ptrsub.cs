@@ -17,6 +17,11 @@ public class PtrsubTest
     {
         byte[] emitted = EmitObj(machine);
         string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
+
+        string emittedDir = Path.Combine(AppContext.BaseDirectory, "emitted", "ptrsub", refDir);
+        Directory.CreateDirectory(emittedDir);
+        File.WriteAllBytes(Path.Combine(emittedDir, "ptrsub.obj"), emitted);
+
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "ptrsub", refDir, "ptrsub.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -26,6 +31,11 @@ public class PtrsubTest
 
     static byte[] EmitObj(Machine machine)
     {
+        bool is32 = machine == Machine.I386;
+        int ptrSize = is32 ? 4 : 8;
+        string symPrefix = is32 ? "_" : "";
+        string e = is32 ? "" : "E";  // MSVC __ptr64 modifier in 64-bit mangled names
+
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
@@ -38,6 +48,11 @@ public class PtrsubTest
             md.GetOrAddString("mscorlib"), new Version(4, 0, 0, 0), default,
             md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default, md.GetOrAddBlob(mscorlibHash));
+
+        // ─── TypeRef: CallConvCdecl (modopt on return types under /clr) ───
+        var callConvCdeclRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"),
+            md.GetOrAddString("CallConvCdecl"));
 
         // ─── TypeRefs ─────────────────────────────────────────────────────
         var valueTypeRef = md.AddTypeReference(mscorlibRef,
@@ -83,7 +98,7 @@ public class PtrsubTest
         var psiSig = new BlobBuilder();
         new BlobEncoder(psiSig).MethodSignature()
             .Parameters(2, out var psiRetEnc, out var psiParEnc);
-        psiRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(psiRetEnc, callConvCdeclRef);
         psiParEnc.AddParameter().Type().Pointer().Int32();
         psiParEnc.AddParameter().Type().Pointer().Int32();
 
@@ -103,7 +118,7 @@ public class PtrsubTest
         var pscSig = new BlobBuilder();
         new BlobEncoder(pscSig).MethodSignature()
             .Parameters(2, out var pscRetEnc, out var pscParEnc);
-        pscRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(pscRetEnc, callConvCdeclRef);
         var pscP1 = pscParEnc.AddParameter().Type();
         pscP1.Builder.WriteByte((byte)SignatureTypeCode.Pointer);
         pscP1.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
@@ -131,7 +146,7 @@ public class PtrsubTest
         var psdSig = new BlobBuilder();
         new BlobEncoder(psdSig).MethodSignature()
             .Parameters(2, out var psdRetEnc, out var psdParEnc);
-        psdRetEnc.Type().Int64();
+        ClrIjw.WriteCdeclModOpt(psdRetEnc, callConvCdeclRef).Int64();
         psdParEnc.AddParameter().Type().Pointer().Double();
         psdParEnc.AddParameter().Type().Pointer().Double();
 
@@ -151,7 +166,7 @@ public class PtrsubTest
         var plSig = new BlobBuilder();
         new BlobEncoder(plSig).MethodSignature()
             .Parameters(2, out var plRetEnc, out var plParEnc);
-        plRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(plRetEnc, callConvCdeclRef);
         plParEnc.AddParameter().Type().Pointer().Int32();
         plParEnc.AddParameter().Type().Pointer().Int32();
 
@@ -171,7 +186,7 @@ public class PtrsubTest
         var peSig = new BlobBuilder();
         new BlobEncoder(peSig).MethodSignature()
             .Parameters(2, out var peRetEnc, out var peParEnc);
-        peRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(peRetEnc, callConvCdeclRef);
         peParEnc.AddParameter().Type().Pointer().Int32();
         peParEnc.AddParameter().Type().Pointer().Int32();
 
@@ -191,7 +206,7 @@ public class PtrsubTest
         var mainSig = new BlobBuilder();
         new BlobEncoder(mainSig).MethodSignature()
             .Parameters(0, out var mRetEnc, out var mParEnc);
-        mRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(mRetEnc, callConvCdeclRef);
 
         var mainMethod = md.AddMethodDefinition(
             MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
@@ -211,16 +226,22 @@ public class PtrsubTest
 
         // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
+        var dataStreamBuilder = new BlobBuilder();
+        var dataRelocBuilder = new BlobBuilder();
+        var nepStreamBuilder = new BlobBuilder();
+        var nepRelocBuilder = new BlobBuilder();
+        var ilFixupStreamBuilder = new BlobBuilder();
+        var ilFixupRelocBuilder = new BlobBuilder();
 
         // ─── CodeView debug info ──────────────────────────────────────────
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
         codeviewSymbols.AddObjNameAndCompile3("ptrsub.obj",
             language: CodeViewLanguage.C, machine: cvMachine,
-            feMajor: 19, feMinor: 50, feBuild: 35728,
-            beMajor: 19, beMinor: 50, beBuild: 35728,
+            feMajor: 19, feMinor: 50, feBuild: 35730,
+            beMajor: 19, beMinor: 50, beBuild: 35730,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
@@ -249,7 +270,7 @@ public class PtrsubTest
             enc.OpCode(ILOpCode.Ldloc_0);          // IL_0006 / IL_0007
             enc.OpCode(ILOpCode.Ret);              // IL_0007 / IL_0008
 
-            bodyEncoder.AddMethodBody(ptrSubIntMethod, "?ptr_subtract_int@@$$J0YMHPAH0@Z", enc,
+            bodyEncoder.AddMethodBody(ptrSubIntMethod, $"?ptr_subtract_int@@$$J0YAHP{e}AH0@Z", enc,
                 maxStack: 2, localVariablesSignature: psiLocalsSigHandle, attributes: 0,
                 debugName: "ptr_subtract_int");
         }
@@ -270,7 +291,7 @@ public class PtrsubTest
             enc.OpCode(ILOpCode.Ldloc_0);          // IL_0004 / IL_0005
             enc.OpCode(ILOpCode.Ret);              // IL_0005 / IL_0006
 
-            bodyEncoder.AddMethodBody(ptrSubCharMethod, "?ptr_subtract_char@@$$J0YMHPAD0@Z", enc,
+            bodyEncoder.AddMethodBody(ptrSubCharMethod, $"?ptr_subtract_char@@$$J0YAHP{e}AD0@Z", enc,
                 maxStack: 2, localVariablesSignature: pscLocalsSigHandle, attributes: 0,
                 debugName: "ptr_subtract_char");
         }
@@ -293,7 +314,7 @@ public class PtrsubTest
             enc.OpCode(ILOpCode.Ldloc_0);          // IL_0006 / IL_0007
             enc.OpCode(ILOpCode.Ret);              // IL_0007 / IL_0008
 
-            bodyEncoder.AddMethodBody(ptrSubDblMethod, "?ptr_subtract_double@@$$J0YM_JPAN0@Z", enc,
+            bodyEncoder.AddMethodBody(ptrSubDblMethod, $"?ptr_subtract_double@@$$J0YA_JP{e}AN0@Z", enc,
                 maxStack: 2, localVariablesSignature: psdLocalsSigHandle, attributes: 0,
                 debugName: "ptr_subtract_double");
         }
@@ -320,7 +341,7 @@ public class PtrsubTest
             enc.OpCode(ILOpCode.Ldloc_0);              // IL_0009
             enc.OpCode(ILOpCode.Ret);                  // IL_000A
 
-            bodyEncoder.AddMethodBody(ptrLessMethod, "?ptr_less@@$$J0YMHPAH0@Z", enc,
+            bodyEncoder.AddMethodBody(ptrLessMethod, $"?ptr_less@@$$J0YAHP{e}AH0@Z", enc,
                 maxStack: 2, localVariablesSignature: plLocalsSigHandle, attributes: 0,
                 debugName: "ptr_less");
         }
@@ -347,7 +368,7 @@ public class PtrsubTest
             enc.OpCode(ILOpCode.Ldloc_0);              // IL_0009
             enc.OpCode(ILOpCode.Ret);                  // IL_000A
 
-            bodyEncoder.AddMethodBody(ptrEqualMethod, "?ptr_equal@@$$J0YMHPAH0@Z", enc,
+            bodyEncoder.AddMethodBody(ptrEqualMethod, $"?ptr_equal@@$$J0YAHP{e}AH0@Z", enc,
                 maxStack: 2, localVariablesSignature: peLocalsSigHandle, attributes: 0,
                 debugName: "ptr_equal");
         }
@@ -418,14 +439,43 @@ public class PtrsubTest
                 new CodeViewManSlot(1, MetadataTokens.GetToken(mainLocalsSigHandle), "arr"),
             };
 
-            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YAHXZ", enc,
                 maxStack: 3, localVariablesSignature: mainLocalsSigHandle, attributes: 0,
                 debugName: "main", localSlots: mainLocalSlots);
         }
 
+        // ─── IJW machinery for managed exports ────────────────────────────
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(ptrSubIntMethod), "ptr_subtract_int", $"?ptr_subtract_int@@$$J0YAHP{e}AH0@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(ptrSubCharMethod), "ptr_subtract_char", $"?ptr_subtract_char@@$$J0YAHP{e}AD0@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(ptrSubDblMethod), "ptr_subtract_double", $"?ptr_subtract_double@@$$J0YA_JP{e}AN0@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(ptrLessMethod), "ptr_less", $"?ptr_less@@$$J0YAHP{e}AH0@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(ptrEqualMethod), "ptr_equal", $"?ptr_equal@@$$J0YAHP{e}AH0@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder);
+            ilStreamBuilder, ilRelocBuilder,
+            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
+            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
+            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
         return output.ToArray();

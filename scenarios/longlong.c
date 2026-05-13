@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC longlong.c
-// LINK: link longlong.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC longlong.c
+// LINK: link longlong.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 //
 // Tests 64-bit integer (long long) arithmetic and conversions.
 // Shows: ldc.i8 for 64-bit constants, conv.i8 / conv.i4 for

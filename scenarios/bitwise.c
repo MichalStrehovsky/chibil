@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC bitwise.c
-// LINK: link bitwise.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC bitwise.c
+// LINK: link bitwise.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 int bitwise(int a, int b)
 {

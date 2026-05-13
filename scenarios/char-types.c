@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC char-types.c
-// LINK: link char-types.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC char-types.c
+// LINK: link char-types.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 int char_func(char a, signed char b, unsigned char c)
 {
