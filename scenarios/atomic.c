@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC atomic.c
-// LINK: link atomic.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC atomic.c
+// LINK: link atomic.obj mscoree.lib /incremental:no /debug /entry:main /subsystem:console
 
 long _InterlockedExchange(long volatile* target, long value);
 long _InterlockedCompareExchange(long volatile* destination, long exchange, long comparand);
