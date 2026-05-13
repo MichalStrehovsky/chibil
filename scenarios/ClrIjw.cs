@@ -61,6 +61,9 @@ internal static class ClrIjw
     /// <c>0x000A</c> (64-bit) telling the CLR loader to resolve the token
     /// in the slot into a from-unmanaged stub address at load time.
     /// </summary>
+    /// <returns>The COFF symbol handle for the bare-name NEP thunk alias
+    /// (e.g. <c>add</c> / <c>_add</c>). Use this as the target of an
+    /// <c>AddAddressRelocation</c> from an <c>__unep@?fn</c> slot.</returns>
     /// <remarks>
     /// We skip MSVC's x64 double-thunk-avoidance optimization (the
     /// <c>__m2mep@?fn</c> companion slot + second <c>jmp [__m2mep@?fn]</c>
@@ -70,7 +73,7 @@ internal static class ClrIjw
     /// the single-indirect-jump path. <see cref="ObjDumper.IsClrThunkSymbol"/>
     /// hides them when comparing against MSVC reference objects.
     /// </remarks>
-    public static void EmitNepMachinery(
+    public static CoffSymbolHandle EmitNepMachinery(
         Machine machine, bool is32, int ptrSize, string symPrefix,
         CoffHeaderBuilder coffHeader, ManagedCoffSymbolTableBuilder symtab,
         BlobBuilder dataStream, BlobBuilder dataRelocs,
@@ -114,8 +117,8 @@ internal static class ClrIjw
 
         // (3) Bare-name COFF alias for the thunk (e.g. `foo` / `_foo`).
         //     Externally linked — other translation units reference C functions
-        //     by this bare name.
-        symtab.AddExternalDataSymbol(symPrefix + bareName, LogicalSection.Nep, thunkOffset);
+        //     by this bare name, and `__unep@?fn` slots ADDR-reloc against it.
+        var bareSym = symtab.AddExternalDataSymbol(symPrefix + bareName, LogicalSection.Nep, thunkOffset);
 
         // (4) One 8-byte ILFixup entry pointing at the slot.
         int ilfixupOffset = ilFixupStream.Count;
@@ -123,5 +126,7 @@ internal static class ClrIjw
         ilFixupStream.WriteInt16(1);                                        // Count
         ilFixupStream.WriteInt16(is32 ? (short)0x0009 : (short)0x000A);     // COR_VTABLE_*BIT | FROM_UNMANAGED_RETAIN_APPDOMAIN
         new CoffRelocationEncoder(coffHeader, ilFixupRelocs).AddImageRelativeRelocation(ilfixupOffset, mepDataSym);
+
+        return bareSym;
     }
 }
