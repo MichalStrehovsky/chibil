@@ -38,6 +38,10 @@ public class DefAndRefTest
 
     static byte[] EmitObj(Machine machine, string variant)
     {
+        bool is32 = machine == Machine.I386;
+        int ptrSize = is32 ? 4 : 8;
+        string symPrefix = is32 ? "_" : "";
+
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
@@ -112,6 +116,12 @@ public class DefAndRefTest
             var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
             var ilStreamBuilder = new BlobBuilder();
             var ilRelocBuilder = new BlobBuilder();
+            var dataStreamBuilder = new BlobBuilder();
+            var dataRelocBuilder = new BlobBuilder();
+            var nepStreamBuilder = new BlobBuilder();
+            var nepRelocBuilder = new BlobBuilder();
+            var ilFixupStreamBuilder = new BlobBuilder();
+            var ilFixupRelocBuilder = new BlobBuilder();
 
             // ─── CodeView ────────────────────────────────────────────────
             var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
@@ -149,8 +159,21 @@ public class DefAndRefTest
                 maxStack: 2, localVariablesSignature: arithLocalsSigHandle, attributes: 0,
                 debugName: "arith");
 
+            // ─── IJW machinery for arith (NEP thunk + __mep@ slot + ilfixup) ─
+            EmitNepMachinery(
+                machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+                dataStreamBuilder, dataRelocBuilder,
+                nepStreamBuilder, nepRelocBuilder,
+                ilFixupStreamBuilder, ilFixupRelocBuilder,
+                methodToken: MetadataTokens.GetToken(arithMethod),
+                bareName: "arith",
+                mangledSuffix: "?arith@@$$J0YAHHH@Z");
+
             var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-                ilStreamBuilder, ilRelocBuilder);
+                ilStreamBuilder, ilRelocBuilder,
+                dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
+                ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
+                nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
             var output = new BlobBuilder();
             coffBuilder.Serialize(output);
             return output.ToArray();
@@ -187,6 +210,12 @@ public class DefAndRefTest
             var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
             var ilStreamBuilder = new BlobBuilder();
             var ilRelocBuilder = new BlobBuilder();
+            var dataStreamBuilder = new BlobBuilder();
+            var dataRelocBuilder = new BlobBuilder();
+            var nepStreamBuilder = new BlobBuilder();
+            var nepRelocBuilder = new BlobBuilder();
+            var ilFixupStreamBuilder = new BlobBuilder();
+            var ilFixupRelocBuilder = new BlobBuilder();
 
             // Register the external arith symbol BEFORE emitting IL that calls it.
             symtab.AddExternalClrToken("?arith@@$$J0YAHHH@Z", arithMemberRef);
@@ -227,11 +256,84 @@ public class DefAndRefTest
                 maxStack: 2, localVariablesSignature: mainLocalsSigHandle, attributes: 0,
                 debugName: "main");
 
+            // ─── IJW machinery for main (NEP thunk + __mep@ slot + ilfixup) ─
+            EmitNepMachinery(
+                machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+                dataStreamBuilder, dataRelocBuilder,
+                nepStreamBuilder, nepRelocBuilder,
+                ilFixupStreamBuilder, ilFixupRelocBuilder,
+                methodToken: MetadataTokens.GetToken(mainMethod),
+                bareName: "main",
+                mangledSuffix: "?main@@$$J0YAHXZ");
+
             var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-                ilStreamBuilder, ilRelocBuilder);
+                ilStreamBuilder, ilRelocBuilder,
+                dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
+                ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
+                nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
             var output = new BlobBuilder();
             coffBuilder.Serialize(output);
             return output.ToArray();
         }
+    }
+
+    /// <summary>
+    /// Emits the minimal /clr IJW machinery for a single managed function: a
+    /// <c>__mep@?fn</c> data slot stamped with a TOKEN reloc to the method's
+    /// MethodDef CLR-token symbol, a single indirect-jump <c>.nep</c> thunk
+    /// that targets the slot, a bare-name COFF alias for the thunk, and a
+    /// single <c>.rdata$ilfixup</c> entry that tells the CLR loader to
+    /// resolve the token in the slot into a from-unmanaged stub address.
+    /// </summary>
+    static void EmitNepMachinery(
+        Machine machine, bool is32, int ptrSize, string symPrefix,
+        CoffHeaderBuilder coffHeader, ManagedCoffSymbolTableBuilder symtab,
+        BlobBuilder dataStream, BlobBuilder dataRelocs,
+        BlobBuilder nepStream, BlobBuilder nepRelocs,
+        BlobBuilder ilFixupStream, BlobBuilder ilFixupRelocs,
+        int methodToken, string bareName, string mangledSuffix)
+    {
+        // (1) __mep@?fn slot in .data (zero-initialized; linker will stamp the
+        //     MethodDef token via the TOKEN reloc below).
+        int slotOffset = dataStream.Count;
+        for (int i = 0; i < ptrSize; i++) dataStream.WriteByte(0);
+
+        var mepDataSym = symtab.AddDataSymbol("__mep@" + mangledSuffix, LogicalSection.Data, slotOffset);
+
+        var tokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(methodToken.ToString("X8"));
+        new CoffRelocationEncoder(coffHeader, dataRelocs).AddTokenRelocation(slotOffset, tokenSym);
+
+        // (2) Single indirect-jump thunk in .nep, targeting the __mep@?fn slot.
+        //   x86  : FF 25 [imm32→slot]                                 (6  bytes, DIR32 reloc)
+        //   x64  : FF 25 [rel32→slot]                                 (6  bytes, REL32 reloc)
+        //   arm64: ADRP X9,[slot] / LDR X9,[X9,#off] / BR X9          (12 bytes, PAGEBASE_REL21 + PAGEOFFSET_12L)
+        int thunkOffset = nepStream.Count;
+        if (machine == Machine.Arm64)
+        {
+            nepStream.WriteBytes(new byte[] { 0x09, 0x00, 0x00, 0x90, 0x29, 0x01, 0x40, 0xF9, 0x20, 0x01, 0x1F, 0xD6 });
+            nepRelocs.WriteInt32(thunkOffset + 0);
+            nepRelocs.WriteInt32(mepDataSym._value);
+            nepRelocs.WriteUInt16(0x0004);                            // IMAGE_REL_ARM64_PAGEBASE_REL21
+            nepRelocs.WriteInt32(thunkOffset + 4);
+            nepRelocs.WriteInt32(mepDataSym._value);
+            nepRelocs.WriteUInt16(0x0006);                            // IMAGE_REL_ARM64_PAGEOFFSET_12L
+        }
+        else
+        {
+            nepStream.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
+            nepRelocs.WriteInt32(thunkOffset + 2);
+            nepRelocs.WriteInt32(mepDataSym._value);
+            nepRelocs.WriteUInt16(is32 ? (ushort)0x0006 : (ushort)0x0004); // I386 DIR32 / AMD64 REL32
+        }
+
+        // (3) Bare-name COFF alias for the thunk (e.g. `arith` / `_arith`).
+        symtab.AddDataSymbol(symPrefix + bareName, LogicalSection.Nep, thunkOffset);
+
+        // (4) One 8-byte ILFixup entry pointing at the slot: { RVA, Count=1, Type }.
+        int ilfixupOffset = ilFixupStream.Count;
+        ilFixupStream.WriteInt32(0);                                  // RVA placeholder
+        ilFixupStream.WriteInt16(1);                                  // Count
+        ilFixupStream.WriteInt16(is32 ? (short)0x0009 : (short)0x000A); // *_BIT | FROM_UNMANAGED_RETAIN_APPDOMAIN
+        new CoffRelocationEncoder(coffHeader, ilFixupRelocs).AddImageRelativeRelocation(ilfixupOffset, mepDataSym);
     }
 }

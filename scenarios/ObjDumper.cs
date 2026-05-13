@@ -526,15 +526,29 @@ static class ObjDumper
     /// <summary>
     /// MSVC /clr (mixed-mode) emits per-function thunk symbols and the field/relocation
     /// machinery that wires them up: <c>__m2mep@</c> (managed-to-managed entry point
-    /// function-pointer field), <c>__mep@</c> (native entry-point thunk symbol) and
-    /// <c>__unep@</c> (unmanaged entry-point function-pointer field). The linker does
-    /// not require these to resolve cross-obj IL <c>call</c>s, so we ignore them when
-    /// comparing /clr:pure-style emitter output against /clr reference objects.
+    /// function-pointer field — x64-only double-thunk-avoidance optimization),
+    /// <c>__mep@</c> (the native entry-point fixup slot — the load-time-resolved
+    /// function pointer the .nep thunk indirects through), and <c>__unep@</c>
+    /// (unmanaged-native-entry-point declaration field, populated by the loader).
     /// </summary>
     static bool IsClrThunkSymbol(string name)
     {
         return name.StartsWith("__m2mep@", StringComparison.Ordinal)
             || name.StartsWith("__mep@", StringComparison.Ordinal)
+            || name.StartsWith("__unep@", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The subset of IJW thunk symbols that are MSVC-only structural extras: the
+    /// x64 double-thunk-avoidance slot (<c>__m2mep@</c>) and the loader-populated
+    /// unmanaged-entry-point declaration field (<c>__unep@</c>). The fundamental
+    /// fixup slot (<c>__mep@</c>) is emitted symmetrically by both MSVC and our
+    /// emitter on every architecture, so ILFixup entries that target it should be
+    /// compared rather than filtered.
+    /// </summary>
+    static bool IsClrThunkOptimizationSymbol(string name)
+    {
+        return name.StartsWith("__m2mep@", StringComparison.Ordinal)
             || name.StartsWith("__unep@", StringComparison.Ordinal);
     }
 
@@ -720,9 +734,12 @@ static class ObjDumper
             {
                 bool hasReloc = relocs.TryGetValue(offset, out var reloc);
 
-                // Skip ILFixup entries pointing at /clr mixed-mode thunk symbols
-                // (__mep@, __m2mep@) — they bind to fields we filter out above.
-                if (hasReloc && IsClrThunkSymbol(reloc.Name)) continue;
+                // Skip ILFixup entries that bind MSVC's IJW optimization-only thunk
+                // slots (__m2mep@, __unep@) — those are the x64 double-thunk-avoidance
+                // extras and the loader-populated declaration fields, neither of which
+                // our emitter produces. Entries that bind the fundamental __mep@ fixup
+                // slot are kept and compared symmetrically.
+                if (hasReloc && IsClrThunkOptimizationSymbol(reloc.Name)) continue;
 
                 ushort count = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset + 4));
                 ushort type = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset + 6));

@@ -2054,7 +2054,7 @@ namespace System.Reflection.PortableExecutable
     /// Identifies a logical section whose actual 1-based COFF section number
     /// is not known until ManagedCoffBuilder lays out its sections.
     /// </summary>
-    public enum LogicalSection { Text, Data, RData, Crtma, IlFixup }
+    public enum LogicalSection { Text, Data, RData, Crtma, IlFixup, Nep }
 
     public enum CoffSymbolType : short
     {
@@ -2336,6 +2336,7 @@ namespace System.Reflection.PortableExecutable
         private const string RDataSectionName = ".rdata";
         private const string CrtmaSectionName = ".CRTMA$XCC";
         private const string IlFixupSectionName = ".rdata$ilfixup";
+        private const string NepSectionName = ".nep";
         private const string CodeViewSymbolsSectionName = ".debug$S";
 
         private readonly CodeViewSymbolBuilder _codeViewSymbols;
@@ -2348,6 +2349,8 @@ namespace System.Reflection.PortableExecutable
         private readonly InitializerListSectionBuilder _initializerList;
         private readonly BlobBuilder _ilFixupStream;
         private readonly BlobBuilder _ilFixupRelocs;
+        private readonly BlobBuilder _nepStream;
+        private readonly BlobBuilder _nepRelocs;
 
         public ManagedCoffBuilder(
             CoffHeaderBuilder header,
@@ -2362,6 +2365,8 @@ namespace System.Reflection.PortableExecutable
             InitializerListSectionBuilder initializerList = null,
             BlobBuilder ilFixupStream = null,
             BlobBuilder ilFixupRelocs = null,
+            BlobBuilder nepStream = null,
+            BlobBuilder nepRelocs = null,
             Func<IEnumerable<Blob>, BlobContentId> deterministicIdProvider = null)
             : base(header, symbolTable, deterministicIdProvider)
         {
@@ -2390,6 +2395,8 @@ namespace System.Reflection.PortableExecutable
             _initializerList = initializerList;
             _ilFixupStream = ilFixupStream;
             _ilFixupRelocs = ilFixupRelocs;
+            _nepStream = nepStream;
+            _nepRelocs = nepRelocs;
         }
 
         public override BlobContentId Serialize(BlobBuilder builder)
@@ -2403,6 +2410,7 @@ namespace System.Reflection.PortableExecutable
                     LogicalSection.RData => RDataSectionNumber,
                     LogicalSection.Crtma => CrtmaSectionNumber,
                     LogicalSection.IlFixup => IlFixupSectionNumber,
+                    LogicalSection.Nep => NepSectionNumber,
                     _ => throw new InvalidOperationException($"Unknown logical section: {section}")
                 });
             }
@@ -2449,6 +2457,11 @@ namespace System.Reflection.PortableExecutable
         /// </summary>
         private int IlFixupSectionNumber => GetSectionNumber(IlFixupSectionName);
 
+        /// <summary>
+        /// Returns the 1-based section number for the .nep section, or -1 if not present.
+        /// </summary>
+        private int NepSectionNumber => GetSectionNumber(NepSectionName);
+
         protected override ImmutableArray<Section> CreateSections()
         {
             var builder = ImmutableArray.CreateBuilder<Section>();
@@ -2475,6 +2488,10 @@ namespace System.Reflection.PortableExecutable
             {
                 builder.Add(new Section(IlFixupSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes));
             }
+            if (_nepStream != null && _nepStream.Count > 0)
+            {
+                builder.Add(new Section(NepSectionName, SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes));
+            }
 
             return builder.ToImmutable();
         }
@@ -2489,6 +2506,7 @@ namespace System.Reflection.PortableExecutable
                 CodeViewSymbolsSectionName => SerializeCodeViewSymbols(location),
                 CrtmaSectionName => SerializeCrtmaSection(),
                 IlFixupSectionName => _ilFixupStream,
+                NepSectionName => _nepStream,
                 _ => throw new ArgumentException(),
             };
 
@@ -2511,6 +2529,10 @@ namespace System.Reflection.PortableExecutable
             else if (name == IlFixupSectionName)
             {
                 return _ilFixupRelocs;
+            }
+            else if (name == NepSectionName)
+            {
+                return _nepRelocs;
             }
             else if (name == CodeViewSymbolsSectionName)
             {
