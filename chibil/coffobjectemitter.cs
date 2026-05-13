@@ -2001,6 +2001,39 @@ namespace System.Reflection.PortableExecutable
             return GetOrAddCoffSymbolDeferred(name, (uint)sectionOffset, section, CoffSymbolType.Null, CoffSymbolStorageClass.Static, 0);
         }
 
+        /// <summary>
+        /// Adds a "common" data symbol for an uninitialized global — a Sect=0
+        /// External symbol whose Value field holds the symbol's size in bytes
+        /// (per the COFF spec; the linker allocates space at link time). Used
+        /// for /clr uninitialized globals like <c>int g_uninitialized;</c>.
+        /// The companion CLR token symbol mirrors the same Sect=0/Value=size
+        /// shape with an aux record pointing at the name symbol.
+        /// </summary>
+        public CoffSymbolHandle AddCommonDataClrToken(string name, EntityHandle handle, int size, out CoffSymbolHandle tokenCoffSymbol)
+        {
+            int token = MetadataTokens.GetToken(handle);
+
+            CoffSymbolHandle index = GetOrAddCoffSymbol(name, (uint)size, 0, CoffSymbolType.Null, CoffSymbolStorageClass.External, 0);
+
+            string tokenSymbolName = token.ToString("X8");
+            if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
+            {
+                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, (uint)size, 0, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 1);
+                _coffSymbolTableBuilder.WriteByte(1);
+                _coffSymbolTableBuilder.WriteByte(0);
+                _coffSymbolTableBuilder.WriteInt32(index._value);
+                _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    $"CLR token symbol '{tokenSymbolName}' for common data '{name}' was already created. " +
+                    $"Register common data tokens before any IL that references them.");
+            }
+
+            return index;
+        }
+
         private CoffSymbolHandle GetOrAddCoffSymbolDeferred(string name, uint value, LogicalSection section,
             CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols)
         {

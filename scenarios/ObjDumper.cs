@@ -459,8 +459,12 @@ class MethodDebugInfo
 static class ObjDumper
 {
     /// <summary>
-    /// Normalizes ?A0x&lt;hash&gt; prefixes in names to ?A0x* since the hash depends
-    /// on compilation context (source file path) which differs between environments.
+    /// Normalizes compilation-context-dependent name suffixes so dumps compare equal
+    /// across environments and architectures:
+    ///   ?A0x&lt;hex&gt;.   → ?A0x*.    (anonymous namespace hash depends on source path)
+    ///   $SG&lt;digits&gt;  → $SG*      (MSVC anonymous string-literal COFF counter is
+    ///                                  per-arch, e.g. $SG7982 on x64 vs $SG8554 on arm64
+    ///                                  for the same source file)
     /// </summary>
     static string NormalizeName(string name)
     {
@@ -474,9 +478,23 @@ static class ObjDumper
                 // Verify the part between ?A0x and . is hex
                 string hashPart = name.Substring(idx + 4, dotIdx - idx - 4);
                 if (hashPart.Length > 0 && hashPart.All(c => "0123456789abcdef".Contains(c)))
-                    return name.Substring(0, idx) + "?A0x*" + name.Substring(dotIdx);
+                    name = name.Substring(0, idx) + "?A0x*" + name.Substring(dotIdx);
             }
         }
+
+        // Replace $SG<digits> with $SG*. Match anywhere in the string (handles both
+        // bare `$SG1234` and the x86-decorated `_$SG1234` form).
+        int sgIdx = name.IndexOf("$SG", StringComparison.Ordinal);
+        if (sgIdx >= 0)
+        {
+            int digitStart = sgIdx + 3;
+            int digitEnd = digitStart;
+            while (digitEnd < name.Length && name[digitEnd] >= '0' && name[digitEnd] <= '9')
+                digitEnd++;
+            if (digitEnd > digitStart)
+                name = name.Substring(0, sgIdx) + "$SG*" + name.Substring(digitEnd);
+        }
+
         return name;
     }
 
