@@ -1,14 +1,18 @@
 # Scenarios
 
-This directory contains small C programs compiled with MSVC's `/clr:pure` option, alongside C# emitters that produce functionally equivalent COFF object files using our emitter library (`chibil/coffobjectemitter.cs`). An xUnit test suite validates that the emitted `.obj` files match the MSVC reference objects.
+This directory contains small C programs compiled with MSVC's `/clr` option (mixed-mode IJW), alongside C# emitters that produce functionally equivalent COFF object files using our emitter library (`chibil/coffobjectemitter.cs`). An xUnit test suite validates that the emitted `.obj` files match the MSVC reference objects.
 
 ## Goal
 
-Understand the metadata, IL, and CodeView debug information that the MSVC C++ compiler emits for `/clr:pure` managed object files, and replicate it well enough that:
+Understand the metadata, IL, and CodeView debug information that the MSVC C++ compiler emits for `/clr` managed object files, and replicate it well enough that:
 
 1. **`link.exe`** can link our emitted `.obj` into a working managed executable
 2. **ILDASM** produces the same disassembly as the MSVC-linked executable
 3. **The PDB** contains the same debug symbols, line numbers, and source file references (enough for a debugger to step through source)
+
+`main-argv.c` is the one exception that still uses `/clr:pure /TP` — it
+exercises chibil's `__CxxPureMSILEntry` C++ frontend entry-point shim,
+which is not generated under `/clr /BC`.
 
 ## File layout
 
@@ -43,7 +47,7 @@ Each `.cs` file is a `[Theory]` with `[InlineData(Machine.I386)]`, `[InlineData(
 `ObjDumper.DumpForComparison()` produces a normalized text dump covering:
 
 - **TypeDefs** — name, flags, base type, layout, custom attributes
-- **Fields** — name, flags, RVA data bytes (or resolved token references for `.CRTMA` data), custom attributes
+- **Fields** — name, flags, RVA data bytes, custom attributes
 - **Method bodies** — flags, code size, locals (yes/no), full IL with resolved tokens
 - **Debug symbols** — S_COMPILE3 (language, machine, compiler version), S_GMANPROC (code length, proc name), S_FRAMEPROC (frame/pad/saveRegs), S_MANSLOT (slot index, variable name), S_BLOCK32 (relative offset, length)
 - **Line numbers** — per method, source filename, checksum, line-to-offset mappings
@@ -78,18 +82,24 @@ Keep it small. Focus on one language feature (struct, pointer, function call, st
 ### 2. Compile with MSVC for each architecture
 
 ```
-cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC foo.c
+cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC foo.c
 ```
 
 Key compiler switches:
-- `/clr:pure` — generate pure MSIL (no native code)
+- `/clr` — generate mixed-mode IJW MSIL (managed code with native-callable thunks)
 - `/c` — compile only, don't link (emit `.obj` file)
 - `/BC` — undocumented: treat input as C instead of C++
 - `/Z7` — embed CodeView debug info in the `.obj` (not a separate `.pdb`)
 - `/Zl` — omit default library references
-- `/d1clrNoPureCRT` — suppress pure-mode CRT dependencies
+- `/d1clrNoPureCRT` — suppress pure-mode CRT dependencies (still useful under `/clr` to avoid pulling in `vcruntime`)
 
-Some scenarios intentionally compile as C++ with `/TP` instead of C with `/BC`. Use `/TP` when the MSVC C frontend cannot emit the behavior being studied, especially C++ frontend generated entry-point plumbing such as `__CxxPureMSILEntry` for `main`. Those generated methods are compared by the tests; do not filter them as boilerplate.
+Some scenarios intentionally compile as C++ with `/TP` instead of C with
+`/BC`. Use `/TP` when the MSVC C frontend cannot emit the behavior being
+studied, especially C++ frontend generated entry-point plumbing such as
+`__CxxPureMSILEntry` for `main` (only generated under `/clr:pure /TP` —
+this is why `main-argv.c` is the one scenario kept on `/clr:pure`). Those
+generated methods are compared by the tests; do not filter them as
+boilerplate.
 
 Place the resulting `.obj` files in `reference/foo/x86/`, `reference/foo/x64/`, and `reference/foo/arm64/`.
 
@@ -105,7 +115,7 @@ This reveals TypeDefs, TypeRefs, MethodDefs, FieldDefs, MemberRefs, signatures, 
 
 **coffobjdumper** — shows IL with resolved tokens, plus the CodeView debug info:
 ```
-dotnet run coffobjdumper.cs foo.obj
+dotnet run tools/coffobjdumper.cs foo.obj
 ```
 This shows the actual IL bytes (with COFF token relocations applied), the `.debug$S` symbol records, line numbers, and file checksums.
 
@@ -159,12 +169,15 @@ dotnet test CoffEmitterTests.csproj
 
 For manual validation, you can also link and compare:
 ```
-link.exe /debug /entry:main /subsystem:console foo.obj /out:foo_ours.exe
+link.exe /debug /entry:main /subsystem:console foo.obj mscoree.lib /out:foo_ours.exe
 ildasm foo_ours.exe /out=foo_ours.il /nobar
 ildasm foo.exe /out=foo_msvc.il /nobar
 ```
 
-For `/TP` scenarios that rely on `__CxxPureMSILEntry`, link with `minicrt.obj` and let its `mainCRTStartup` call the generated entry shim rather than forcing `/entry:main`.
+`/clr` objects need `mscoree.lib` at link time so the linker can resolve
+the CLR loader bootstrap. The `/clr:pure /TP` main-argv scenario links
+without `mscoree.lib` and lets `minicrt.obj`'s `mainCRTStartup` call the
+generated entry shim rather than forcing `/entry:main`.
 
 ## Design decisions
 
@@ -193,7 +206,7 @@ When a function has multiple `{ }` blocks with their own local variables (like `
 Fat method bodies (those with locals, maxStack > 8, or exception handlers) require 4-byte alignment. The emitter handles this automatically. When multiple methods are in the same `.text$mn` section, the COFF symbol for each method must have the correct `Value` (offset within the section) — the emitter sets this via `AddFunctionClrToken`.
 
 ### COFF symbol ordering matters
-`AddDataClrToken` and `AddExternalClrToken` must be called **before** emitting IL that references the same metadata tokens. This is because IL token references create CLR token COFF symbols via `GetOrAddCoffSymbol`, which caches by name. If the IL emission creates the symbol first (at section 0), the later `AddDataClrToken` call is a no-op — it gets the cached version. Pre-registering the symbol ensures the correct section number is used.
+`AddDataClrToken` and `AddExternalClrToken` must be called **before** emitting IL that references the same metadata tokens. The IL writer creates an undefined CLR-token COFF symbol on first reference; if `AddDataClrToken` is then asked to define the same token it throws "CLR token symbol 'XXXXXXXX' for data '...' was already created as undefined. Register data tokens before emitting IL that references them." Always pre-register data slots before their first IL reference.
 
 ### Architecture parameterization (x86 vs x64 vs ARM64)
 Each `.cs` test receives `Machine` as a parameter. The distinction is primarily 32-bit vs 64-bit — x64 and ARM64 share the same codegen for all aspects below:
@@ -202,21 +215,15 @@ Each `.cs` test receives `Machine` as a parameter. The distinction is primarily 
 |--------|-----|-------|
 | mscorlib hash | `32 CD 81 47...` | `28 DC 37 8B...` |
 | Pointer arithmetic IL | no `conv.i8` | `conv.i8` after integer constants |
+| Pointer-parameter mangling in COFF names | `PA<X>` / `PB<X>` | `PEA<X>` / `PEB<X>` (`E` = `__ptr64`) |
 | Calling convention (pinvoke) | `CallConvStdcall` | `CallConvCdecl` |
 | Decorated names (pinvoke) | `PAX`, `J216YGH` | `PEAX`, `J0YAH` |
-| CRTMA slot size | 4 bytes | 8 bytes |
-| CRTMA section alignment | Align4Bytes | Align8Bytes |
 | `<alignment member>` field (struct) | not emitted | emitted |
 | CodeView machine | `I386` | `Amd64` / `Arm64` |
+| MSVC NEP thunk section | `.text$mn` | `.text$mn` on ARM64, `.nep` on x64 |
 
-### .CRTMA section and global variable initializers
-The `init.c` scenario demonstrates global variables with initializers (e.g., `char* str = "Hello!"`). The MSVC compiler generates:
-1. An initializer function `??__Estr` that sets `str = &"Hello!"`
-2. A `.CRTMA$XCC` section containing a function pointer (CLR token relocation) to `??__Estr`
-3. The `.CRTMA$XCC` data is merged alphabetically by the linker with `.CRTMA$XCA` (start sentinel) and `.CRTMA$XCZ` (end sentinel) from `minicrt.obj`
-4. The module constructor (`.cctor` in `minicrt.obj`) iterates this table and calls each non-null function pointer
-
-**Critical:** The `.CRTMA$XCC` section alignment must match pointer size (4 bytes on x86, 8 bytes on ARM64). Incorrect alignment inserts padding gaps that break the table iteration.
+### Global variable initializers
+The `init.c` scenario demonstrates global variables with initializers (e.g., `char* str = "Hello!"`). Under `/clr /BC`, MSVC handles these with the standard managed `FieldRVA` + `.data` + ADDR-reloc pattern: the global's field gets `HasFieldRVA` and an entry in the field-RVA table, the `.data` section carries the initial bytes (or zeros for common symbols), and a reloc points to whatever the initializer references (a string literal in `init.c`'s case, the address of a managed entry in `global-advanced.c`'s `m = &get`).
 
 ## Tools reference
 
