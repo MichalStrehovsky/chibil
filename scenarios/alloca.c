@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC alloca.c
-// LINK: link alloca.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC alloca.c
+// LINK: link alloca.obj mscoree.lib /incremental:no /debug /entry:main /subsystem:console
 
 void* _alloca(unsigned int);
 
