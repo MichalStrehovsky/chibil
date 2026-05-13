@@ -511,6 +511,8 @@ static class ObjDumper
         var sb = new StringBuilder();
         var coff = CoffFile.Parse(objData);
 
+        DumpObjectFeatures(sb, coff);
+
         var cormetaSection = coff.FindSection(".cormeta");
         if (cormetaSection == null)
             throw new InvalidOperationException("No .cormeta section found");
@@ -531,6 +533,36 @@ static class ObjDumper
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Extracts the <c>@feat.00</c> COFF symbol and reports whether it
+    /// classifies the object as <c>PureMsil</c> (pure-MSIL, <c>/clr:pure</c>)
+    /// or <c>None</c> (mixed-mode <c>/clr</c>, native, or unspecified).
+    /// MSVC encodes a pile of other flags in <c>@feat.00</c> (SafeSEH,
+    /// CompilerVersion-style bits, etc.); we only surface the
+    /// <c>PureMsil</c> bit (<c>0x0002</c>) because that's the one that
+    /// must match between our emitted <c>.obj</c> and the MSVC reference
+    /// — getting it wrong corrupts the linker's understanding of which
+    /// CLR loader path the object needs. The other bits differ
+    /// per-architecture and per-compiler-release and aren't part of the
+    /// chibil emitter's surface.
+    /// </summary>
+    static void DumpObjectFeatures(StringBuilder sb, CoffFile coff)
+    {
+        sb.AppendLine("=== ObjectFeatures ===");
+        string features = "None";
+        foreach (var sym in coff.Symbols)
+        {
+            if (sym.Name == "@feat.00")
+            {
+                if ((sym.Value & 0x0002) != 0)
+                    features = "PureMsil";
+                break;
+            }
+        }
+        sb.AppendLine($"  {features}");
+        sb.AppendLine();
     }
 
     // ─── TypeDefs ─────────────────────────────────────────────────────────
