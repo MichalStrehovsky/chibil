@@ -116,8 +116,8 @@ public class MainArgvTest
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
         codeviewSymbols.AddObjNameAndCompile3("main-argv.obj",
             language: CodeViewLanguage.Cpp, machine: cvMachine,
-            feMajor: 19, feMinor: 50, feBuild: 35729,
-            beMajor: 19, beMinor: 50, beBuild: 35729,
+            feMajor: 19, feMinor: 50, feBuild: 35730,
+            beMajor: 19, beMinor: 50, beBuild: 35730,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
@@ -137,7 +137,7 @@ public class MainArgvTest
             var lbl_else = enc.DefineLabel();
             var lbl_end = enc.DefineLabel();
 
-            enc.MarkLineNumber(cvFile, 11);
+            enc.MarkLineNumber(cvFile, 15);
             enc.OpCode(ILOpCode.Ldc_i4_0);           // IL_0000
             enc.OpCode(ILOpCode.Stloc_0);            // IL_0001
             enc.OpCode(ILOpCode.Ldarg_0);            // IL_0002: argc
@@ -145,7 +145,7 @@ public class MainArgvTest
             enc.Branch(ILOpCode.Ble_s, lbl_else);    // IL_0004: if argc <= 1 goto else
 
             // argv[1][0]
-            enc.MarkLineNumber(cvFile, 12);
+            enc.MarkLineNumber(cvFile, 16);
             enc.OpCode(ILOpCode.Ldarg_1);            // IL_0006: argv
             if (machine == Machine.I386)
             {
@@ -175,12 +175,12 @@ public class MainArgvTest
             enc.Branch(ILOpCode.Br_s, lbl_end);
 
             enc.MarkLabel(lbl_else);
-            enc.MarkLineNumber(cvFile, 13);
+            enc.MarkLineNumber(cvFile, 17);
             enc.OpCode(ILOpCode.Ldc_i4_0);
             enc.OpCode(ILOpCode.Stloc_0);
 
             enc.MarkLabel(lbl_end);
-            enc.MarkLineNumber(cvFile, 14);
+            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
@@ -198,7 +198,7 @@ public class MainArgvTest
                 new BlobBuilder(), new MethodRelocationBuilder(),
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
-            enc.MarkLineNumber(cvFile, 14);
+            enc.MarkLineNumber(cvFile, 18);
             enc.OpCode(ILOpCode.Ldarg_0);             // IL_0000: argc
             enc.OpCode(ILOpCode.Ldarg_1);             // IL_0001: argv
             enc.Call(mainMethod);                      // IL_0002: call main
