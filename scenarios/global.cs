@@ -333,7 +333,7 @@ public class GlobalTest
             nepRelocs.WriteUInt16(0x0004);
             nepRelocs.WriteInt32(thunkOffset + 4);
             nepRelocs.WriteInt32(mepDataSym._value);
-            nepRelocs.WriteUInt16(0x0006);
+            nepRelocs.WriteUInt16(0x0007);
         }
         else
         {

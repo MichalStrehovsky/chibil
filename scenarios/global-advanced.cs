@@ -264,10 +264,10 @@ public class GlobalAdvancedTest
                 nepRelocBuilder.WriteInt32(thunkOff + 0);
                 nepRelocBuilder.WriteInt32(mepDataSym._value);
                 nepRelocBuilder.WriteUInt16(0x0004);
-                // IMAGE_REL_ARM64_PAGEOFFSET_12L = 0x0006 (at thunkOff+4)
+                // IMAGE_REL_ARM64_PAGEOFFSET_12L = 0x0007 (at thunkOff+4)
                 nepRelocBuilder.WriteInt32(thunkOff + 4);
                 nepRelocBuilder.WriteInt32(mepDataSym._value);
-                nepRelocBuilder.WriteUInt16(0x0006);
+                nepRelocBuilder.WriteUInt16(0x0007);
             }
             else
             {

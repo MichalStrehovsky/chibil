@@ -104,7 +104,7 @@ internal static class ClrIjw
             nepRelocs.WriteUInt16(0x0004);                                  // IMAGE_REL_ARM64_PAGEBASE_REL21
             nepRelocs.WriteInt32(thunkOffset + 4);
             nepRelocs.WriteInt32(mepDataSym._value);
-            nepRelocs.WriteUInt16(0x0006);                                  // IMAGE_REL_ARM64_PAGEOFFSET_12L
+            nepRelocs.WriteUInt16(0x0007);                                  // IMAGE_REL_ARM64_PAGEOFFSET_12L
         }
         else
         {
