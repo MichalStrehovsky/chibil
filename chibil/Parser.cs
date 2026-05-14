@@ -1703,6 +1703,28 @@ public class Parser
             if (fn.IsDefinition && Util.Equal(tok, "{")) Util.ErrorTok(tok, $"redefinition of {nameStr}");
             if (!fn.IsStatic && attr.IsStatic) Util.ErrorTok(tok, "static declaration follows a non-static declaration");
             fn.IsDefinition = fn.IsDefinition || Util.Equal(tok, "{");
+
+            // MSIL unprototyped function handling:
+            //
+            // In old C, `void f()` declares a function with *unspecified* parameters
+            // (not "no parameters"). The parser sets IsVariadic=true, Params=null for
+            // these. In native code this works because the caller pushes args onto the
+            // stack and the callee pops what it expects — the ABI doesn't enforce
+            // signature matching.
+            //
+            // In MSIL, call-site signatures must exactly match the callee's MethodDef
+            // signature. There is no way to emit a correct call to an unprototyped
+            // function without knowing its actual parameters. This makes cross-TU
+            // unprototyped calls fundamentally unsupportable:
+            //
+            //   // tu1.c: void f(); void g() { f(42); }  — can't emit matching sig
+            //   // tu2.c: void f(int x) { ... }           — definition expects int
+            //
+            // For the same-TU case (forward decl followed by definition), we update
+            // fn.Ty here so the MethodDef gets the correct signature from the
+            // definition. For cross-TU, the linker will reject mismatched signatures.
+            if (Util.Equal(tok, "{"))
+                fn.Ty = ty;
         }
         else
         {
