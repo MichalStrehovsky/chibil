@@ -463,8 +463,10 @@ public class CodeGen
     {
         CType funcTy = fn.Ty;
         string cc = funcTy.CallConv == CallConv.Clrcall ? "M" : "A";
+        // Static functions get TU-hash-scoped names to avoid cross-TU collisions
+        string name = fn.IsStatic ? $"{fn.Name}_?A0x{_tuHash}" : fn.Name;
         var sb = new StringBuilder();
-        sb.Append($"?{fn.Name}@@$$J0Y{cc}");
+        sb.Append($"?{name}@@$$J0Y{cc}");
         MangleType(sb, funcTy.ReturnTy, isReturn: true);
         int paramCount = 0;
         for (CType p = funcTy.Params; p != null; p = p.Next)
@@ -755,14 +757,10 @@ public class CodeGen
             RegisterFunction(fn);
         }
 
-        // Pass B: declared-only (extern) functions → MemberRef
-        for (Obj fn = prog; fn != null; fn = fn.Next)
-        {
-            if (!fn.IsFunction || fn.IsDefinition) continue;
-            if (_methodDefs.ContainsKey(fn)) continue;
-            if (_externalFuncRefs.ContainsKey(fn.Name)) continue;
-            RegisterExternalFunction(fn);
-        }
+        // Pass B: External function MemberRefs are created on-demand during IL emission
+        // (GenFunCall calls RegisterExternalFunction when it encounters a call to an
+        // undefined function). MSVC only emits MemberRefs for functions that actually
+        // appear in IL — declared-but-never-called functions don't get MemberRefs.
     }
 
     private void RegisterFunction(Obj fn)
@@ -931,7 +929,7 @@ public class CodeGen
     {
         foreach (string funcName in _addressTakenFuncs)
         {
-            // Find the function to get its mangled name
+            // Find the function (defined or extern)
             Obj fn = null;
             for (Obj f = prog; f != null; f = f.Next)
             {
@@ -940,7 +938,7 @@ public class CodeGen
                     fn = f; break;
                 }
             }
-            if (fn == null || !_methodDefs.ContainsKey(fn)) continue;
+            if (fn == null) continue;
 
             string mangledName = MangleFunctionName(fn);
             string unepName = $"__unep@{mangledName}";
@@ -2284,27 +2282,44 @@ public class CodeGen
         for (Obj fn = prog; fn != null; fn = fn.Next)
         {
             if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
-            if (fn.IsStatic) continue; // static functions don't get NEP exports
 
             var methodDef = _methodDefs[fn];
             string mangledName = MangleFunctionName(fn);
 
-            var bareSym = EmitNepForMethod(
-                MetadataTokens.GetToken(methodDef), fn.Name, mangledName);
+            // Static functions use TU-hash-scoped bare names to avoid cross-TU collisions
+            string bareName = fn.IsStatic ? $"{fn.Name}_?A0x{_tuHash}" : fn.Name;
 
-            // If function address is taken and it's cdecl, emit __unep@ slot
+            var bareSym = EmitNepForMethod(
+                MetadataTokens.GetToken(methodDef), bareName, mangledName);
+
+            // Also store under original name for __unep@ relocation lookup
+            if (fn.IsStatic && !_nepBareNameSymbols.ContainsKey(fn.Name))
+                _nepBareNameSymbols[fn.Name] = bareSym;
+
             if (fn.Ty.CallConv != CallConv.Clrcall && _addressTakenFuncs.Contains(fn.Name))
             {
                 EmitUnepSlot(fn, bareSym);
             }
         }
 
-        // NEP for __CxxPureMSILEntry if it exists
+        // NEP for __CxxPureMSILEntry
         if (_hasMain)
         {
             string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
             EmitNepForMethod(
                 MetadataTokens.GetToken(_cxxPureMsilEntry), "__CxxPureMSILEntry", mangledName);
+        }
+
+        // Emit ADDR relocs for extern __unep@ fields (not defined in this TU)
+        foreach (var (funcName, _) in _unepFields)
+        {
+            if (_nepBareNameSymbols.ContainsKey(funcName)) continue; // already handled by local NEP
+            if (!_unepSlotOffsets.TryGetValue(funcName, out int slotOffset)) continue;
+
+            // Create an undefined external bare-name symbol — linker resolves from defining TU
+            var externBareSym = _symtab.AddUndefinedExternalSymbol(SymPrefix + funcName);
+            new CoffRelocationEncoder(_coffHeader, _dataRelocs)
+                .AddAddressRelocation(slotOffset, externBareSym);
         }
     }
 

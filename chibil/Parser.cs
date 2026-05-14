@@ -374,6 +374,9 @@ public class Parser
         CallConv callConv = ParseCallConv(ref tok);
         if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
         ty = Pointers(ref tok, tok, ty);
+        // Calling convention can also appear after pointers (e.g., void* __stdcall fn())
+        CallConv cc2 = ParseCallConv(ref tok);
+        if (cc2 != CallConv.Cdecl) callConv = cc2;
         if (Util.Equal(tok, "("))
         {
             Token start = tok;
@@ -396,6 +399,8 @@ public class Parser
         CallConv callConv = ParseCallConv(ref tok);
         if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
         ty = Pointers(ref tok, tok, ty);
+        CallConv cc2 = ParseCallConv(ref tok);
+        if (cc2 != CallConv.Cdecl) callConv = cc2;
         if (Util.Equal(tok, "("))
         {
             Token start = tok;
@@ -687,9 +692,16 @@ public class Parser
                 if (node.Var.Ty.Kind != TypeKind.Array && node.Var.Ty.Kind != TypeKind.Func) Util.ErrorTok(node.Tok, "invalid initializer");
                 { Obj v = node.Var; label = () => v.Name; }
                 return 0;
+            case NodeKind.Deref:
+                // Array subscript on global: *(arr + i) where result is array type (decays to pointer)
+                if (Unsafe.IsNullRef(ref label)) Util.ErrorTok(node.Tok, "not a compile-time constant");
+                if (node.Ty.Kind == TypeKind.Array || node.Ty.Kind == TypeKind.Func)
+                    return Eval2(node.Lhs, out label);
+                Util.ErrorTok(node.Tok, "not a compile-time constant");
+                return 0;
             case NodeKind.Num: return node.Val;
         }
-        Util.ErrorTok(node.Tok, "not a compile-time constant");
+        Util.ErrorTok(node.Tok, $"not a compile-time constant (node={node.Kind})");
         return 0;
     }
 

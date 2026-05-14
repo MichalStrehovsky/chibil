@@ -10,12 +10,12 @@ REM    build.cmd bmp         - build the reproducible BMP harness
 REM    build.cmd checksum    - build the reproducible checksum validator
 REM
 REM  Prerequisites:
-REM    - Visual Studio with C++ and /clr:pure support (run from VS Developer Prompt)
+REM    - Visual Studio with C++ and /clr support (run from VS Developer Prompt)
 REM    - .NET SDK (for dotnet run)
 REM    - PureDOOM submodule initialized (git submodule update --init)
 REM
 REM  This script builds:
-REM    obj\minicrt.obj  - Managed CRT with .cctor support (compiled with cl /clr:pure)
+REM    obj\minicrt.obj  - Managed CRT with .cctor support (compiled with cl /clr)
 REM    bin\pal.dll      - Platform Abstraction Layer DLL for windowed mode
 REM    obj\pal.lib      - Import library for pal.dll in windowed mode
 REM    obj\pal.obj      - Managed PAL object in harness modes
@@ -53,10 +53,10 @@ REM --------------------------------------------------------------------------
 REM  Step 1: Build minicrt.obj (managed CRT with .cctor iterator)
 REM --------------------------------------------------------------------------
 echo [1/4] Building minicrt.obj...
-cl /c /Z7 /Zl /clr:pure ..\..\scenarios\minicrt.cc /Foobj\minicrt.obj >nul 2>&1
+cl /c /Z7 /Zl /clr ..\..\scenarios\minicrt.cc /Foobj\minicrt.obj >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Failed to compile minicrt.cc
-    echo Make sure you are running from a VS Developer Command Prompt with /clr:pure support.
+    echo Make sure you are running from a VS Developer Command Prompt with /clr support.
     exit /b 1
 )
 
@@ -65,7 +65,7 @@ REM  Step 2: Build PAL
 REM --------------------------------------------------------------------------
 if "%HARNESS_BUILD%"=="1" (
     echo [2/4] Compiling pal.c with chibil...
-    dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -cc1-input pal.c -cc1-output obj\pal.obj
+    dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -D_WIN64 -cc1-input pal.c -cc1-output obj\pal.obj
     if errorlevel 1 (
         echo ERROR: Failed to compile pal.c with chibil
         exit /b 1
@@ -88,7 +88,7 @@ REM --------------------------------------------------------------------------
 REM  Step 3: Compile doom.c with chibil (C -> MSIL COFF .obj)
 REM --------------------------------------------------------------------------
 echo [3/4] Compiling doom.c with chibil...
-dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -cc1-input doom.c -cc1-output obj\doom.obj
+dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -D_WIN64 -cc1-input doom.c -cc1-output obj\doom.obj
 if errorlevel 1 (
     echo ERROR: Failed to compile doom.c with chibil
     exit /b 1
@@ -100,11 +100,11 @@ REM --------------------------------------------------------------------------
 echo [4/4] Linking doom.exe...
 if "%HARNESS_BUILD%"=="1" (
     link /nologo /DEBUG /subsystem:console obj\doom.obj obj\pal.obj obj\minicrt.obj kernel32.lib ^
-         /include:?.cctor@@$$FYMXXZ ^
+         mscoree.lib ^
          /out:bin\doom.exe
 ) else (
     link /nologo /DEBUG /subsystem:console obj\doom.obj obj\minicrt.obj obj\pal.lib ^
-         /include:?.cctor@@$$FYMXXZ ^
+         mscoree.lib ^
          /out:bin\doom.exe
 )
 if errorlevel 1 (

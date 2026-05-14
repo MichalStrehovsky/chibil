@@ -2013,6 +2013,15 @@ namespace System.Reflection.PortableExecutable
         }
 
         /// <summary>
+        /// Adds an undefined external symbol (Sect=0, Value=0) for a symbol
+        /// defined in another translation unit. The linker resolves it at link time.
+        /// </summary>
+        public CoffSymbolHandle AddUndefinedExternalSymbol(string name)
+        {
+            return GetOrAddCoffSymbol(name, 0, 0, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0);
+        }
+
+        /// <summary>
         /// Adds a "common" data symbol for an uninitialized global — a Sect=0
         /// External symbol whose Value field holds the symbol's size in bytes
         /// (per the COFF spec; the linker allocates space at link time). Used
