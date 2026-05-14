@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 
-namespace Chibil;
+namespace Chibicc;
 
 /// <summary>
 /// Driver — port of main.c.
@@ -33,7 +33,7 @@ public class Driver
 
         if (_optCc1)
         {
-            AddDefaultIncludePaths(args.Length > 0 ? args[0] : "chibil");
+            AddDefaultIncludePaths(args.Length > 0 ? args[0] : "chibicc");
             Cc1(tokenizer, _preprocessor);
             return;
         }
@@ -63,7 +63,7 @@ public class Driver
             string output;
             if (_optO != null) output = _optO;
             else if (_optS) output = ReplaceExtn(input, ".s");
-            else output = ReplaceExtn(input, ".obj");
+            else output = ReplaceExtn(input, ".o");
 
             FileType type = GetFileType(input);
 
@@ -92,7 +92,7 @@ public class Driver
         }
 
         if (ldArgs.Count > 0)
-            RunLinker(ldArgs, _optO ?? "a.exe");
+            RunLinker(ldArgs, _optO ?? "a.out");
 
         Cleanup();
     }
@@ -108,7 +108,7 @@ public class Driver
         // Validate that arg-taking options have an argument
         for (int i = 0; i < args.Length; i++)
             if (TakeArg(args[i]) && i + 1 >= args.Length)
-            { Console.Error.WriteLine("chibil [ -o <path> ] <file>"); Environment.Exit(1); }
+            { Console.Error.WriteLine("chibicc [ -o <path> ] <file>"); Environment.Exit(1); }
 
         var idirafter = new List<string>();
 
@@ -117,7 +117,7 @@ public class Driver
             string arg = args[i];
             if (arg == "-###") { _optHashHashHash = true; continue; }
             if (arg == "-cc1") { _optCc1 = true; continue; }
-            if (arg == "--help") { Console.Error.WriteLine("chibil [ -o <path> ] <file>"); Environment.Exit(0); }
+            if (arg == "--help") { Console.Error.WriteLine("chibicc [ -o <path> ] <file>"); Environment.Exit(0); }
             if (arg == "-o") { _optO = args[++i]; continue; }
             if (arg.StartsWith("-o") && arg.Length > 2) { _optO = arg[2..]; continue; }
             if (arg == "-S") { _optS = true; continue; }
@@ -188,7 +188,7 @@ public class Driver
     private FileType ParseOptX(string s) => s switch
     {
         "c" => FileType.C, "assembler" => FileType.Asm, "none" => FileType.None,
-        _ => throw new ChibiException($"unknown argument for -x: {s}")
+        _ => throw new ChibiccException($"unknown argument for -x: {s}")
     };
 
     private string QuoteMakefile(string s)
@@ -230,7 +230,7 @@ public class Driver
         if (_optX != FileType.None) return _optX;
         if (filename.EndsWith(".a")) return FileType.Ar;
         if (filename.EndsWith(".so")) return FileType.Dso;
-        if (filename.EndsWith(".obj")) return FileType.Obj;
+        if (filename.EndsWith(".o")) return FileType.Obj;
         if (filename.EndsWith(".c")) return FileType.C;
         if (filename.EndsWith(".s")) return FileType.Asm;
         Util.Error($"unknown file extension: {filename}");
@@ -328,15 +328,44 @@ public class Driver
 
     private void Assemble(string input, string output)
     {
-        // No separate assembly step needed for MSIL — the .obj is produced directly by cc1
-        File.Copy(input, output, true);
+        RunSubprocess(new[] { "as", "-c", input, "-o", output });
     }
 
     private void RunLinker(List<string> inputs, string output)
     {
-        var arr = new List<string> { "link.exe", "/DEBUG", "/subsystem:console", $"/out:{output}" };
+        var arr = new List<string> { "ld", "-o", output, "-m", "elf_x86_64" };
+        string libpath = FindLibpath();
+        string gccLibpath = FindGccLibpath();
+
+        if (_optShared)
+        {
+            arr.Add($"{libpath}/crti.o");
+            arr.Add($"{gccLibpath}/crtbeginS.o");
+        }
+        else
+        {
+            arr.Add($"{libpath}/crt1.o");
+            arr.Add($"{libpath}/crti.o");
+            arr.Add($"{gccLibpath}/crtbegin.o");
+        }
+
+        arr.Add($"-L{gccLibpath}");
+        arr.Add("-L/usr/lib/x86_64-linux-gnu");
+        arr.Add("-L/usr/lib64"); arr.Add("-L/lib64");
+        arr.Add("-L/usr/lib"); arr.Add("-L/lib");
+
+        if (!_optStatic) { arr.Add("-dynamic-linker"); arr.Add("/lib64/ld-linux-x86-64.so.2"); }
+
         arr.AddRange(LdExtraArgs);
         arr.AddRange(inputs);
+
+        if (_optStatic) { arr.Add("--start-group"); arr.Add("-lgcc"); arr.Add("-lgcc_eh"); arr.Add("-lc"); arr.Add("--end-group"); }
+        else { arr.Add("-lc"); arr.Add("-lgcc"); arr.Add("--as-needed"); arr.Add("-lgcc_s"); arr.Add("--no-as-needed"); }
+
+        if (_optShared) arr.Add($"{gccLibpath}/crtendS.o");
+        else arr.Add($"{gccLibpath}/crtend.o");
+        arr.Add($"{libpath}/crtn.o");
+
         RunSubprocess(arr.ToArray());
     }
 
@@ -425,12 +454,14 @@ public class Driver
         Obj prog = parser.Parse(tok);
 
         var codegen = new CodeGen(Options, tokenizer);
-        byte[] objBytes = codegen.Generate(prog, _outputFile ?? "output.obj");
+        var sw = new StringWriter();
+        codegen.Generate(prog, sw);
+        string asm = sw.ToString();
 
         if (_outputFile == null || _outputFile == "-")
-            Console.OpenStandardOutput().Write(objBytes, 0, objBytes.Length);
+            Console.Write(asm);
         else
-            File.WriteAllBytes(_outputFile, objBytes);
+            File.WriteAllText(_outputFile, asm);
     }
 
     private void PrintTokens(Token tok)

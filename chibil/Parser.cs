@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Text;
 
-namespace Chibil;
+namespace Chibicc;
 
 /// <summary>
 /// Recursive descent parser — port of parse.c.
@@ -115,13 +115,12 @@ public class Parser
         return v;
     }
 
-    private Obj NewAnonGvar(CType ty) => NewGvar($"__chibil_anon_{_uniqueId++}", ty);
+    private Obj NewAnonGvar(CType ty) => NewGvar(NewUniqueName(), ty);
 
     private Obj NewStringLiteral(byte[] str, CType ty)
     {
         Obj v = NewAnonGvar(ty);
         v.InitData = str;
-        v.IsStringLiteral = true;
         return v;
     }
 
@@ -275,7 +274,7 @@ public class Parser
                 (UNSIGNED + LONG + LONG + INT) => TypeSystem.TyUlong,
                 FLOAT => TypeSystem.TyFloat, DOUBLE => TypeSystem.TyDouble,
                 (LONG + DOUBLE) => TypeSystem.TyLdouble,
-                _ => throw new ChibiException($"invalid type")
+                _ => throw new ChibiccException($"invalid type")
             };
             tok = tok.Next;
         }
@@ -349,15 +348,6 @@ public class Parser
     private CType Declarator(ref Token rest, Token tok, CType ty)
     {
         ty = Pointers(ref tok, tok, ty);
-        // Track native calling convention keywords for mangling
-        bool isNativeCC = false;
-        while (Util.Equal(tok, "__cdecl") || Util.Equal(tok, "__stdcall") ||
-               Util.Equal(tok, "__clrcall") || Util.Equal(tok, "__fastcall"))
-        {
-            if (!Util.Equal(tok, "__clrcall"))
-                isNativeCC = true;
-            tok = tok.Next;
-        }
         if (Util.Equal(tok, "("))
         {
             Token start = tok;
@@ -365,15 +355,11 @@ public class Parser
             Declarator(ref tok, start.Next, dummy);
             tok = Util.Skip(tok, ")");
             ty = TypeSuffix(ref rest, tok, ty);
-            if (isNativeCC && ty.Kind == TypeKind.Func)
-                ty.IsNativeCallConv = true;
             return Declarator(ref tok, start.Next, ty);
         }
         Token name = null, namePos = tok;
         if (tok.Kind == TokenKind.Ident) { name = tok; tok = tok.Next; }
         ty = TypeSuffix(ref rest, tok, ty);
-        if (isNativeCC && ty.Kind == TypeKind.Func)
-            ty.IsNativeCallConv = true;
         ty.Name = name; ty.NamePos = namePos;
         return ty;
     }
@@ -381,14 +367,6 @@ public class Parser
     private CType AbstractDeclarator(ref Token rest, Token tok, CType ty)
     {
         ty = Pointers(ref tok, tok, ty);
-        bool isNativeCC = false;
-        while (Util.Equal(tok, "__cdecl") || Util.Equal(tok, "__stdcall") ||
-               Util.Equal(tok, "__clrcall") || Util.Equal(tok, "__fastcall"))
-        {
-            if (!Util.Equal(tok, "__clrcall"))
-                isNativeCC = true;
-            tok = tok.Next;
-        }
         if (Util.Equal(tok, "("))
         {
             Token start = tok;
@@ -396,14 +374,9 @@ public class Parser
             AbstractDeclarator(ref tok, start.Next, dummy);
             tok = Util.Skip(tok, ")");
             ty = TypeSuffix(ref rest, tok, ty);
-            if (isNativeCC && ty.Kind == TypeKind.Func)
-                ty.IsNativeCallConv = true;
             return AbstractDeclarator(ref tok, start.Next, ty);
         }
-        ty = TypeSuffix(ref rest, tok, ty);
-        if (isNativeCC && ty.Kind == TypeKind.Func)
-            ty.IsNativeCallConv = true;
-        return ty;
+        return TypeSuffix(ref rest, tok, ty);
     }
 
     private CType Typename(ref Token rest, Token tok)
@@ -682,13 +655,6 @@ public class Parser
                 if (Unsafe.IsNullRef(ref label)) Util.ErrorTok(node.Tok, "not a compile-time constant");
                 if (node.Var.Ty.Kind != TypeKind.Array && node.Var.Ty.Kind != TypeKind.Func) Util.ErrorTok(node.Tok, "invalid initializer");
                 { Obj v = node.Var; label = () => v.Name; }
-                return 0;
-            case NodeKind.Deref:
-                // Array subscript on global: *(arr + i) where result is array type (decays to pointer)
-                if (Unsafe.IsNullRef(ref label)) Util.ErrorTok(node.Tok, "not a compile-time constant");
-                if (node.Ty.Kind == TypeKind.Array || node.Ty.Kind == TypeKind.Func)
-                    return Eval2(node.Lhs, out label);
-                Util.ErrorTok(node.Tok, "not a compile-time constant");
                 return 0;
             case NodeKind.Num: return node.Val;
         }
@@ -1034,7 +1000,7 @@ public class Parser
         rest = Util.Skip(tok, ")");
         var node = NewUnary(NodeKind.FunCall, fn, tok);
         node.FuncTy = ty; node.Ty = ty.ReturnTy; node.Args = head.Next;
-        // MSIL returns structs by value on the eval stack — no RetBuffer needed
+        if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) node.RetBuffer = NewLvar("", node.Ty);
         return node;
     }
 
@@ -1142,9 +1108,9 @@ public class Parser
         {
             if (_currentSwitch == null) Util.ErrorTok(tok, "stray case");
             var node = NewNode(NodeKind.Case, tok);
-            long begin = ConstExpr(ref tok, tok.Next);
-            long end;
-            if (Util.Equal(tok, "...")) { end = ConstExpr(ref tok, tok.Next); if (end < begin) Util.ErrorTok(tok, "empty case range specified"); }
+            int begin = (int)ConstExpr(ref tok, tok.Next);
+            int end;
+            if (Util.Equal(tok, "...")) { end = (int)ConstExpr(ref tok, tok.Next); if (end < begin) Util.ErrorTok(tok, "empty case range specified"); }
             else end = begin;
             tok = Util.Skip(tok, ":"); node.Label = NewUniqueName(); node.Lhs = Stmt(ref rest, tok);
             node.Begin = begin; node.End = end; node.CaseNext = _currentSwitch.CaseNext; _currentSwitch.CaseNext = node; return node;
@@ -1544,7 +1510,6 @@ public class Parser
     private static CType CopyStructType(CType ty)
     {
         ty = TypeSystem.CopyType(ty);
-        ty.TypeId = CType.AllocateTypeId(); // fresh ID — this is a structurally different type
         Member head = new(), cur = head;
         for (Member mem = ty.Members; mem != null; mem = mem.Next)
         {
@@ -1680,34 +1645,6 @@ public class Parser
             if (fn.IsDefinition && Util.Equal(tok, "{")) Util.ErrorTok(tok, $"redefinition of {nameStr}");
             if (!fn.IsStatic && attr.IsStatic) Util.ErrorTok(tok, "static declaration follows a non-static declaration");
             fn.IsDefinition = fn.IsDefinition || Util.Equal(tok, "{");
-
-            // MSIL unprototyped function handling:
-            //
-            // In old C, `void f()` declares a function with *unspecified* parameters
-            // (not "no parameters"). The parser sets IsVariadic=true, Params=null for
-            // these. In native code this works because the caller pushes args onto the
-            // stack and the callee pops what it expects — the ABI doesn't enforce
-            // signature matching.
-            //
-            // In MSIL, call-site signatures must exactly match the callee's MethodDef
-            // signature. There is no way to emit a correct call to an unprototyped
-            // function without knowing its actual parameters. This makes cross-TU
-            // unprototyped calls fundamentally unsupportable:
-            //
-            //   // tu1.c: void f(); void g() { f(42); }  — can't emit matching sig
-            //   // tu2.c: void f(int x) { ... }           — definition expects int
-            //
-            // For the same-TU case (forward decl followed by definition), we update
-            // fn.Ty here so the MethodDef gets the correct signature from the
-            // definition. For cross-TU, the linker will reject mismatched signatures.
-            //
-            // CodeGen also special-cases this: `isRealVariadic` is defined as
-            // `fn.Ty.IsVariadic && fn.Ty.Params != null`, so empty-paren declarations
-            // (IsVariadic=true, Params=null) are treated as non-variadic DEFAULT
-            // calling convention with 0 params, not as VARARG. This matches C++
-            // semantics where `f()` means `f(void)`.
-            if (Util.Equal(tok, "{"))
-                fn.Ty = ty;
         }
         else
         {
@@ -1721,10 +1658,10 @@ public class Parser
         _currentFn = fn; _locals = null; EnterScope();
         CreateParamLvars(ty.Params);
         CType rty = ty.ReturnTy;
-        // MSIL returns structs by value — no hidden return buffer parameter
+        if ((rty.Kind == TypeKind.Struct || rty.Kind == TypeKind.Union) && rty.Size > 16) NewLvar("", TypeSystem.PointerTo(rty));
         fn.Params = _locals;
-        // MSIL varargs use the ECMA-335 vararg mechanism — no SysV va_area
-        // MSIL alloca uses localloc — no alloca bottom tracking
+        if (ty.IsVariadic) fn.VaArea = NewLvar("__va_area__", TypeSystem.ArrayOf(TypeSystem.TyChar, 136));
+        fn.AllocaBottom = NewLvar("__alloca_size__", TypeSystem.PointerTo(TypeSystem.TyChar));
         tok = Util.Skip(tok, "{");
         byte[] nameBytes = Encoding.UTF8.GetBytes(fn.Name);
         byte[] nameBytesNul = new byte[nameBytes.Length + 1];

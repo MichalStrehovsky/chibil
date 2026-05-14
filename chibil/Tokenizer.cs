@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace Chibil;
+namespace Chibicc;
 
 /// <summary>
 /// Tokenizer — port of tokenize.c.
@@ -133,8 +133,7 @@ public class Tokenizer
                 "unsigned", "const", "volatile", "auto", "register", "restrict",
                 "__restrict", "__restrict__", "_Noreturn", "float", "double",
                 "typeof", "asm", "_Thread_local", "__thread", "_Atomic",
-                "__attribute__", "__cdecl", "__stdcall", "__clrcall", "__fastcall",
-                "inline", "_inline", "__inline",
+                "__attribute__",
             };
             foreach (string k in kw)
                 _keywordMap[k] = true;

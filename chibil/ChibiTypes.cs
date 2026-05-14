@@ -1,7 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
-namespace Chibil;
+namespace Chibicc;
 
 // ═══════════════════════════════════════════════════════════════════
 //  Enums
@@ -93,11 +93,6 @@ public class Hideset
 
 public class CType
 {
-    private static int _nextTypeId;
-    public int TypeId = System.Threading.Interlocked.Increment(ref _nextTypeId);
-
-    public static int AllocateTypeId() => System.Threading.Interlocked.Increment(ref _nextTypeId);
-
     public TypeKind Kind;
     public int Size;
     public int Align;
@@ -128,7 +123,6 @@ public class CType
     public CType ReturnTy;
     public CType Params;
     public bool IsVariadic;
-    public bool IsNativeCallConv; // true if declared __stdcall/__cdecl/__fastcall (not __clrcall)
     public CType Next;
 
     public CType() { }
@@ -199,7 +193,6 @@ public class Obj
     // Static inline function
     public bool IsLive;
     public bool IsRoot;
-    public bool IsStringLiteral; // true for string literals (immutable, can use HasFieldRVA)
     public List<string> Refs = new();
 }
 
@@ -390,10 +383,10 @@ public class CompilerOptions
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  ChibiException
+//  ChibiccException
 // ═══════════════════════════════════════════════════════════════════
 
-public class ChibiException : Exception
+public class ChibiccException : Exception
 {
-    public ChibiException(string message) : base(message) { }
+    public ChibiccException(string message) : base(message) { }
 }

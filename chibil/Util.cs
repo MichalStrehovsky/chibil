@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
-namespace Chibil;
+namespace Chibicc;
 
 public static class Util
 {
@@ -62,7 +62,7 @@ public static class Util
     [DoesNotReturn]
     public static void Error(string msg)
     {
-        throw new ChibiException(msg);
+        throw new ChibiccException(msg);
     }
 
     [DoesNotReturn]
@@ -75,7 +75,7 @@ public static class Util
                 lineNo++;
 
         string formatted = FormatError(file.DisplayName ?? file.Name, buf, lineNo, loc, msg);
-        throw new ChibiException(formatted);
+        throw new ChibiccException(formatted);
     }
 
     [DoesNotReturn]
@@ -84,7 +84,7 @@ public static class Util
         string formatted = FormatError(
             tok.FileName ?? tok.File?.Name ?? "<unknown>",
             tok.Buf, tok.LineNo, tok.Loc, msg);
-        throw new ChibiException(formatted);
+        throw new ChibiccException(formatted);
     }
 
     public static void WarnTok(Token tok, string msg)
@@ -98,7 +98,7 @@ public static class Util
     [DoesNotReturn]
     public static void Unreachable()
     {
-        throw new ChibiException("internal error: unreachable");
+        throw new ChibiccException("internal error: unreachable");
     }
 
     private static string FormatError(string filename, byte[] buf, int lineNo, int loc, string msg)
