@@ -67,6 +67,9 @@ public class CodeGen
     // Tracks which functions have their address taken (need __unep@ slot)
     private readonly HashSet<string> _addressTakenFuncs = new();
 
+    // Bare-name NEP COFF symbols (func name → COFF symbol for the NEP thunk alias)
+    private readonly Dictionary<string, CoffSymbolHandle> _nepBareNameSymbols = new();
+
     // Anonymous global counter and TU hash
     private int _anonGlobalCounter;
     private string _tuHash;
@@ -2328,6 +2331,7 @@ public class CodeGen
 
         // (3) Bare-name COFF alias
         var bareSym = _symtab.AddExternalDataSymbol(SymPrefix + bareName, LogicalSection.Nep, thunkOffset);
+        _nepBareNameSymbols[bareName] = bareSym;
 
         // (4) ILFixup entry
         int ilfixupOffset = _ilFixupStream.Count;
@@ -2355,52 +2359,53 @@ public class CodeGen
     /// <summary>Maps __unep@ field name → pre-allocated offset in .data for the slot.</summary>
     private readonly Dictionary<string, int> _unepSlotOffsets = new();
 
-    private void EmitGlobalData(Obj prog)
+    /// <summary>Maps global Obj name → COFF data symbol handle for relocation targeting.</summary>
+    private readonly Dictionary<string, CoffSymbolHandle> _dataCoffSymbols = new();
+
+    /// <summary>Phase A: Write data bytes and register COFF data token symbols.
+    /// Must run before IL emission so token ordering is correct.</summary>
+    private void EmitGlobalDataBytesAndTokens(Obj prog)
     {
+        // Register all global data symbols
         for (Obj g = prog; g != null; g = g.Next)
         {
             if (g.IsFunction) continue;
             if (!g.IsDefinition) continue;
-
             if (!_fieldDefs.TryGetValue(g, out var fieldDef)) continue;
 
             if (g.InitData != null)
             {
-                // Initialized global → .data
                 int offset = _dataStream.Count;
-                _dataStream.WriteBytes(g.InitData);
 
-                _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Data, offset, out _);
-
-                // Emit relocations for pointer initializers
+                // Copy InitData, writing addends at relocation offsets
+                byte[] data = (byte[])g.InitData.Clone();
                 for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
                 {
-                    string targetName = rel.Label();
-                    // Find the COFF symbol for the target
-                    var targetSym = _symtab.GetOrAddUndefinedClrTokenSymbol(targetName);
-                    new CoffRelocationEncoder(_coffHeader, _dataRelocs)
-                        .AddAddressRelocation(offset + rel.Offset, targetSym);
+                    if (rel.Addend != 0)
+                        Util.WriteBuf(data, rel.Offset, rel.Addend, PtrSize);
                 }
+                _dataStream.WriteBytes(data);
+
+                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Data, offset, out _);
+                _dataCoffSymbols[g.Name] = coffSym;
             }
             else if (g.IsTentative)
             {
-                // Tentative definition → common symbol
-                _symtab.AddCommonDataClrToken(g.Name, fieldDef, g.Ty.Size, out _);
+                var coffSym = _symtab.AddCommonDataClrToken(g.Name, fieldDef, g.Ty.Size, out _);
+                _dataCoffSymbols[g.Name] = coffSym;
             }
             else
             {
-                // Zero-initialized → .bss
                 int bssOffset = _bssSize;
                 _bssSize = Util.AlignTo(_bssSize + g.Ty.Size, g.Align);
-
-                _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Bss, bssOffset, out _);
+                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Bss, bssOffset, out _);
+                _dataCoffSymbols[g.Name] = coffSym;
             }
         }
 
-        // Pre-allocate __unep@ data slots (must be before IL emission)
+        // Pre-allocate __unep@ data slots
         foreach (var (funcName, unepField) in _unepFields)
         {
-            // Find the function's mangled name
             Obj fn = null;
             for (Obj f = prog; f != null; f = f.Next)
                 if (f.IsFunction && f.Name == funcName) { fn = f; break; }
@@ -2414,6 +2419,48 @@ public class CodeGen
             _unepSlotOffsets[funcName] = slotOffset;
 
             _symtab.AddDataClrToken(unepName, unepField, LogicalSection.Data, slotOffset, out _);
+        }
+    }
+
+    /// <summary>Phase B: Write data relocations. Runs after NEP emission so
+    /// bare-name symbols are available as relocation targets.</summary>
+    private void EmitGlobalDataRelocations(Obj prog)
+    {
+        // Track cumulative offset through .data to match what Phase A wrote
+        int dataOffset = 0;
+        for (Obj g = prog; g != null; g = g.Next)
+        {
+            if (g.IsFunction) continue;
+            if (!g.IsDefinition) continue;
+            if (!_fieldDefs.ContainsKey(g)) continue;
+            if (g.InitData == null) continue;
+
+            int offset = dataOffset;
+            dataOffset += g.InitData.Length;
+
+            for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
+            {
+                string targetName = rel.Label();
+                CoffSymbolHandle targetSym;
+
+                if (_dataCoffSymbols.TryGetValue(targetName, out targetSym))
+                {
+                    // Data-to-data relocation (e.g., char* e = &hello[1])
+                }
+                else if (_nepBareNameSymbols.TryGetValue(targetName, out targetSym))
+                {
+                    // Function pointer relocation (e.g., int (*m)() = &get)
+                }
+                else
+                {
+                    // Unknown target — create as undefined external
+                    targetSym = _symtab.AddExternalDataSymbol(
+                        SymPrefix + targetName, LogicalSection.Data, 0);
+                }
+
+                new CoffRelocationEncoder(_coffHeader, _dataRelocs)
+                    .AddAddressRelocation(offset + rel.Offset, targetSym);
+            }
         }
     }
 
@@ -2543,8 +2590,8 @@ public class CodeGen
         // Pass 1: Metadata
         RegisterMetadata(prog, objName);
 
-        // Global data — MUST be registered before IL emission (token ordering)
-        EmitGlobalData(prog);
+        // Global data bytes + COFF token registration — BEFORE IL emission
+        EmitGlobalDataBytesAndTokens(prog);
 
         // Pass 2: IL Emission
         EmitFunctions(prog);
@@ -2552,8 +2599,11 @@ public class CodeGen
         // Post-pass: __CxxPureMSILEntry
         EmitCxxPureMSILEntry();
 
-        // NEP machinery
+        // NEP machinery (creates bare-name symbols for functions)
         EmitNepMachinery(prog);
+
+        // Global data relocations — AFTER NEP so bare-name symbols exist
+        EmitGlobalDataRelocations(prog);
 
         // Build COFF and serialize
         var coffBuilder = new ManagedCoffBuilder(_coffHeader, new MetadataRootBuilder(_md), _symtab, _codeviewSymbols,
