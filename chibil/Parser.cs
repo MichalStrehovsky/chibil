@@ -24,11 +24,13 @@ public class Parser
     private Dictionary<string, bool> _typenameMap;
     private readonly Tokenizer _tokenizer;
     private readonly CompilerOptions _options;
+    private readonly TypeSystem _types;
 
-    public Parser(Tokenizer tokenizer, CompilerOptions options)
+    public Parser(Tokenizer tokenizer, CompilerOptions options, TypeSystem types)
     {
         _tokenizer = tokenizer;
         _options = options;
+        _types = types;
         _scope = new Scope();
     }
 
@@ -77,8 +79,8 @@ public class Parser
     private static Node NewBinary(NodeKind kind, Node lhs, Node rhs, Token tok) => new() { Kind = kind, Lhs = lhs, Rhs = rhs, Tok = tok };
     private static Node NewUnary(NodeKind kind, Node expr, Token tok) => new() { Kind = kind, Lhs = expr, Tok = tok };
     private static Node NewNum(long val, Token tok) => new() { Kind = NodeKind.Num, Val = val, Tok = tok };
-    private static Node NewLong(long val, Token tok) => new() { Kind = NodeKind.Num, Val = val, Ty = TypeSystem.TyLong, Tok = tok };
-    private static Node NewUlong(long val, Token tok) => new() { Kind = NodeKind.Num, Val = val, Ty = TypeSystem.TyUlong, Tok = tok };
+    private Node NewLong(long val, Token tok) => new() { Kind = NodeKind.Num, Val = val, Ty = _types.TyLong, Tok = tok };
+    private Node NewUlong(long val, Token tok) => new() { Kind = NodeKind.Num, Val = val, Ty = _types.SizeType, Tok = tok };
     private static Node NewVarNode(Obj var, Token tok) => new() { Kind = NodeKind.Var, Var = var, Tok = tok };
     private static Node NewVlaPtr(Obj var, Token tok) => new() { Kind = NodeKind.VlaPtr, Var = var, Tok = tok };
 
@@ -195,7 +197,7 @@ public class Parser
 
     private CType Declspec(ref Token rest, Token tok, VarAttr attr)
     {
-        CType ty = TypeSystem.TyInt;
+        CType ty = _types.TyInt;
         int counter = 0;
         bool isAtomic = false;
 
@@ -261,19 +263,20 @@ public class Parser
 
             ty = counter switch
             {
-                VOID => TypeSystem.TyVoid, BOOL => TypeSystem.TyBool,
-                CHAR or (SIGNED + CHAR) => TypeSystem.TyChar, UNSIGNED + CHAR => TypeSystem.TyUchar,
-                SHORT or (SHORT + INT) or (SIGNED + SHORT) or (SIGNED + SHORT + INT) => TypeSystem.TyShort,
-                (UNSIGNED + SHORT) or (UNSIGNED + SHORT + INT) => TypeSystem.TyUshort,
-                INT or SIGNED or (SIGNED + INT) => TypeSystem.TyInt,
-                UNSIGNED or (UNSIGNED + INT) => TypeSystem.TyUint,
-                LONG or (LONG + INT) or (LONG + LONG) or (LONG + LONG + INT) or
-                (SIGNED + LONG) or (SIGNED + LONG + INT) or (SIGNED + LONG + LONG) or
-                (SIGNED + LONG + LONG + INT) => TypeSystem.TyLong,
-                (UNSIGNED + LONG) or (UNSIGNED + LONG + INT) or (UNSIGNED + LONG + LONG) or
-                (UNSIGNED + LONG + LONG + INT) => TypeSystem.TyUlong,
-                FLOAT => TypeSystem.TyFloat, DOUBLE => TypeSystem.TyDouble,
-                (LONG + DOUBLE) => TypeSystem.TyLdouble,
+                VOID => _types.TyVoid, BOOL => _types.TyBool,
+                CHAR or (SIGNED + CHAR) => _types.TyChar, UNSIGNED + CHAR => _types.TyUchar,
+                SHORT or (SHORT + INT) or (SIGNED + SHORT) or (SIGNED + SHORT + INT) => _types.TyShort,
+                (UNSIGNED + SHORT) or (UNSIGNED + SHORT + INT) => _types.TyUshort,
+                INT or SIGNED or (SIGNED + INT) => _types.TyInt,
+                UNSIGNED or (UNSIGNED + INT) => _types.TyUint,
+                LONG or (LONG + INT) or
+                (SIGNED + LONG) or (SIGNED + LONG + INT) => _types.TyLong,
+                (LONG + LONG) or (LONG + LONG + INT) or
+                (SIGNED + LONG + LONG) or (SIGNED + LONG + LONG + INT) => _types.TyLongLong,
+                (UNSIGNED + LONG) or (UNSIGNED + LONG + INT) => _types.TyUlong,
+                (UNSIGNED + LONG + LONG) or (UNSIGNED + LONG + LONG + INT) => _types.TyUlongLong,
+                FLOAT => _types.TyFloat, DOUBLE => _types.TyDouble,
+                (LONG + DOUBLE) => _types.TyLdouble,
                 _ => throw new ChibiccException($"invalid type")
             };
             tok = tok.Next;
@@ -303,8 +306,8 @@ public class Parser
             CType ty2 = Declspec(ref tok, tok, null);
             ty2 = Declarator(ref tok, tok, ty2);
             Token name = ty2.Name;
-            if (ty2.Kind == TypeKind.Array) { ty2 = TypeSystem.PointerTo(ty2.Base); ty2.Name = name; }
-            else if (ty2.Kind == TypeKind.Func) { ty2 = TypeSystem.PointerTo(ty2); ty2.Name = name; }
+            if (ty2.Kind == TypeKind.Array) { ty2 = _types.PointerTo(ty2.Base); ty2.Name = name; }
+            else if (ty2.Kind == TypeKind.Func) { ty2 = _types.PointerTo(ty2); ty2.Name = name; }
             cur = cur.Next = TypeSystem.CopyType(ty2);
         }
         if (cur == head) isVariadic = true;
@@ -322,7 +325,7 @@ public class Parser
         Node expr = Conditional(ref tok, tok);
         tok = Util.Skip(tok, "]");
         ty = TypeSuffix(ref rest, tok, ty);
-        if (ty.Kind == TypeKind.Vla || !IsConstExpr(expr)) return TypeSystem.VlaOf(ty, expr);
+        if (ty.Kind == TypeKind.Vla || !IsConstExpr(expr)) return _types.VlaOf(ty, expr);
         return TypeSystem.ArrayOf(ty, (int)Eval(expr));
     }
 
@@ -337,7 +340,7 @@ public class Parser
     {
         while (Util.Consume(ref tok, tok, "*"))
         {
-            ty = TypeSystem.PointerTo(ty);
+            ty = _types.PointerTo(ty);
             while (Util.Equal(tok, "const") || Util.Equal(tok, "volatile") || Util.Equal(tok, "restrict") ||
                    Util.Equal(tok, "__restrict") || Util.Equal(tok, "__restrict__"))
                 tok = tok.Next;
@@ -429,7 +432,7 @@ public class Parser
         tok = Util.Skip(tok, "(");
         CType ty;
         if (IsTypename(tok)) ty = Typename(ref tok, tok);
-        else { Node node = Expr(ref tok, tok); TypeSystem.AddType(node); ty = node.Ty; }
+        else { Node node = Expr(ref tok, tok); _types.AddType(node); ty = node.Ty; }
         rest = Util.Skip(tok, ")");
         return ty;
     }
@@ -593,7 +596,7 @@ public class Parser
     private long Eval2(Node node, out Func<string> label)
     {
         Unsafe.SkipInit(out label);
-        TypeSystem.AddType(node);
+        _types.AddType(node);
         if (TypeSystem.IsFlonum(node.Ty)) return (long)EvalDouble(node);
 
         switch (node.Kind)
@@ -680,7 +683,7 @@ public class Parser
 
     private bool IsConstExpr(Node node)
     {
-        TypeSystem.AddType(node);
+        _types.AddType(node);
         switch (node.Kind)
         {
             case NodeKind.Add: case NodeKind.Sub: case NodeKind.Mul: case NodeKind.Div:
@@ -704,7 +707,7 @@ public class Parser
 
     private double EvalDouble(Node node)
     {
-        TypeSystem.AddType(node);
+        _types.AddType(node);
         if (TypeSystem.IsInteger(node.Ty))
         {
             if (node.Ty.IsUnsigned) return (ulong)Eval(node);
@@ -760,7 +763,7 @@ public class Parser
         if (!Util.Equal(tok, "?")) { rest = tok; return cond; }
         if (Util.Equal(tok.Next, ":"))
         {
-            TypeSystem.AddType(cond);
+            _types.AddType(cond);
             Obj v = NewLvar("", cond.Ty);
             Node lhs = NewBinary(NodeKind.Assign, NewVarNode(v, tok), cond, tok);
             var rhs = NewNode(NodeKind.Cond, tok);
@@ -818,7 +821,7 @@ public class Parser
 
     private Node NewAdd(Node lhs, Node rhs, Token tok)
     {
-        TypeSystem.AddType(lhs); TypeSystem.AddType(rhs);
+        _types.AddType(lhs); _types.AddType(rhs);
         if (TypeSystem.IsNumeric(lhs.Ty) && TypeSystem.IsNumeric(rhs.Ty)) return NewBinary(NodeKind.Add, lhs, rhs, tok);
         if (lhs.Ty.Base != null && rhs.Ty.Base != null) Util.ErrorTok(tok, "invalid operands");
         if (lhs.Ty.Base == null && rhs.Ty.Base != null) { var tmp = lhs; lhs = rhs; rhs = tmp; }
@@ -829,21 +832,21 @@ public class Parser
 
     private Node NewSub(Node lhs, Node rhs, Token tok)
     {
-        TypeSystem.AddType(lhs); TypeSystem.AddType(rhs);
+        _types.AddType(lhs); _types.AddType(rhs);
         if (TypeSystem.IsNumeric(lhs.Ty) && TypeSystem.IsNumeric(rhs.Ty)) return NewBinary(NodeKind.Sub, lhs, rhs, tok);
         if (lhs.Ty.Base != null && lhs.Ty.Base.Kind == TypeKind.Vla)
         {
             rhs = NewBinary(NodeKind.Mul, rhs, NewVarNode(lhs.Ty.Base.VlaSize, tok), tok);
-            TypeSystem.AddType(rhs); var node = NewBinary(NodeKind.Sub, lhs, rhs, tok); node.Ty = lhs.Ty; return node;
+            _types.AddType(rhs); var node = NewBinary(NodeKind.Sub, lhs, rhs, tok); node.Ty = lhs.Ty; return node;
         }
         if (lhs.Ty.Base != null && TypeSystem.IsInteger(rhs.Ty))
         {
             rhs = NewBinary(NodeKind.Mul, rhs, NewLong(lhs.Ty.Base.Size, tok), tok);
-            TypeSystem.AddType(rhs); var node = NewBinary(NodeKind.Sub, lhs, rhs, tok); node.Ty = lhs.Ty; return node;
+            _types.AddType(rhs); var node = NewBinary(NodeKind.Sub, lhs, rhs, tok); node.Ty = lhs.Ty; return node;
         }
         if (lhs.Ty.Base != null && rhs.Ty.Base != null)
         {
-            var node = NewBinary(NodeKind.Sub, lhs, rhs, tok); node.Ty = TypeSystem.TyLong;
+            var node = NewBinary(NodeKind.Sub, lhs, rhs, tok); node.Ty = _types.PtrdiffType;
             return NewBinary(NodeKind.Div, node, NewNum(lhs.Ty.Base.Size, tok), tok);
         }
         Util.ErrorTok(tok, "invalid operands"); return null;
@@ -868,18 +871,18 @@ public class Parser
             Token start = tok;
             CType ty = Typename(ref tok, tok.Next); tok = Util.Skip(tok, ")");
             if (Util.Equal(tok, "{")) return Unary(ref rest, start);
-            var node = TypeSystem.NewCast(CastExpr(ref rest, tok), ty); node.Tok = start; return node;
+            var node = _types.NewCast(CastExpr(ref rest, tok), ty); node.Tok = start; return node;
         }
         return Unary(ref rest, tok);
     }
 
     private Node ToAssign(Node binary)
     {
-        TypeSystem.AddType(binary.Lhs); TypeSystem.AddType(binary.Rhs);
+        _types.AddType(binary.Lhs); _types.AddType(binary.Rhs);
         Token tok = binary.Tok;
         if (binary.Lhs.Kind == NodeKind.Member)
         {
-            Obj v = NewLvar("", TypeSystem.PointerTo(binary.Lhs.Lhs.Ty));
+            Obj v = NewLvar("", _types.PointerTo(binary.Lhs.Lhs.Ty));
             Node e1 = NewBinary(NodeKind.Assign, NewVarNode(v, tok), NewUnary(NodeKind.Addr, binary.Lhs.Lhs, tok), tok);
             Node e2 = NewUnary(NodeKind.Member, NewUnary(NodeKind.Deref, NewVarNode(v, tok), tok), tok); e2.Member = binary.Lhs.Member;
             Node e3 = NewUnary(NodeKind.Member, NewUnary(NodeKind.Deref, NewVarNode(v, tok), tok), tok); e3.Member = binary.Lhs.Member;
@@ -890,7 +893,7 @@ public class Parser
         {
             // Simplified atomic op= handling
             Node head = new(), cur = head;
-            Obj addr = NewLvar("", TypeSystem.PointerTo(binary.Lhs.Ty));
+            Obj addr = NewLvar("", _types.PointerTo(binary.Lhs.Ty));
             Obj val = NewLvar("", binary.Rhs.Ty);
             Obj old = NewLvar("", binary.Lhs.Ty);
             Obj @new = NewLvar("", binary.Lhs.Ty);
@@ -909,7 +912,7 @@ public class Parser
             var stmtExpr = NewNode(NodeKind.StmtExpr, tok); stmtExpr.Body = head.Next;
             return stmtExpr;
         }
-        Obj v2 = NewLvar("", TypeSystem.PointerTo(binary.Lhs.Ty));
+        Obj v2 = NewLvar("", _types.PointerTo(binary.Lhs.Ty));
         Node x1 = NewBinary(NodeKind.Assign, NewVarNode(v2, tok), NewUnary(NodeKind.Addr, binary.Lhs, tok), tok);
         Node x2 = NewBinary(NodeKind.Assign, NewUnary(NodeKind.Deref, NewVarNode(v2, tok), tok), NewBinary(binary.Kind, NewUnary(NodeKind.Deref, NewVarNode(v2, tok), tok), binary.Rhs, tok), tok);
         return NewBinary(NodeKind.Comma, x1, x2, tok);
@@ -919,8 +922,8 @@ public class Parser
     {
         if (Util.Equal(tok, "+")) return CastExpr(ref rest, tok.Next);
         if (Util.Equal(tok, "-")) return NewUnary(NodeKind.Neg, CastExpr(ref rest, tok.Next), tok);
-        if (Util.Equal(tok, "&")) { Node lhs = CastExpr(ref rest, tok.Next); TypeSystem.AddType(lhs); if (lhs.Kind == NodeKind.Member && lhs.Member.IsBitfield) Util.ErrorTok(tok, "cannot take address of bitfield"); return NewUnary(NodeKind.Addr, lhs, tok); }
-        if (Util.Equal(tok, "*")) { Node node = CastExpr(ref rest, tok.Next); TypeSystem.AddType(node); if (node.Ty.Kind == TypeKind.Func) return node; return NewUnary(NodeKind.Deref, node, tok); }
+        if (Util.Equal(tok, "&")) { Node lhs = CastExpr(ref rest, tok.Next); _types.AddType(lhs); if (lhs.Kind == NodeKind.Member && lhs.Member.IsBitfield) Util.ErrorTok(tok, "cannot take address of bitfield"); return NewUnary(NodeKind.Addr, lhs, tok); }
+        if (Util.Equal(tok, "*")) { Node node = CastExpr(ref rest, tok.Next); _types.AddType(node); if (node.Ty.Kind == TypeKind.Func) return node; return NewUnary(NodeKind.Deref, node, tok); }
         if (Util.Equal(tok, "!")) return NewUnary(NodeKind.Not, CastExpr(ref rest, tok.Next), tok);
         if (Util.Equal(tok, "~")) return NewUnary(NodeKind.BitNot, CastExpr(ref rest, tok.Next), tok);
         if (Util.Equal(tok, "++")) return ToAssign(NewAdd(Unary(ref rest, tok.Next), NewNum(1, tok), tok));
@@ -935,7 +938,7 @@ public class Parser
 
     private Node StructRef(Node node, Token tok)
     {
-        TypeSystem.AddType(node);
+        _types.AddType(node);
         if (node.Ty.Kind != TypeKind.Struct && node.Ty.Kind != TypeKind.Union) Util.ErrorTok(node.Tok, "not a struct nor a union");
         CType ty = node.Ty;
         for (;;)
@@ -951,8 +954,8 @@ public class Parser
 
     private Node NewIncDec(Node node, Token tok, int addend)
     {
-        TypeSystem.AddType(node);
-        return TypeSystem.NewCast(NewAdd(ToAssign(NewAdd(node, NewNum(addend, tok), tok)), NewNum(-addend, tok), tok), node.Ty);
+        _types.AddType(node);
+        return _types.NewCast(NewAdd(ToAssign(NewAdd(node, NewNum(addend, tok), tok)), NewNum(-addend, tok), tok), node.Ty);
     }
 
     private Node Postfix(ref Token rest, Token tok)
@@ -981,7 +984,7 @@ public class Parser
 
     private Node Funcall(ref Token rest, Token tok, Node fn)
     {
-        TypeSystem.AddType(fn);
+        _types.AddType(fn);
         if (fn.Ty.Kind != TypeKind.Func && (fn.Ty.Kind != TypeKind.Ptr || fn.Ty.Base.Kind != TypeKind.Func))
             Util.ErrorTok(fn.Tok, "not a function");
         CType ty = fn.Ty.Kind == TypeKind.Func ? fn.Ty : fn.Ty.Base;
@@ -991,9 +994,9 @@ public class Parser
         {
             if (cur != head) tok = Util.Skip(tok, ",");
             Node arg = Assign(ref tok, tok);
-            TypeSystem.AddType(arg);
-            if (paramTy != null) { if (paramTy.Kind != TypeKind.Struct && paramTy.Kind != TypeKind.Union) arg = TypeSystem.NewCast(arg, paramTy); paramTy = paramTy.Next; }
-            else if (arg.Ty.Kind == TypeKind.Float) arg = TypeSystem.NewCast(arg, TypeSystem.TyDouble);
+            _types.AddType(arg);
+            if (paramTy != null) { if (paramTy.Kind != TypeKind.Struct && paramTy.Kind != TypeKind.Union) arg = _types.NewCast(arg, paramTy); paramTy = paramTy.Next; }
+            else if (arg.Ty.Kind == TypeKind.Float) arg = _types.NewCast(arg, _types.TyDouble);
             cur = cur.Next = arg;
         }
         if (paramTy != null) Util.ErrorTok(tok, "too few arguments");
@@ -1020,10 +1023,10 @@ public class Parser
             if (ty.Kind == TypeKind.Vla) { if (ty.VlaSize != null) return NewVarNode(ty.VlaSize, tok); Node lhs = ComputeVlaSize(ty, tok); return NewBinary(NodeKind.Comma, lhs, NewVarNode(ty.VlaSize, tok), tok); }
             return NewUlong(ty.Size, start);
         }
-        if (Util.Equal(tok, "sizeof")) { Node node = Unary(ref rest, tok.Next); TypeSystem.AddType(node); if (node.Ty.Kind == TypeKind.Vla) return NewVarNode(node.Ty.VlaSize, tok); return NewUlong(node.Ty.Size, tok); }
+        if (Util.Equal(tok, "sizeof")) { Node node = Unary(ref rest, tok.Next); _types.AddType(node); if (node.Ty.Kind == TypeKind.Vla) return NewVarNode(node.Ty.VlaSize, tok); return NewUlong(node.Ty.Size, tok); }
         if (Util.Equal(tok, "_Alignof") && Util.Equal(tok.Next, "(") && IsTypename(tok.Next.Next))
         { CType ty = Typename(ref tok, tok.Next.Next); rest = Util.Skip(tok, ")"); return NewUlong(ty.Align, tok); }
-        if (Util.Equal(tok, "_Alignof")) { Node node = Unary(ref rest, tok.Next); TypeSystem.AddType(node); return NewUlong(node.Ty.Align, tok); }
+        if (Util.Equal(tok, "_Alignof")) { Node node = Unary(ref rest, tok.Next); _types.AddType(node); return NewUlong(node.Ty.Align, tok); }
         if (Util.Equal(tok, "_Generic")) return GenericSelection(ref rest, tok.Next);
         if (Util.Equal(tok, "__builtin_types_compatible_p"))
         { tok = Util.Skip(tok.Next, "("); CType t1 = Typename(ref tok, tok); tok = Util.Skip(tok, ","); CType t2 = Typename(ref tok, tok); rest = Util.Skip(tok, ")"); return NewNum(TypeSystem.IsCompatible(t1, t2) ? 1 : 0, start); }
@@ -1055,10 +1058,10 @@ public class Parser
     private Node GenericSelection(ref Token rest, Token tok)
     {
         Token start = tok; tok = Util.Skip(tok, "(");
-        Node ctrl = Assign(ref tok, tok); TypeSystem.AddType(ctrl);
+        Node ctrl = Assign(ref tok, tok); _types.AddType(ctrl);
         CType t1 = ctrl.Ty;
-        if (t1.Kind == TypeKind.Func) t1 = TypeSystem.PointerTo(t1);
-        else if (t1.Kind == TypeKind.Array) t1 = TypeSystem.PointerTo(t1.Base);
+        if (t1.Kind == TypeKind.Func) t1 = _types.PointerTo(t1);
+        else if (t1.Kind == TypeKind.Array) t1 = _types.PointerTo(t1.Base);
         Node ret = null;
         while (!Util.Consume(ref rest, tok, ")"))
         {
@@ -1082,9 +1085,9 @@ public class Parser
             var node = NewNode(NodeKind.Return, tok);
             if (Util.Consume(ref rest, tok.Next, ";")) return node;
             Node exp = Expr(ref tok, tok.Next); rest = Util.Skip(tok, ";");
-            TypeSystem.AddType(exp);
+            _types.AddType(exp);
             CType rty = _currentFn.Ty.ReturnTy;
-            if (rty.Kind != TypeKind.Struct && rty.Kind != TypeKind.Union) exp = TypeSystem.NewCast(exp, rty);
+            if (rty.Kind != TypeKind.Struct && rty.Kind != TypeKind.Union) exp = _types.NewCast(exp, rty);
             node.Lhs = exp; return node;
         }
         if (Util.Equal(tok, "if"))
@@ -1201,7 +1204,7 @@ public class Parser
                 cur = cur.Next = Declaration(ref tok, tok, basety, attr);
             }
             else cur = cur.Next = Stmt(ref tok, tok);
-            TypeSystem.AddType(cur);
+            _types.AddType(cur);
         }
         LeaveScope();
         node.Body = head.Next; rest = tok.Next; return node;
@@ -1224,7 +1227,7 @@ public class Parser
         if (ty.Base != null) node = NewBinary(NodeKind.Comma, node, ComputeVlaSize(ty.Base, tok), tok);
         if (ty.Kind != TypeKind.Vla) return node;
         Node baseSz = ty.Base.Kind == TypeKind.Vla ? NewVarNode(ty.Base.VlaSize, tok) : NewNum(ty.Base.Size, tok);
-        ty.VlaSize = NewLvar("", TypeSystem.TyUlong);
+        ty.VlaSize = NewLvar("", _types.SizeType);
         Node expr = NewBinary(NodeKind.Assign, NewVarNode(ty.VlaSize, tok), NewBinary(NodeKind.Mul, ty.VlaLen, baseSz, tok), tok);
         return NewBinary(NodeKind.Comma, node, expr, tok);
     }
@@ -1233,7 +1236,7 @@ public class Parser
     {
         var node = NewUnary(NodeKind.FunCall, NewVarNode(_builtinAlloca, sz.Tok), sz.Tok);
         node.FuncTy = _builtinAlloca.Ty; node.Ty = _builtinAlloca.Ty.ReturnTy; node.Args = sz;
-        TypeSystem.AddType(sz); return node;
+        _types.AddType(sz); return node;
     }
 
     private Node Declaration(ref Token rest, Token tok, CType basety, VarAttr attr)
@@ -1373,7 +1376,7 @@ public class Parser
         if (init.Ty.Kind == TypeKind.Struct)
         {
             if (Util.Equal(tok, "{")) { StructInitializer1(ref rest, tok, init); return; }
-            Node expr = Assign(ref rest, tok); TypeSystem.AddType(expr);
+            Node expr = Assign(ref rest, tok); _types.AddType(expr);
             if (expr.Ty.Kind == TypeKind.Struct) { init.Expr = expr; return; }
             StructInitializer2(ref rest, tok, init, init.Ty.Members); return;
         }
@@ -1562,6 +1565,21 @@ public class Parser
         if (init.Expr == null) return cur;
         if (ty.Kind == TypeKind.Float) { Util.WriteFloat(buf, offset, (float)EvalDouble(init.Expr)); return cur; }
         if (ty.Kind == TypeKind.Double) { Util.WriteDouble(buf, offset, EvalDouble(init.Expr)); return cur; }
+        if (ty.Kind == TypeKind.LDouble)
+        {
+            if (ty.Size == 8)
+            {
+                // LLP64: long double is same as double
+                Util.WriteDouble(buf, offset, EvalDouble(init.Expr));
+            }
+            else
+            {
+                // LP64: 80-bit x87 extended precision, padded to 16 bytes
+                byte[] f80 = Util.DoubleToF80Bytes(EvalDouble(init.Expr));
+                Array.Copy(f80, 0, buf, offset, Math.Min(f80.Length, ty.Size));
+            }
+            return cur;
+        }
 
         long val = Eval2(init.Expr, out Func<string> label);
         if (label == null) { Util.WriteBuf(buf, offset, val, ty.Size); return cur; }
@@ -1658,16 +1676,16 @@ public class Parser
         _currentFn = fn; _locals = null; EnterScope();
         CreateParamLvars(ty.Params);
         CType rty = ty.ReturnTy;
-        if ((rty.Kind == TypeKind.Struct || rty.Kind == TypeKind.Union) && rty.Size > 16) NewLvar("", TypeSystem.PointerTo(rty));
+        if ((rty.Kind == TypeKind.Struct || rty.Kind == TypeKind.Union) && rty.Size > 16) NewLvar("", _types.PointerTo(rty));
         fn.Params = _locals;
-        if (ty.IsVariadic) fn.VaArea = NewLvar("__va_area__", TypeSystem.ArrayOf(TypeSystem.TyChar, 136));
-        fn.AllocaBottom = NewLvar("__alloca_size__", TypeSystem.PointerTo(TypeSystem.TyChar));
+        if (ty.IsVariadic) fn.VaArea = NewLvar("__va_area__", TypeSystem.ArrayOf(_types.TyChar, 136));
+        fn.AllocaBottom = NewLvar("__alloca_size__", _types.PointerTo(_types.TyChar));
         tok = Util.Skip(tok, "{");
         byte[] nameBytes = Encoding.UTF8.GetBytes(fn.Name);
         byte[] nameBytesNul = new byte[nameBytes.Length + 1];
         Array.Copy(nameBytes, nameBytesNul, nameBytes.Length);
-        PushScope("__func__").Var = NewStringLiteral(nameBytesNul, TypeSystem.ArrayOf(TypeSystem.TyChar, nameBytes.Length + 1));
-        PushScope("__FUNCTION__").Var = NewStringLiteral(nameBytesNul, TypeSystem.ArrayOf(TypeSystem.TyChar, nameBytes.Length + 1));
+        PushScope("__func__").Var = NewStringLiteral(nameBytesNul, TypeSystem.ArrayOf(_types.TyChar, nameBytes.Length + 1));
+        PushScope("__FUNCTION__").Var = NewStringLiteral(nameBytesNul, TypeSystem.ArrayOf(_types.TyChar, nameBytes.Length + 1));
         fn.Body = CompoundStmt(ref tok, tok);
         fn.Locals = _locals; LeaveScope(); ResolveGotoLabels();
         return tok;
@@ -1707,8 +1725,8 @@ public class Parser
 
     private void DeclareBuiltinFunctions()
     {
-        CType ty = TypeSystem.FuncType(TypeSystem.PointerTo(TypeSystem.TyVoid));
-        ty.Params = TypeSystem.CopyType(TypeSystem.TyInt);
+        CType ty = TypeSystem.FuncType(_types.PointerTo(_types.TyVoid));
+        ty.Params = TypeSystem.CopyType(_types.TyInt);
         _builtinAlloca = NewGvar("alloca", ty);
         _builtinAlloca.IsDefinition = false;
     }

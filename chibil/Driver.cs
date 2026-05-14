@@ -26,8 +26,9 @@ public class Driver
 
     public void Run(string[] args)
     {
-        var tokenizer = new Tokenizer(Options);
-        _preprocessor = new Preprocessor(tokenizer, Options);
+        var types = new TypeSystem(Options.DataModel);
+        var tokenizer = new Tokenizer(Options, types);
+        _preprocessor = new Preprocessor(tokenizer, Options, types);
         _preprocessor.InitMacros();
         ParseArgs(args);
 
@@ -423,7 +424,8 @@ public class Driver
         Token tok = null;
 
         // Create the parser early so the preprocessor can use const_expr for #if
-        var parser = new Parser(tokenizer, Options);
+        var types = new TypeSystem(Options.DataModel);
+        var parser = new Parser(tokenizer, Options, types);
         preprocessor.SetParser(parser);
 
         // Process -include option
@@ -453,7 +455,7 @@ public class Driver
 
         Obj prog = parser.Parse(tok);
 
-        var codegen = new CodeGen(Options, tokenizer);
+        var codegen = new CodeGen(Options, tokenizer, types);
         var sw = new StringWriter();
         codegen.Generate(prog, sw);
         string asm = sw.ToString();

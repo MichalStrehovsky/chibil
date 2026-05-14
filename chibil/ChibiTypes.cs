@@ -20,7 +20,7 @@ public enum TokenKind
 
 public enum TypeKind
 {
-    Void, Bool, Char, Short, Int, Long,
+    Void, Bool, Char, Short, Int, Long, LLong,
     Float, Double, LDouble,
     Enum, Ptr, Func, Array, Vla, Struct, Union,
 }
@@ -374,12 +374,32 @@ public class CondIncl
 //  CompilerOptions (cross-module shared state)
 // ═══════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════
+//  DataModel
+// ═══════════════════════════════════════════════════════════════════
+
+public class DataModel(int longSize, int ldoubleSize, int ldoubleAlign, int pointerSize)
+{
+    public int LongSize => longSize;
+    public int LDoubleSize => ldoubleSize;
+    public int LDoubleAlign => ldoubleAlign;
+    public int PointerSize => pointerSize;
+
+    public static readonly DataModel LP64  = new(longSize: 8, ldoubleSize: 16, ldoubleAlign: 16, pointerSize: 8);
+    public static readonly DataModel LLP64 = new(longSize: 4, ldoubleSize: 8,  ldoubleAlign: 8,  pointerSize: 8);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  CompilerOptions
+// ═══════════════════════════════════════════════════════════════════
+
 public class CompilerOptions
 {
     public List<string> IncludePaths = new();
     public bool OptFpic;
     public bool OptFcommon = true;
     public string BaseFile;
+    public DataModel DataModel = DataModel.LP64;
 }
 
 // ═══════════════════════════════════════════════════════════════════

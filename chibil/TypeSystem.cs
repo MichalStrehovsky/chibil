@@ -2,33 +2,51 @@ namespace Chibicc;
 
 /// <summary>
 /// Type system — singleton types, constructors, and type annotation.
-/// Port of type.c.
+/// Port of type.c. Instance-based to support different data models.
 /// </summary>
-public static class TypeSystem
+public class TypeSystem
 {
-    // Singleton type instances
-    public static readonly CType TyVoid = new(TypeKind.Void, 1, 1);
-    public static readonly CType TyBool = new(TypeKind.Bool, 1, 1);
+    private readonly DataModel _dm;
 
-    public static readonly CType TyChar = new(TypeKind.Char, 1, 1);
-    public static readonly CType TyShort = new(TypeKind.Short, 2, 2);
-    public static readonly CType TyInt = new(TypeKind.Int, 4, 4);
-    public static readonly CType TyLong = new(TypeKind.Long, 8, 8);
+    // Singleton type instances — fixed across data models
+    public readonly CType TyVoid = new(TypeKind.Void, 1, 1);
+    public readonly CType TyBool = new(TypeKind.Bool, 1, 1);
+    public readonly CType TyChar = new(TypeKind.Char, 1, 1);
+    public readonly CType TyShort = new(TypeKind.Short, 2, 2);
+    public readonly CType TyInt = new(TypeKind.Int, 4, 4);
+    public readonly CType TyUchar = new(TypeKind.Char, 1, 1, isUnsigned: true);
+    public readonly CType TyUshort = new(TypeKind.Short, 2, 2, isUnsigned: true);
+    public readonly CType TyUint = new(TypeKind.Int, 4, 4, isUnsigned: true);
+    public readonly CType TyFloat = new(TypeKind.Float, 4, 4);
+    public readonly CType TyDouble = new(TypeKind.Double, 8, 8);
 
-    public static readonly CType TyUchar = new(TypeKind.Char, 1, 1, isUnsigned: true);
-    public static readonly CType TyUshort = new(TypeKind.Short, 2, 2, isUnsigned: true);
-    public static readonly CType TyUint = new(TypeKind.Int, 4, 4, isUnsigned: true);
-    public static readonly CType TyUlong = new(TypeKind.Long, 8, 8, isUnsigned: true);
+    // Data-model-dependent singletons
+    public readonly CType TyLong;
+    public readonly CType TyUlong;
+    public readonly CType TyLongLong;
+    public readonly CType TyUlongLong;
+    public readonly CType TyLdouble;
 
-    public static readonly CType TyFloat = new(TypeKind.Float, 4, 4);
-    public static readonly CType TyDouble = new(TypeKind.Double, 8, 8);
-    public static readonly CType TyLdouble = new(TypeKind.LDouble, 16, 16);
+    // Semantic types that vary by data model
+    public CType PtrdiffType => _dm.LongSize == 8 ? TyLong : TyLongLong;
+    public CType SizeType => _dm.LongSize == 8 ? TyUlong : TyUlongLong;
+
+    public TypeSystem(DataModel dm)
+    {
+        _dm = dm;
+        TyLong = new CType(TypeKind.Long, dm.LongSize, dm.LongSize);
+        TyUlong = new CType(TypeKind.Long, dm.LongSize, dm.LongSize, isUnsigned: true);
+        TyLongLong = new CType(TypeKind.LLong, 8, 8);
+        TyUlongLong = new CType(TypeKind.LLong, 8, 8, isUnsigned: true);
+        TyLdouble = new CType(TypeKind.LDouble, dm.LDoubleSize, dm.LDoubleAlign);
+    }
 
     public static bool IsInteger(CType ty)
     {
         TypeKind k = ty.Kind;
         return k == TypeKind.Bool || k == TypeKind.Char || k == TypeKind.Short ||
-               k == TypeKind.Int || k == TypeKind.Long || k == TypeKind.Enum;
+               k == TypeKind.Int || k == TypeKind.Long || k == TypeKind.LLong ||
+               k == TypeKind.Enum;
     }
 
     public static bool IsFlonum(CType ty)
@@ -55,6 +73,7 @@ public static class TypeSystem
             case TypeKind.Short:
             case TypeKind.Int:
             case TypeKind.Long:
+            case TypeKind.LLong:
                 return t1.IsUnsigned == t2.IsUnsigned;
             case TypeKind.Float:
             case TypeKind.Double:
@@ -106,9 +125,9 @@ public static class TypeSystem
         return ret;
     }
 
-    public static CType PointerTo(CType @base)
+    public CType PointerTo(CType @base)
     {
-        var ty = new CType(TypeKind.Ptr, 8, 8);
+        var ty = new CType(TypeKind.Ptr, _dm.PointerSize, _dm.PointerSize);
         ty.Base = @base;
         ty.IsUnsigned = true;
         return ty;
@@ -129,9 +148,9 @@ public static class TypeSystem
         return ty;
     }
 
-    public static CType VlaOf(CType @base, Node len)
+    public CType VlaOf(CType @base, Node len)
     {
-        var ty = new CType(TypeKind.Vla, 8, 8);
+        var ty = new CType(TypeKind.Vla, _dm.PointerSize, _dm.PointerSize);
         ty.Base = @base;
         ty.VlaLen = len;
         return ty;
@@ -147,7 +166,25 @@ public static class TypeSystem
         return new CType(TypeKind.Struct, 0, 1);
     }
 
-    private static CType GetCommonType(CType ty1, CType ty2)
+    private static int IntegerRank(CType ty) => ty.Kind switch
+    {
+        TypeKind.Bool => 0, TypeKind.Char => 1, TypeKind.Short => 2,
+        TypeKind.Int => 3, TypeKind.Enum => 3,
+        TypeKind.Long => 4, TypeKind.LLong => 5,
+        _ => 3,
+    };
+
+    private CType UnsignedOf(CType ty) => ty.Kind switch
+    {
+        TypeKind.Char => TyUchar,
+        TypeKind.Short => TyUshort,
+        TypeKind.Int => TyUint,
+        TypeKind.Long => TyUlong,
+        TypeKind.LLong => TyUlongLong,
+        _ => TyUint,
+    };
+
+    private CType GetCommonType(CType ty1, CType ty2)
     {
         if (ty1.Base != null)
             return PointerTo(ty1.Base);
@@ -165,18 +202,35 @@ public static class TypeSystem
         if (ty1.Size != ty2.Size)
             return (ty1.Size < ty2.Size) ? ty2 : ty1;
 
-        if (ty2.IsUnsigned) return ty2;
-        return ty1;
+        // Same size — apply C11 §6.3.1.8
+        // If both same signedness, pick higher rank
+        if (ty1.IsUnsigned == ty2.IsUnsigned)
+            return IntegerRank(ty1) >= IntegerRank(ty2) ? ty1 : ty2;
+
+        // Mixed signedness, same size.
+        // Identify the signed and unsigned operands.
+        CType signedTy = ty1.IsUnsigned ? ty2 : ty1;
+        CType unsignedTy = ty1.IsUnsigned ? ty1 : ty2;
+
+        // §6.3.1.8: If the unsigned type has rank >= signed type, use unsigned type.
+        if (IntegerRank(unsignedTy) >= IntegerRank(signedTy))
+            return unsignedTy;
+
+        // The signed type has higher rank. If it can represent all values of
+        // the unsigned type, use the signed type. This only works when the
+        // signed type is strictly wider — but sizes are equal, so it can't.
+        // Result: unsigned counterpart of the signed type.
+        return UnsignedOf(signedTy);
     }
 
-    public static void UsualArithConv(ref Node lhs, ref Node rhs)
+    public void UsualArithConv(ref Node lhs, ref Node rhs)
     {
         CType ty = GetCommonType(lhs.Ty, rhs.Ty);
         lhs = NewCast(lhs, ty);
         rhs = NewCast(rhs, ty);
     }
 
-    public static Node NewCast(Node expr, CType ty)
+    public Node NewCast(Node expr, CType ty)
     {
         AddType(expr);
         var node = new Node
@@ -189,7 +243,7 @@ public static class TypeSystem
         return node;
     }
 
-    public static void AddType(Node node)
+    public void AddType(Node node)
     {
         if (node == null || node.Ty != null) return;
 

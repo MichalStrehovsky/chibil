@@ -16,6 +16,7 @@ public class CodeGen
     private int _labelCount = 1;
     private Obj _currentFn;
     private readonly CompilerOptions _options;
+    private readonly TypeSystem _types;
     private readonly Tokenizer _tokenizer;
 
     private static readonly string[] Argreg8 = { "%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b" };
@@ -23,10 +24,11 @@ public class CodeGen
     private static readonly string[] Argreg32 = { "%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d" };
     private static readonly string[] Argreg64 = { "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
 
-    public CodeGen(CompilerOptions options, Tokenizer tokenizer)
+    public CodeGen(CompilerOptions options, Tokenizer tokenizer, TypeSystem types)
     {
         _options = options;
         _tokenizer = tokenizer;
+        _types = types;
     }
 
     private void Println(string line) => _out.WriteLine(line);
@@ -91,7 +93,7 @@ public class CodeGen
             case TypeKind.Array: case TypeKind.Struct: case TypeKind.Union: case TypeKind.Func: case TypeKind.Vla: return;
             case TypeKind.Float: Println("  movss (%rax), %xmm0"); return;
             case TypeKind.Double: Println("  movsd (%rax), %xmm0"); return;
-            case TypeKind.LDouble: Println("  fldt (%rax)"); return;
+            case TypeKind.LDouble: if (ty.Size == 8) Println("  movsd (%rax), %xmm0"); else Println("  fldt (%rax)"); return;
         }
         string insn = ty.IsUnsigned ? "movz" : "movs";
         if (ty.Size == 1) Println($"  {insn}bl (%rax), %eax");
@@ -110,7 +112,7 @@ public class CodeGen
                 return;
             case TypeKind.Float: Println("  movss %xmm0, (%rdi)"); return;
             case TypeKind.Double: Println("  movsd %xmm0, (%rdi)"); return;
-            case TypeKind.LDouble: Println("  fstpt (%rdi)"); return;
+            case TypeKind.LDouble: if (ty.Size == 8) Println("  movsd %xmm0, (%rdi)"); else Println("  fstpt (%rdi)"); return;
         }
         if (ty.Size == 1) Println("  mov %al, (%rdi)");
         else if (ty.Size == 2) Println("  mov %ax, (%rdi)");
@@ -124,7 +126,7 @@ public class CodeGen
         {
             case TypeKind.Float: Println("  xorps %xmm1, %xmm1"); Println("  ucomiss %xmm1, %xmm0"); return;
             case TypeKind.Double: Println("  xorpd %xmm1, %xmm1"); Println("  ucomisd %xmm1, %xmm0"); return;
-            case TypeKind.LDouble: Println("  fldz"); Println("  fucomip"); Println("  fstp %st(0)"); return;
+            case TypeKind.LDouble: if (ty.Size == 8) { Println("  xorpd %xmm1, %xmm1"); Println("  ucomisd %xmm1, %xmm0"); } else { Println("  fldz"); Println("  fucomip"); Println("  fstp %st(0)"); } return;
         }
         if (TypeSystem.IsInteger(ty) && ty.Size <= 4) Println("  cmp $0, %eax");
         else Println("  cmp $0, %rax");
@@ -141,8 +143,11 @@ public class CodeGen
         TypeKind.Char => ty.IsUnsigned ? U8 : I8,
         TypeKind.Short => ty.IsUnsigned ? U16 : I16,
         TypeKind.Int => ty.IsUnsigned ? U32 : I32,
-        TypeKind.Long => ty.IsUnsigned ? U64 : I64,
-        TypeKind.Float => F32, TypeKind.Double => F64, TypeKind.LDouble => F80,
+        TypeKind.Long => ty.Size == 8 ? (ty.IsUnsigned ? U64 : I64) : (ty.IsUnsigned ? U32 : I32),
+        TypeKind.LLong => ty.IsUnsigned ? U64 : I64,
+        TypeKind.Float => F32,
+        TypeKind.Double => F64,
+        TypeKind.LDouble => ty.Size == 8 ? F64 : F80,
         _ => U64,
     };
 
@@ -200,7 +205,8 @@ public class CodeGen
                 if (!HasFlonum(ty.Base, lo, hi, offset + ty.Base.Size * i)) return false;
             return true;
         }
-        return offset < lo || hi <= offset || ty.Kind == TypeKind.Float || ty.Kind == TypeKind.Double;
+        return offset < lo || hi <= offset || ty.Kind == TypeKind.Float || ty.Kind == TypeKind.Double
+            || (ty.Kind == TypeKind.LDouble && ty.Size == 8);
     }
 
     private static bool HasFlonum1(CType ty) => HasFlonum(ty, 0, 8, 0);
@@ -224,7 +230,7 @@ public class CodeGen
         {
             case TypeKind.Struct: case TypeKind.Union: PushStruct(args.Ty); break;
             case TypeKind.Float: case TypeKind.Double: Pushf(); break;
-            case TypeKind.LDouble: Println("  sub $16, %rsp"); Println("  fstpt (%rsp)"); _depth += 2; break;
+            case TypeKind.LDouble: if (args.Ty.Size == 8) { Pushf(); } else { Println("  sub $16, %rsp"); Println("  fstpt (%rsp)"); _depth += 2; } break;
             default: Push(); break;
         }
     }
@@ -251,7 +257,10 @@ public class CodeGen
                 case TypeKind.Float: case TypeKind.Double:
                     if (fp++ >= FpMax) { arg.PassByStack = true; stack++; }
                     break;
-                case TypeKind.LDouble: arg.PassByStack = true; stack += 2; break;
+                case TypeKind.LDouble:
+                    if (arg.Ty.Size == 8) { if (fp++ >= FpMax) { arg.PassByStack = true; stack++; } }
+                    else { arg.PassByStack = true; stack += 2; }
+                    break;
                 default:
                     if (gp++ >= GpMax) { arg.PassByStack = true; stack++; }
                     break;
@@ -373,9 +382,18 @@ public class CodeGen
                         ulong du = BitConverter.DoubleToUInt64Bits(node.FVal);
                         Println($"  mov ${du}, %rax  # double {node.FVal:F6}"); Println("  movq %rax, %xmm0"); return;
                     case TypeKind.LDouble:
-                        var (u0, u1) = Util.DoubleToF80Words(node.FVal);
-                        Println($"  mov ${u0}, %rax  # long double {node.FVal:F6}"); Println("  mov %rax, -16(%rsp)");
-                        Println($"  mov ${u1}, %rax"); Println("  mov %rax, -8(%rsp)"); Println("  fldt -16(%rsp)"); return;
+                        if (node.Ty.Size == 8)
+                        {
+                            ulong ldu = BitConverter.DoubleToUInt64Bits(node.FVal);
+                            Println($"  mov ${ldu}, %rax  # long double {node.FVal:F6}"); Println("  movq %rax, %xmm0");
+                        }
+                        else
+                        {
+                            var (u0, u1) = Util.DoubleToF80Words(node.FVal);
+                            Println($"  mov ${u0}, %rax  # long double {node.FVal:F6}"); Println("  mov %rax, -16(%rsp)");
+                            Println($"  mov ${u1}, %rax"); Println("  mov %rax, -8(%rsp)"); Println("  fldt -16(%rsp)");
+                        }
+                        return;
                 }
                 Println($"  mov ${node.Val}, %rax"); return;
 
@@ -385,7 +403,7 @@ public class CodeGen
                 {
                     case TypeKind.Float: Println("  mov $1, %rax"); Println("  shl $31, %rax"); Println("  movq %rax, %xmm1"); Println("  xorps %xmm1, %xmm0"); return;
                     case TypeKind.Double: Println("  mov $1, %rax"); Println("  shl $63, %rax"); Println("  movq %rax, %xmm1"); Println("  xorpd %xmm1, %xmm0"); return;
-                    case TypeKind.LDouble: Println("  fchs"); return;
+                    case TypeKind.LDouble: if (node.Ty.Size == 8) { Println("  mov $1, %rax"); Println("  shl $63, %rax"); Println("  movq %rax, %xmm1"); Println("  xorpd %xmm1, %xmm0"); } else Println("  fchs"); return;
                 }
                 Println("  neg %rax"); return;
 
@@ -472,7 +490,9 @@ public class CodeGen
                             break;
                         case TypeKind.Float: case TypeKind.Double:
                             if (fp < FpMax) Popf(fp++); break;
-                        case TypeKind.LDouble: break;
+                        case TypeKind.LDouble:
+                            if (arg.Ty.Size == 8 && fp < FpMax) Popf(fp++);
+                            break;
                         default:
                             if (gp < GpMax) Pop(Argreg64[gp++]); break;
                     }
@@ -535,6 +555,28 @@ public class CodeGen
                 Util.ErrorTok(node.Tok, "invalid expression");
                 return;
             case TypeKind.LDouble:
+                if (node.Lhs.Ty.Size == 8)
+                {
+                    // 8-byte long double (LLP64) — use SSE like double
+                    GenExpr(node.Rhs); Pushf(); GenExpr(node.Lhs); Popf(1);
+                    switch (node.Kind)
+                    {
+                        case NodeKind.Add: Println("  addsd %xmm1, %xmm0"); return;
+                        case NodeKind.Sub: Println("  subsd %xmm1, %xmm0"); return;
+                        case NodeKind.Mul: Println("  mulsd %xmm1, %xmm0"); return;
+                        case NodeKind.Div: Println("  divsd %xmm1, %xmm0"); return;
+                        case NodeKind.Eq: case NodeKind.Ne: case NodeKind.Lt: case NodeKind.Le:
+                            Println("  ucomisd %xmm0, %xmm1");
+                            if (node.Kind == NodeKind.Eq) { Println("  sete %al"); Println("  setnp %dl"); Println("  and %dl, %al"); }
+                            else if (node.Kind == NodeKind.Ne) { Println("  setne %al"); Println("  setp %dl"); Println("  or %dl, %al"); }
+                            else if (node.Kind == NodeKind.Lt) Println("  seta %al");
+                            else Println("  setae %al");
+                            Println("  and $1, %al"); Println("  movzb %al, %rax"); return;
+                    }
+                    Util.ErrorTok(node.Tok, "invalid expression");
+                    return;
+                }
+                // 16-byte long double (LP64) — use x87
                 GenExpr(node.Lhs); GenExpr(node.Rhs);
                 switch (node.Kind)
                 {
@@ -557,7 +599,7 @@ public class CodeGen
         // Integer binary ops
         GenExpr(node.Rhs); Push(); GenExpr(node.Lhs); Pop("%rdi");
         string ax, di, dx;
-        if (node.Lhs.Ty.Kind == TypeKind.Long || node.Lhs.Ty.Base != null) { ax = "%rax"; di = "%rdi"; dx = "%rdx"; }
+        if (node.Lhs.Ty.Size == 8 || node.Lhs.Ty.Base != null) { ax = "%rax"; di = "%rdi"; dx = "%rdx"; }
         else { ax = "%eax"; di = "%edi"; dx = "%edx"; }
 
         switch (node.Kind)
@@ -670,7 +712,9 @@ public class CodeGen
                         break;
                     case TypeKind.Float: case TypeKind.Double:
                         if (fp++ < FpMax) continue; break;
-                    case TypeKind.LDouble: break;
+                    case TypeKind.LDouble:
+                        if (ty.Size == 8) { if (fp++ < FpMax) continue; }
+                        break;
                     default:
                         if (gp++ < GpMax) continue; break;
                 }
@@ -801,6 +845,10 @@ public class CodeGen
                         if (ty.Size > 8) { if (HasFlonum(ty, 8, 16, 0)) StoreFp(fp2++, var.Offset + 8, ty.Size - 8); else StoreGp(gp2++, var.Offset + 8, ty.Size - 8); }
                         break;
                     case TypeKind.Float: case TypeKind.Double: StoreFp(fp2++, var.Offset, ty.Size); break;
+                    case TypeKind.LDouble:
+                        if (ty.Size == 8) StoreFp(fp2++, var.Offset, ty.Size);
+                        else StoreGp(gp2++, var.Offset, ty.Size);
+                        break;
                     default: StoreGp(gp2++, var.Offset, ty.Size); break;
                 }
             }

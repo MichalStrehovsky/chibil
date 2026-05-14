@@ -16,10 +16,12 @@ public class Tokenizer
     private int _fileNo;
 
     private readonly CompilerOptions _options;
+    private readonly TypeSystem _types;
 
-    public Tokenizer(CompilerOptions options)
+    public Tokenizer(CompilerOptions options, TypeSystem types)
     {
         _options = options;
+        _types = types;
     }
 
     public CFile[] GetInputFiles() => _inputFiles.ToArray();
@@ -222,7 +224,7 @@ public class Tokenizer
         bytes.Add(0); // NUL terminator
 
         var tok = NewToken(TokenKind.Str, buf, start, end + 1);
-        tok.Ty = TypeSystem.ArrayOf(TypeSystem.TyChar, bytes.Count);
+        tok.Ty = TypeSystem.ArrayOf(_types.TyChar, bytes.Count);
         tok.Str = bytes.ToArray();
         return tok;
     }
@@ -257,7 +259,7 @@ public class Tokenizer
         shorts.Add(0);
 
         var tok = NewToken(TokenKind.Str, buf, start, end + 1);
-        tok.Ty = TypeSystem.ArrayOf(TypeSystem.TyUshort, shorts.Count);
+        tok.Ty = TypeSystem.ArrayOf(_types.TyUshort, shorts.Count);
         // Convert to byte array
         byte[] strBytes = new byte[shorts.Count * 2];
         for (int i = 0; i < shorts.Count; i++)
@@ -385,7 +387,7 @@ public class Tokenizer
         }
 
         // Read U, L or LL suffixes
-        bool l = false, u = false;
+        bool l = false, ll = false, u = false;
         int remaining = tok.Loc + tok.Len - p;
         string suffix = remaining > 0 ? Encoding.ASCII.GetString(buf, p, remaining) : "";
 
@@ -398,7 +400,7 @@ public class Tokenizer
             suffix.Equals("uLL", StringComparison.Ordinal) ||
             suffix.Equals("ull", StringComparison.OrdinalIgnoreCase))
         {
-            p += 3; l = true; u = true;
+            p += 3; ll = true; u = true;
         }
         else if (StrNCaseCompare(buf, p, "lu", 2) == 0 || StrNCaseCompare(buf, p, "ul", 2) == 0)
         {
@@ -406,7 +408,7 @@ public class Tokenizer
         }
         else if (remaining >= 2 && ((buf[p] == 'L' || buf[p] == 'l') && (buf[p + 1] == 'L' || buf[p + 1] == 'l')))
         {
-            p += 2; l = true;
+            p += 2; ll = true;
         }
         else if (remaining >= 1 && (buf[p] == 'L' || buf[p] == 'l'))
         {
@@ -420,24 +422,55 @@ public class Tokenizer
         if (p != tok.Loc + tok.Len)
             return false;
 
-        // Infer a type
+        // Infer a type based on suffix, base, and value magnitude.
+        // C11 §6.4.4.1: the type is the first in the candidate list that can hold the value.
+        int longBits = _types.TyLong.Size * 8;
+        // C# shifts mask the count to 0-63, so val>>64 is a no-op. Use a helper.
+        bool fitsInLong = longBits >= 64 || (val >> longBits) == 0;
+        bool fitsInSignedLong = longBits >= 64 ? (val >> 63) == 0 : (val >> (longBits - 1)) == 0;
         CType ty;
-        if (@base == 10)
+        if (ll && u) ty = _types.TyUlongLong;
+        else if (ll) ty = (val >> 63) != 0 ? _types.TyUlongLong : _types.TyLongLong;
+        else if (l && u) ty = fitsInLong ? _types.TyUlong : _types.TyUlongLong;
+        else if (l)
         {
-            if (l && u) ty = TypeSystem.TyUlong;
-            else if (l) ty = TypeSystem.TyLong;
-            else if (u) ty = (val >> 32) != 0 ? TypeSystem.TyUlong : TypeSystem.TyUint;
-            else ty = (val >> 31) != 0 ? TypeSystem.TyLong : TypeSystem.TyInt;
+            if (@base == 10)
+            {
+                // decimal L: long → long long
+                ty = fitsInSignedLong ? _types.TyLong : _types.TyLongLong;
+            }
+            else
+            {
+                // hex/oct L: long → unsigned long → long long → unsigned long long
+                if (fitsInSignedLong) ty = _types.TyLong;
+                else if (fitsInLong) ty = _types.TyUlong;
+                else if ((val >> 63) == 0) ty = _types.TyLongLong;
+                else ty = _types.TyUlongLong;
+            }
+        }
+        else if (u)
+        {
+            // U suffix: unsigned int → unsigned long → unsigned long long
+            if ((val >> 32) == 0) ty = _types.TyUint;
+            else if (fitsInLong) ty = _types.TyUlong;
+            else ty = _types.TyUlongLong;
+        }
+        else if (@base == 10)
+        {
+            // decimal, no suffix: int → long → long long
+            if ((val >> 31) == 0) ty = _types.TyInt;
+            else if (fitsInSignedLong) ty = _types.TyLong;
+            else ty = _types.TyLongLong;
         }
         else
         {
-            if (l && u) ty = TypeSystem.TyUlong;
-            else if (l) ty = (val >> 63) != 0 ? TypeSystem.TyUlong : TypeSystem.TyLong;
-            else if (u) ty = (val >> 32) != 0 ? TypeSystem.TyUlong : TypeSystem.TyUint;
-            else if ((val >> 63) != 0) ty = TypeSystem.TyUlong;
-            else if ((val >> 32) != 0) ty = TypeSystem.TyLong;
-            else if ((val >> 31) != 0) ty = TypeSystem.TyUint;
-            else ty = TypeSystem.TyInt;
+            // hex/oct, no suffix: int → unsigned int → long → unsigned long → long long → unsigned long long
+            if ((val >> 31) == 0) ty = _types.TyInt;
+            else if ((val >> 32) == 0) ty = _types.TyUint;
+            else if (fitsInSignedLong) ty = _types.TyLong;
+            else if (fitsInLong) ty = _types.TyUlong;
+            else if ((val >> 63) == 0) ty = _types.TyLongLong;
+            else ty = _types.TyUlongLong;
         }
 
         tok.Kind = TokenKind.Num;
@@ -458,17 +491,17 @@ public class Tokenizer
 
         if (text.EndsWith("f", StringComparison.OrdinalIgnoreCase))
         {
-            ty = TypeSystem.TyFloat;
+            ty = _types.TyFloat;
             numText = text[..^1];
         }
         else if (text.EndsWith("l", StringComparison.OrdinalIgnoreCase))
         {
-            ty = TypeSystem.TyLdouble;
+            ty = _types.TyLdouble;
             numText = text[..^1];
         }
         else
         {
-            ty = TypeSystem.TyDouble;
+            ty = _types.TyDouble;
         }
 
         if (numText.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ||
@@ -696,7 +729,7 @@ public class Tokenizer
             // Wide string literal
             if (StartsWith(buf, p, "L\""))
             {
-                cur = cur.Next = ReadUtf32StringLiteral(buf, p, p + 1, TypeSystem.TyInt);
+                cur = cur.Next = ReadUtf32StringLiteral(buf, p, p + 1, _types.TyInt);
                 p += cur.Len;
                 continue;
             }
@@ -704,7 +737,7 @@ public class Tokenizer
             // UTF-32 string literal
             if (StartsWith(buf, p, "U\""))
             {
-                cur = cur.Next = ReadUtf32StringLiteral(buf, p, p + 1, TypeSystem.TyUint);
+                cur = cur.Next = ReadUtf32StringLiteral(buf, p, p + 1, _types.TyUint);
                 p += cur.Len;
                 continue;
             }
@@ -712,7 +745,7 @@ public class Tokenizer
             // Character literal
             if (buf[p] == '\'')
             {
-                cur = cur.Next = ReadCharLiteral(buf, p, p, TypeSystem.TyInt);
+                cur = cur.Next = ReadCharLiteral(buf, p, p, _types.TyInt);
                 cur.Val = (sbyte)cur.Val;
                 p += cur.Len;
                 continue;
@@ -721,7 +754,7 @@ public class Tokenizer
             // UTF-16 character literal
             if (StartsWith(buf, p, "u'"))
             {
-                cur = cur.Next = ReadCharLiteral(buf, p, p + 1, TypeSystem.TyUshort);
+                cur = cur.Next = ReadCharLiteral(buf, p, p + 1, _types.TyUshort);
                 cur.Val &= 0xffff;
                 p += cur.Len;
                 continue;
@@ -730,7 +763,7 @@ public class Tokenizer
             // Wide character literal
             if (StartsWith(buf, p, "L'"))
             {
-                cur = cur.Next = ReadCharLiteral(buf, p, p + 1, TypeSystem.TyInt);
+                cur = cur.Next = ReadCharLiteral(buf, p, p + 1, _types.TyInt);
                 p += cur.Len;
                 continue;
             }
@@ -738,7 +771,7 @@ public class Tokenizer
             // UTF-32 character literal
             if (StartsWith(buf, p, "U'"))
             {
-                cur = cur.Next = ReadCharLiteral(buf, p, p + 1, TypeSystem.TyUint);
+                cur = cur.Next = ReadCharLiteral(buf, p, p + 1, _types.TyUint);
                 p += cur.Len;
                 continue;
             }

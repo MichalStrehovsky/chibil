@@ -11,6 +11,7 @@ public class Preprocessor
 {
     private readonly Tokenizer _tokenizer;
     private readonly CompilerOptions _options;
+    private readonly TypeSystem _types;
     private Parser _parser; // Set before preprocessing to enable #if evaluation
 
     private Dictionary<string, Macro> _macros = new();
@@ -21,10 +22,11 @@ public class Preprocessor
 
     public void SetParser(Parser parser) { _parser = parser; }
 
-    public Preprocessor(Tokenizer tokenizer, CompilerOptions options)
+    public Preprocessor(Tokenizer tokenizer, CompilerOptions options, TypeSystem types)
     {
         _tokenizer = tokenizer;
         _options = options;
+        _types = types;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1026,21 +1028,24 @@ public class Preprocessor
 
     public void InitMacros()
     {
-        DefineMacro("_LP64", "1");
+        var dm = _options.DataModel;
+        bool isLP64 = dm.LongSize == 8;
+
+        if (isLP64) { DefineMacro("_LP64", "1"); DefineMacro("__LP64__", "1"); }
         DefineMacro("__C99_MACRO_WITH_VA_ARGS", "1");
         DefineMacro("__ELF__", "1");
-        DefineMacro("__LP64__", "1");
         DefineMacro("__SIZEOF_DOUBLE__", "8");
         DefineMacro("__SIZEOF_FLOAT__", "4");
         DefineMacro("__SIZEOF_INT__", "4");
-        DefineMacro("__SIZEOF_LONG_DOUBLE__", "8");
+        DefineMacro("__SIZEOF_LONG_DOUBLE__", $"{dm.LDoubleSize}");
         DefineMacro("__SIZEOF_LONG_LONG__", "8");
-        DefineMacro("__SIZEOF_LONG__", "8");
-        DefineMacro("__SIZEOF_POINTER__", "8");
-        DefineMacro("__SIZEOF_PTRDIFF_T__", "8");
+        DefineMacro("__SIZEOF_LONG__", $"{dm.LongSize}");
+        DefineMacro("__SIZEOF_POINTER__", $"{dm.PointerSize}");
+        DefineMacro("__SIZEOF_PTRDIFF_T__", $"{dm.PointerSize}");
         DefineMacro("__SIZEOF_SHORT__", "2");
-        DefineMacro("__SIZEOF_SIZE_T__", "8");
-        DefineMacro("__SIZE_TYPE__", "unsigned long");
+        DefineMacro("__SIZEOF_SIZE_T__", $"{dm.PointerSize}");
+        DefineMacro("__SIZE_TYPE__", isLP64 ? "unsigned long" : "unsigned long long");
+        DefineMacro("__PTRDIFF_TYPE__", isLP64 ? "long" : "long long");
         DefineMacro("__STDC_HOSTED__", "1");
         DefineMacro("__STDC_NO_COMPLEX__", "1");
         DefineMacro("__STDC_UTF_16__", "1");
