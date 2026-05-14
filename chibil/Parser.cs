@@ -200,6 +200,8 @@ public class Parser
         CType ty = _types.TyInt;
         int counter = 0;
         bool isAtomic = false;
+        bool isConst = false;
+        bool isVolatile = false;
 
         while (IsTypename(tok))
         {
@@ -216,8 +218,9 @@ public class Parser
                     Util.ErrorTok(tok, "typedef may not be used together with static, extern, inline, __thread or _Thread_local");
                 tok = tok.Next; continue;
             }
-            if (Util.Consume(ref tok, tok, "const") || Util.Consume(ref tok, tok, "volatile") ||
-                Util.Consume(ref tok, tok, "auto") || Util.Consume(ref tok, tok, "register") ||
+            if (Util.Equal(tok, "const")) { isConst = true; tok = tok.Next; continue; }
+            if (Util.Equal(tok, "volatile")) { isVolatile = true; tok = tok.Next; continue; }
+            if (Util.Consume(ref tok, tok, "auto") || Util.Consume(ref tok, tok, "register") ||
                 Util.Consume(ref tok, tok, "restrict") || Util.Consume(ref tok, tok, "__restrict") ||
                 Util.Consume(ref tok, tok, "__restrict__") || Util.Consume(ref tok, tok, "_Noreturn"))
                 continue;
@@ -281,7 +284,13 @@ public class Parser
             };
             tok = tok.Next;
         }
-        if (isAtomic) { ty = TypeSystem.CopyType(ty); ty.IsAtomic = true; }
+        if (isAtomic || isConst || isVolatile)
+        {
+            ty = TypeSystem.CopyType(ty);
+            ty.IsAtomic = isAtomic;
+            ty.IsConst = isConst;
+            ty.IsVolatile = isVolatile;
+        }
         rest = tok;
         return ty;
     }
@@ -343,13 +352,27 @@ public class Parser
             ty = _types.PointerTo(ty);
             while (Util.Equal(tok, "const") || Util.Equal(tok, "volatile") || Util.Equal(tok, "restrict") ||
                    Util.Equal(tok, "__restrict") || Util.Equal(tok, "__restrict__"))
+            {
+                if (Util.Equal(tok, "const")) ty.IsConst = true;
+                else if (Util.Equal(tok, "volatile")) ty.IsVolatile = true;
                 tok = tok.Next;
+            }
         }
         rest = tok; return ty;
     }
 
+    private CallConv ParseCallConv(ref Token tok)
+    {
+        if (Util.Equal(tok, "__cdecl")) { tok = tok.Next; return CallConv.Cdecl; }
+        if (Util.Equal(tok, "__clrcall")) { tok = tok.Next; return CallConv.Clrcall; }
+        if (Util.Equal(tok, "__stdcall")) { tok = tok.Next; return CallConv.Stdcall; }
+        return CallConv.Cdecl;
+    }
+
     private CType Declarator(ref Token rest, Token tok, CType ty)
     {
+        CallConv callConv = ParseCallConv(ref tok);
+        if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
         ty = Pointers(ref tok, tok, ty);
         if (Util.Equal(tok, "("))
         {
@@ -363,12 +386,15 @@ public class Parser
         Token name = null, namePos = tok;
         if (tok.Kind == TokenKind.Ident) { name = tok; tok = tok.Next; }
         ty = TypeSuffix(ref rest, tok, ty);
+        if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
         ty.Name = name; ty.NamePos = namePos;
         return ty;
     }
 
     private CType AbstractDeclarator(ref Token rest, Token tok, CType ty)
     {
+        CallConv callConv = ParseCallConv(ref tok);
+        if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
         ty = Pointers(ref tok, tok, ty);
         if (Util.Equal(tok, "("))
         {
@@ -379,7 +405,9 @@ public class Parser
             ty = TypeSuffix(ref rest, tok, ty);
             return AbstractDeclarator(ref tok, start.Next, ty);
         }
-        return TypeSuffix(ref rest, tok, ty);
+        ty = TypeSuffix(ref rest, tok, ty);
+        if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
+        return ty;
     }
 
     private CType Typename(ref Token rest, Token tok)

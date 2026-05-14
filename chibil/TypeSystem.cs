@@ -107,6 +107,8 @@ public class TypeSystem
             Align = ty.Align,
             IsUnsigned = ty.IsUnsigned,
             IsAtomic = ty.IsAtomic,
+            IsConst = ty.IsConst,
+            IsVolatile = ty.IsVolatile,
             Base = ty.Base,
             Name = ty.Name,
             NamePos = ty.NamePos,
@@ -119,6 +121,7 @@ public class TypeSystem
             ReturnTy = ty.ReturnTy,
             Params = ty.Params,
             IsVariadic = ty.IsVariadic,
+            CallConv = ty.CallConv,
             Next = ty.Next,
             Origin = ty,
         };

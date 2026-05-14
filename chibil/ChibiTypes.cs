@@ -39,6 +39,13 @@ public enum NodeKind
     Asm, Cas, Exch,
 }
 
+public enum CallConv
+{
+    Cdecl,    // __cdecl — default for C functions
+    Clrcall,  // __clrcall — managed calling convention
+    Stdcall,  // __stdcall — for P/Invoke (Win32 API)
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  CFile (← File in C)
 // ═══════════════════════════════════════════════════════════════════
@@ -98,6 +105,8 @@ public class CType
     public int Align;
     public bool IsUnsigned;
     public bool IsAtomic;
+    public bool IsConst;
+    public bool IsVolatile;
     public CType Origin; // for type compatibility check
 
     // Pointer-to or array-of type
@@ -123,6 +132,7 @@ public class CType
     public CType ReturnTy;
     public CType Params;
     public bool IsVariadic;
+    public CallConv CallConv; // __cdecl (default), __clrcall, __stdcall
     public CType Next;
 
     public CType() { }
@@ -399,7 +409,7 @@ public class CompilerOptions
     public bool OptFpic;
     public bool OptFcommon = true;
     public string BaseFile;
-    public DataModel DataModel = DataModel.LP64;
+    public DataModel DataModel = DataModel.LLP64;
 }
 
 // ═══════════════════════════════════════════════════════════════════

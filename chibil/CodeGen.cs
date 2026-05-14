@@ -1,50 +1,1275 @@
+using System.Diagnostics;
+using System.Reflection;
+using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
+using System.Reflection.PortableExecutable;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Chibil;
 
 /// <summary>
-/// x86-64 code generator — port of codegen.c.
-/// Emits AT&T syntax x86-64 assembly from the AST.
+/// MSIL code generator — emits COFF object files with CIL bytecode.
+/// Targets MSVC /clr mixed-mode (IJW) compatible output.
 /// </summary>
 public class CodeGen
 {
-    private const int GpMax = 6;
-    private const int FpMax = 8;
-
-    private TextWriter _out;
-    private int _depth;
-    private int _labelCount = 1;
-    private Obj _currentFn;
     private readonly CompilerOptions _options;
     private readonly TypeSystem _types;
     private readonly Tokenizer _tokenizer;
+    private readonly DataModel _dm;
 
-    private static readonly string[] Argreg8 = { "%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b" };
-    private static readonly string[] Argreg16 = { "%di", "%si", "%dx", "%cx", "%r8w", "%r9w" };
-    private static readonly string[] Argreg32 = { "%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d" };
-    private static readonly string[] Argreg64 = { "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9" };
+    // ─── TU-level state ──────────────────────────────────────────
+    private MetadataBuilder _md;
+    private CoffHeaderBuilder _coffHeader;
+    private ManagedCoffSymbolTableBuilder _symtab;
+    private CodeViewSymbolBuilder _codeviewSymbols;
+    private CodeViewFileHandle _cvFile;
+    private RelocatableMethodBodyStreamEncoder _bodyEncoder;
+
+    private BlobBuilder _ilStreamBuilder, _ilRelocBuilder;
+    private BlobBuilder _dataStream, _dataRelocs;
+    private BlobBuilder _nepStream, _nepRelocs;
+    private BlobBuilder _ilFixupStream, _ilFixupRelocs;
+    private int _bssSize;
+
+    private AssemblyReferenceHandle _mscorlibRef;
+    private TypeDefinitionHandle _moduleTypeDef;
+
+    // Lazy TypeRef handles (created on first use)
+    private TypeReferenceHandle _callConvCdeclRef;
+    private TypeReferenceHandle _callConvStdcallRef;
+    private TypeReferenceHandle _isSignUnspecifiedByteRef;
+    private TypeReferenceHandle _isConstRef;
+    private TypeReferenceHandle _isVolatileRef;
+    private TypeReferenceHandle _isLongRef;
+    private TypeReferenceHandle _nativeCppClassAttrRef;
+    private TypeReferenceHandle _valueTypeRef;
+    private TypeReferenceHandle _interlockedRef;
+    private bool _callConvCdeclCreated, _callConvStdcallCreated;
+    private bool _isSignUnspecifiedByteCreated, _isConstCreated, _isVolatileCreated, _isLongCreated;
+    private bool _nativeCppClassAttrCreated, _valueTypeCreated, _interlockedCreated;
+
+    // Metadata row tracking
+    private int _nextFieldRow = 1, _nextMethodRow = 1, _nextParamRow = 1;
+
+    // Function/field registrations
+    private readonly Dictionary<Obj, MethodDefinitionHandle> _methodDefs = new();
+    private readonly Dictionary<Obj, FieldDefinitionHandle> _fieldDefs = new();
+    private readonly Dictionary<string, MemberReferenceHandle> _externalFuncRefs = new();
+    private readonly Dictionary<int, TypeDefinitionHandle> _structTypeDefs = new();
+    private readonly Dictionary<string, TypeDefinitionHandle> _arrayTypeDefs = new();
+    private readonly Dictionary<string, TypeReferenceHandle> _forwardDeclTypeRefs = new();
+    private readonly List<(int typeId, CType type, string name)> _pendingTypeDefs = new();
+    private readonly Dictionary<string, FieldDefinitionHandle> _globalFieldsByName = new();
+
+    // Tracks which functions have their address taken (need __unep@ slot)
+    private readonly HashSet<string> _addressTakenFuncs = new();
+
+    // Anonymous global counter and TU hash
+    private int _anonGlobalCounter;
+    private string _tuHash;
+
+    // __unep@ fields for address-taken cdecl functions
+    private readonly Dictionary<string, FieldDefinitionHandle> _unepFields = new();
+
+    // __CxxPureMSILEntry state
+    private MethodDefinitionHandle _mainMethod;
+    private Obj _mainObj;
+    private MethodDefinitionHandle _cxxPureMsilEntry;
+    private bool _hasMain;
+
+    // Architecture helpers derived from DataModel
+    private int PtrSize => _dm.PointerSize;
+    private bool Is32 => _dm.PointerSize == 4;
+    private string SymPrefix => Is32 ? "_" : "";
+    private Machine TargetMachine => Is32 ? Machine.I386 : Machine.Amd64; // LP64: add ARM64
+    private CodeViewMachine CvMachine => Is32 ? CodeViewMachine.I386 : CodeViewMachine.Amd64;
+
+    // Mscorlib hashes
+    private byte[] MscorlibHash => Is32
+        ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
+        : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
+    private static readonly byte[] MscorlibPkt = { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 };
+
+    // ─── Per-function state ──────────────────────────────────────
+    private RelocatableInstructionEncoder _enc;
+    private Obj _currentFn;
+    private Dictionary<Obj, int> _localSlots;
+    private Dictionary<Obj, int> _paramSlots;
+    private List<(CType ty, int slot)> _scratchLocals;
+    private int _scratchLocalBase;
+    private int _maxStack, _stackDepth;
+    private Dictionary<string, LabelHandle> _labels;
+    private int _labelCount;
+    private StandaloneSignatureHandle _localsSigHandle;
 
     public CodeGen(CompilerOptions options, Tokenizer tokenizer, TypeSystem types)
     {
         _options = options;
         _tokenizer = tokenizer;
         _types = types;
+        _dm = options.DataModel;
     }
-
-    private void Println(string line) => _out.WriteLine(line);
 
     private int Count() => _labelCount++;
 
-    private void Push() { Println("  push %rax"); _depth++; }
-    private void Pop(string arg) { Println($"  pop {arg}"); _depth--; }
-    private void Pushf() { Println("  sub $8, %rsp"); Println("  movsd %xmm0, (%rsp)"); _depth++; }
-    private void Popf(int reg) { Println($"  movsd (%rsp), %xmm{reg}"); Println("  add $8, %rsp"); _depth--; }
+    // ═══════════════════════════════════════════════════════════════
+    //  Stack tracking
+    // ═══════════════════════════════════════════════════════════════
 
-    private static string RegDx(int sz) => sz switch { 1 => "%dl", 2 => "%dx", 4 => "%edx", 8 => "%rdx", _ => throw new ChibiException("unreachable") };
-    private static string RegAx(int sz) => sz switch { 1 => "%al", 2 => "%ax", 4 => "%eax", 8 => "%rax", _ => throw new ChibiException("unreachable") };
+    private void Push() { _stackDepth++; if (_stackDepth > _maxStack) _maxStack = _stackDepth; }
+    private void Push(int n) { _stackDepth += n; if (_stackDepth > _maxStack) _maxStack = _stackDepth; }
+    private void Pop() { Debug.Assert(_stackDepth > 0, "stack underflow"); _stackDepth--; }
+    private void Pop(int n) { Debug.Assert(_stackDepth >= n, "stack underflow"); _stackDepth -= n; }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Address generation
+    //  Lazy TypeRef accessors
+    // ═══════════════════════════════════════════════════════════════
+
+    private TypeReferenceHandle GetCallConvCdeclRef()
+    {
+        if (!_callConvCdeclCreated)
+        {
+            _callConvCdeclRef = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString("System.Runtime.CompilerServices"),
+                _md.GetOrAddString("CallConvCdecl"));
+            _callConvCdeclCreated = true;
+        }
+        return _callConvCdeclRef;
+    }
+
+    private TypeReferenceHandle GetCallConvStdcallRef()
+    {
+        if (!_callConvStdcallCreated)
+        {
+            _callConvStdcallRef = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString("System.Runtime.CompilerServices"),
+                _md.GetOrAddString("CallConvStdcall"));
+            _callConvStdcallCreated = true;
+        }
+        return _callConvStdcallRef;
+    }
+
+    private TypeReferenceHandle GetIsSignUnspecifiedByteRef()
+    {
+        if (!_isSignUnspecifiedByteCreated)
+        {
+            _isSignUnspecifiedByteRef = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString("System.Runtime.CompilerServices"),
+                _md.GetOrAddString("IsSignUnspecifiedByte"));
+            _isSignUnspecifiedByteCreated = true;
+        }
+        return _isSignUnspecifiedByteRef;
+    }
+
+    private TypeReferenceHandle GetIsConstRef()
+    {
+        if (!_isConstCreated)
+        {
+            _isConstRef = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString("System.Runtime.CompilerServices"),
+                _md.GetOrAddString("IsConst"));
+            _isConstCreated = true;
+        }
+        return _isConstRef;
+    }
+
+    private TypeReferenceHandle GetIsVolatileRef()
+    {
+        if (!_isVolatileCreated)
+        {
+            _isVolatileRef = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString("System.Runtime.CompilerServices"),
+                _md.GetOrAddString("IsVolatile"));
+            _isVolatileCreated = true;
+        }
+        return _isVolatileRef;
+    }
+
+    private TypeReferenceHandle GetIsLongRef()
+    {
+        if (!_isLongCreated)
+        {
+            _isLongRef = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString("System.Runtime.CompilerServices"),
+                _md.GetOrAddString("IsLong"));
+            _isLongCreated = true;
+        }
+        return _isLongRef;
+    }
+
+    private TypeReferenceHandle GetNativeCppClassAttrRef()
+    {
+        if (!_nativeCppClassAttrCreated)
+        {
+            _nativeCppClassAttrRef = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString("System.Runtime.CompilerServices"),
+                _md.GetOrAddString("NativeCppClassAttribute"));
+            _nativeCppClassAttrCreated = true;
+        }
+        return _nativeCppClassAttrRef;
+    }
+
+    private TypeReferenceHandle GetValueTypeRef()
+    {
+        if (!_valueTypeCreated)
+        {
+            _valueTypeRef = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString("System"),
+                _md.GetOrAddString("ValueType"));
+            _valueTypeCreated = true;
+        }
+        return _valueTypeRef;
+    }
+
+    private TypeReferenceHandle GetInterlockedRef()
+    {
+        if (!_interlockedCreated)
+        {
+            _interlockedRef = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString("System.Threading"),
+                _md.GetOrAddString("Interlocked"));
+            _interlockedCreated = true;
+        }
+        return _interlockedRef;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Type encoding: CType → MSIL signature bytes
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Encode a C type into an MSIL signature using the builder directly.
+    /// Uses raw byte writes for modopt/modreq since the BlobEncoder API
+    /// doesn't support all patterns we need.
+    /// </summary>
+    private void EncodeType(BlobBuilder sig, CType ty)
+    {
+        // Handle const/volatile on this type (for pointer-level qualifiers)
+        if (ty.IsConst)
+        {
+            sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsConstRef()));
+        }
+        if (ty.IsVolatile)
+        {
+            sig.WriteByte((byte)SignatureTypeCode.RequiredModifier);
+            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsVolatileRef()));
+        }
+
+        switch (ty.Kind)
+        {
+            case TypeKind.Void:
+                sig.WriteByte((byte)SignatureTypeCode.Void);
+                break;
+            case TypeKind.Bool:
+                sig.WriteByte((byte)SignatureTypeCode.Boolean);
+                break;
+            case TypeKind.Char:
+                // plain char: modopt(IsSignUnspecifiedByte) int8
+                sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+                sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
+                sig.WriteByte((byte)SignatureTypeCode.SByte);
+                break;
+            case TypeKind.Short:
+                sig.WriteByte(ty.IsUnsigned ? (byte)SignatureTypeCode.UInt16 : (byte)SignatureTypeCode.Int16);
+                break;
+            case TypeKind.Int:
+                sig.WriteByte(ty.IsUnsigned ? (byte)SignatureTypeCode.UInt32 : (byte)SignatureTypeCode.Int32);
+                break;
+            case TypeKind.Enum:
+                // Enums are plain int32
+                sig.WriteByte(ty.IsUnsigned ? (byte)SignatureTypeCode.UInt32 : (byte)SignatureTypeCode.Int32);
+                break;
+            case TypeKind.Long:
+                // LLP64: long = 4 bytes with modopt(IsLong)
+                // LP64: long = 8 bytes, would be int64
+                if (_dm.LongSize == 4)
+                {
+                    sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsLongRef()));
+                    sig.WriteByte(ty.IsUnsigned ? (byte)SignatureTypeCode.UInt32 : (byte)SignatureTypeCode.Int32);
+                }
+                else
+                {
+                    // LP64: long is 8 bytes = int64
+                    sig.WriteByte(ty.IsUnsigned ? (byte)SignatureTypeCode.UInt64 : (byte)SignatureTypeCode.Int64);
+                }
+                break;
+            case TypeKind.LLong:
+                sig.WriteByte(ty.IsUnsigned ? (byte)SignatureTypeCode.UInt64 : (byte)SignatureTypeCode.Int64);
+                break;
+            case TypeKind.Float:
+                sig.WriteByte((byte)SignatureTypeCode.Single);
+                break;
+            case TypeKind.Double:
+                sig.WriteByte((byte)SignatureTypeCode.Double);
+                break;
+            case TypeKind.LDouble:
+                // long double → modopt(IsLong) float64 (both LP64 and LLP64)
+                sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+                sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsLongRef()));
+                sig.WriteByte((byte)SignatureTypeCode.Double);
+                break;
+            case TypeKind.Ptr:
+                sig.WriteByte((byte)SignatureTypeCode.Pointer);
+                EncodeType(sig, ty.Base);
+                break;
+            case TypeKind.Array:
+                if (ty.ArrayLen < 0)
+                {
+                    // Incomplete array → pointer to element
+                    sig.WriteByte((byte)SignatureTypeCode.Pointer);
+                    EncodeType(sig, ty.Base);
+                }
+                else
+                {
+                    // Fixed-size array → ValueType of array TypeDef
+                    string arrayName = MangleArrayTypeName(ty);
+                    if (_arrayTypeDefs.TryGetValue(arrayName, out var arrayTd))
+                    {
+                        sig.WriteByte((byte)(SignatureTypeCode)0x11);
+                        sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(arrayTd));
+                    }
+                    else
+                    {
+                        // Shouldn't happen if PreAllocate ran correctly
+                        sig.WriteByte((byte)SignatureTypeCode.Pointer);
+                        EncodeType(sig, ty.Base);
+                    }
+                }
+                break;
+            case TypeKind.Struct:
+            case TypeKind.Union:
+            {
+                int typeId = GetTypeId(ty);
+                if (_structTypeDefs.TryGetValue(typeId, out var structTd))
+                {
+                    sig.WriteByte((byte)(SignatureTypeCode)0x11);
+                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(structTd));
+                }
+                else
+                {
+                    // Forward-declared struct → TypeRef
+                    string name = GetStructName(ty);
+                    if (!_forwardDeclTypeRefs.TryGetValue(name, out var typeRef))
+                    {
+                        typeRef = _md.AddTypeReference(default, default, _md.GetOrAddString(name));
+                        _forwardDeclTypeRefs[name] = typeRef;
+                    }
+                    sig.WriteByte((byte)(SignatureTypeCode)0x11);
+                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(typeRef));
+                }
+                break;
+            }
+            case TypeKind.Func:
+            {
+                // Function type used as a value (function pointer parameter) → FNPTR
+                sig.WriteByte((byte)SignatureTypeCode.FunctionPointer);
+                EncodeFnPtrSignature(sig, ty);
+                break;
+            }
+            case TypeKind.Vla:
+                // VLA → pointer to base element
+                sig.WriteByte((byte)SignatureTypeCode.Pointer);
+                EncodeType(sig, ty.Base);
+                break;
+            default:
+                // Native int for anything else (shouldn't happen)
+                sig.WriteByte((byte)SignatureTypeCode.IntPtr);
+                break;
+        }
+    }
+
+    /// <summary>Encode an inline function pointer signature for FNPTR in method/local signatures.</summary>
+    private void EncodeFnPtrSignature(BlobBuilder sig, CType funcTy)
+    {
+        // Calling convention byte
+        if (funcTy.CallConv == CallConv.Clrcall)
+            sig.WriteByte((byte)SignatureCallingConvention.Default);
+        else
+            sig.WriteByte((byte)SignatureCallingConvention.Unmanaged | (byte)SignatureCallingConvention.Default);
+
+        // Count parameters
+        int paramCount = 0;
+        for (CType p = funcTy.Params; p != null; p = p.Next) paramCount++;
+        sig.WriteCompressedInteger(paramCount);
+
+        // Return type
+        EncodeReturnType(sig, funcTy);
+
+        // Parameters
+        for (CType p = funcTy.Params; p != null; p = p.Next)
+            EncodeType(sig, p);
+    }
+
+    /// <summary>Encode the return type for a function, with modopt(CallConvCdecl) for cdecl.</summary>
+    private void EncodeReturnType(BlobBuilder sig, CType funcTy)
+    {
+        // For cdecl functions: modopt(CallConvCdecl) on return type
+        if (funcTy.CallConv == CallConv.Cdecl)
+        {
+            sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetCallConvCdeclRef()));
+        }
+        else if (funcTy.CallConv == CallConv.Stdcall)
+        {
+            sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetCallConvStdcallRef()));
+        }
+
+        if (funcTy.ReturnTy.Kind == TypeKind.Void)
+            sig.WriteByte((byte)SignatureTypeCode.Void);
+        else
+            EncodeType(sig, funcTy.ReturnTy);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Type identity helpers
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>Get a stable identity for a struct/union type for dedup.</summary>
+    private static int GetTypeId(CType ty)
+    {
+        // Walk through Origin chain to find the canonical type
+        CType canonical = ty;
+        while (canonical.Origin != null) canonical = canonical.Origin;
+        return RuntimeHelpers.GetHashCode(canonical);
+    }
+
+    private static string GetStructName(CType ty)
+    {
+        if (ty.Name != null)
+            return Util.GetTokenText(ty.Name);
+        // Anonymous struct — use a generated name
+        return $"<anon_{GetTypeId(ty):X8}>";
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Name mangling
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Produce an MSVC-compatible decorated name for a C function.
+    /// Format: ?name@@$$J0YA(ret)(params)@Z  for cdecl
+    ///         ?name@@$$J0YM(ret)(params)@Z  for __clrcall
+    /// </summary>
+    private string MangleFunctionName(Obj fn)
+    {
+        CType funcTy = fn.Ty;
+        string cc = funcTy.CallConv == CallConv.Clrcall ? "M" : "A";
+        var sb = new StringBuilder();
+        sb.Append($"?{fn.Name}@@$$J0Y{cc}");
+        MangleType(sb, funcTy.ReturnTy, isReturn: true);
+        int paramCount = 0;
+        for (CType p = funcTy.Params; p != null; p = p.Next)
+        {
+            MangleType(sb, p, isReturn: false);
+            paramCount++;
+        }
+        if (paramCount == 0) sb.Append('X'); // void params
+        if (funcTy.IsVariadic)
+            sb.Append("ZZ");
+        else
+            sb.Append("@Z");
+        return sb.ToString();
+    }
+
+    private void MangleType(StringBuilder sb, CType ty, bool isReturn)
+    {
+        // Strip qualifiers for mangling
+        switch (ty.Kind)
+        {
+            case TypeKind.Void: sb.Append('X'); break;
+            case TypeKind.Bool: sb.Append("_N"); break;
+            case TypeKind.Char:
+                if (ty.IsUnsigned) sb.Append('E');
+                else if (ty.Origin?.Kind == TypeKind.Char && !ty.IsUnsigned) sb.Append('D'); // plain char
+                else sb.Append('D'); // default char is plain char
+                break;
+            case TypeKind.Short:
+                sb.Append(ty.IsUnsigned ? 'G' : 'F');
+                break;
+            case TypeKind.Int:
+            case TypeKind.Enum:
+                sb.Append(ty.IsUnsigned ? 'I' : 'H');
+                break;
+            case TypeKind.Long:
+                if (_dm.LongSize == 4)
+                    sb.Append(ty.IsUnsigned ? 'K' : 'J');
+                else
+                    sb.Append(ty.IsUnsigned ? "_K" : "_J"); // LP64: long=8 bytes
+                break;
+            case TypeKind.LLong:
+                sb.Append(ty.IsUnsigned ? "_K" : "_J");
+                break;
+            case TypeKind.Float: sb.Append('M'); break;
+            case TypeKind.Double: sb.Append('N'); break;
+            case TypeKind.LDouble: sb.Append("O"); break; // long double in MSVC mangling
+            case TypeKind.Ptr:
+                ManglePointer(sb, ty);
+                break;
+            case TypeKind.Array:
+                // Array parameter decays to pointer
+                ManglePointer(sb, _types.PointerTo(ty.Base));
+                break;
+            case TypeKind.Struct:
+            case TypeKind.Union:
+                if (isReturn) sb.Append("?A");
+                sb.Append('U');
+                sb.Append(GetStructName(ty));
+                sb.Append("@@");
+                break;
+            case TypeKind.Func:
+                // Function pointer type
+                MangleFuncPtr(sb, ty);
+                break;
+        }
+    }
+
+    private void ManglePointer(StringBuilder sb, CType ty)
+    {
+        string e = Is32 ? "" : "E"; // __ptr64 on 64-bit
+        CType baseTy = ty.Base;
+
+        if (baseTy.Kind == TypeKind.Func)
+        {
+            // Function pointer: P6A<ret><params>@Z or P6M<ret><params>@Z
+            MangleFuncPtr(sb, baseTy);
+            return;
+        }
+
+        // Determine const/volatile qualifier letter
+        if (baseTy.IsConst && baseTy.IsVolatile) sb.Append($"P{e}D");
+        else if (baseTy.IsConst) sb.Append($"P{e}B");
+        else if (baseTy.IsVolatile) sb.Append($"P{e}C");
+        else sb.Append($"P{e}A");
+
+        MangleType(sb, baseTy, isReturn: false);
+    }
+
+    private void MangleFuncPtr(StringBuilder sb, CType funcTy)
+    {
+        string cc = funcTy.CallConv == CallConv.Clrcall ? "M" : "A";
+        sb.Append($"P6{cc}");
+        MangleType(sb, funcTy.ReturnTy, isReturn: false);
+        int count = 0;
+        for (CType p = funcTy.Params; p != null; p = p.Next)
+        {
+            MangleType(sb, p, isReturn: false);
+            count++;
+        }
+        if (count == 0) sb.Append('X');
+        sb.Append("@Z");
+    }
+
+    /// <summary>MSVC number encoding for array dimensions.</summary>
+    private static string EncodeNumber(int value)
+    {
+        if (value == 0) return "A@";
+        if (value >= 1 && value <= 10) return ((char)('0' + value - 1)).ToString();
+        // Hex encoding: nibbles A-P (A=0, P=15), MSB first, terminated by @
+        var sb = new StringBuilder();
+        while (value > 0)
+        {
+            sb.Insert(0, (char)('A' + (value & 0xF)));
+            value >>= 4;
+        }
+        sb.Append('@');
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Generate array TypeDef name: $ArrayType$$$BY(ndims)(bounds)(elemtype)
+    /// </summary>
+    private string MangleArrayTypeName(CType ty)
+    {
+        Debug.Assert(ty.Kind == TypeKind.Array);
+        var sb = new StringBuilder("$ArrayType$$$BY");
+
+        // Count dimensions
+        int ndims = 0;
+        var dims = new List<int>();
+        CType cur = ty;
+        while (cur.Kind == TypeKind.Array)
+        {
+            ndims++;
+            dims.Add(cur.ArrayLen);
+            cur = cur.Base;
+        }
+        sb.Append(EncodeNumber(ndims));
+        foreach (int dim in dims)
+            sb.Append(EncodeNumber(dim));
+
+        // Element type code
+        MangleType(sb, cur, isReturn: false);
+        return sb.ToString();
+    }
+
+    private string MangleStaticLocalName(Obj fn, Obj var)
+    {
+        return $"?A0x{_tuHash}.?{var.Name}@?1??{fn.Name}@@9@9";
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Pass 1: Metadata Registration
+    // ═══════════════════════════════════════════════════════════════
+
+    private void RegisterMetadata(Obj prog, string objName)
+    {
+        // Phase 1: Pre-allocate struct/array TypeDefs
+        PreAllocateStructTypeDefs(prog);
+
+        // Phase 2: <Module> TypeDef (must be row 1)
+        _moduleTypeDef = _md.AddTypeDefinition(
+            TypeAttributes.Class, default, _md.GetOrAddString("<Module>"),
+            default,
+            MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
+            MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
+
+        // Phase 3: Register functions
+        RegisterFunctions(prog);
+
+        // Phase 3b: Pre-register __unep@ fields for address-taken cdecl functions
+        RegisterUnepFields(prog);
+
+        // Phase 4: Register global fields
+        RegisterGlobalFields(prog);
+
+        // Phase 5: Materialize struct/array TypeDefs
+        MaterializeStructTypeDefs();
+
+        // Module row
+        _md.AddModule(0, _md.GetOrAddString(objName), _md.GetOrAddGuid(Guid.NewGuid()), default, default);
+    }
+
+    // ─── Phase 1: Pre-allocate struct/array TypeDefs ──────────────
+    // We predict handles based on row position. <Module> is TypeDef row 1.
+    // All struct/array TypeDefs will be rows 2, 3, 4, ... in the order they're discovered.
+    private int _nextStructTypeDefRow = 2; // starts at 2 since <Module> is row 1
+
+    private void PreAllocateStructTypeDefs(Obj prog)
+    {
+        var visited = new HashSet<Node>();
+        for (Obj fn = prog; fn != null; fn = fn.Next)
+        {
+            PreAllocateFromType(fn.Ty);
+            if (fn.IsFunction && fn.IsDefinition && fn.IsLive)
+            {
+                for (Obj local = fn.Locals; local != null; local = local.Next)
+                    PreAllocateFromType(local.Ty);
+                for (Obj param = fn.Params; param != null; param = param.Next)
+                    PreAllocateFromType(param.Ty);
+                if (fn.Body != null)
+                    PreAllocateFromNode(fn.Body, visited);
+            }
+        }
+    }
+
+    private void PreAllocateFromType(CType ty)
+    {
+        if (ty == null) return;
+        CType canonical = ty;
+        while (canonical.Origin != null) canonical = canonical.Origin;
+
+        switch (canonical.Kind)
+        {
+            case TypeKind.Struct:
+            case TypeKind.Union:
+                if (canonical.Members != null) // Only complete types
+                {
+                    int id = GetTypeId(canonical);
+                    if (!_structTypeDefs.ContainsKey(id))
+                    {
+                        // Reserve a predicted handle
+                        var predictedHandle = MetadataTokens.TypeDefinitionHandle(_nextStructTypeDefRow++);
+                        _structTypeDefs[id] = predictedHandle;
+                        string name = GetStructName(canonical);
+                        _pendingTypeDefs.Add((id, canonical, name));
+
+                        // Recurse into member types
+                        for (Member m = canonical.Members; m != null; m = m.Next)
+                            PreAllocateFromType(m.Ty);
+                    }
+                }
+                break;
+            case TypeKind.Array:
+                if (canonical.ArrayLen >= 0)
+                {
+                    string arrayName = MangleArrayTypeName(canonical);
+                    if (!_arrayTypeDefs.ContainsKey(arrayName))
+                    {
+                        var predictedHandle = MetadataTokens.TypeDefinitionHandle(_nextStructTypeDefRow++);
+                        _arrayTypeDefs[arrayName] = predictedHandle;
+                        _pendingTypeDefs.Add((0, canonical, arrayName));
+                    }
+                    PreAllocateFromType(canonical.Base);
+                }
+                break;
+            case TypeKind.Ptr:
+                PreAllocateFromType(canonical.Base);
+                break;
+            case TypeKind.Func:
+                PreAllocateFromType(canonical.ReturnTy);
+                for (CType p = canonical.Params; p != null; p = p.Next)
+                    PreAllocateFromType(p);
+                break;
+        }
+    }
+
+    private void PreAllocateFromNode(Node node, HashSet<Node> visited)
+    {
+        if (node == null || !visited.Add(node)) return;
+        if (node.Ty != null) PreAllocateFromType(node.Ty);
+        if (node.FuncTy != null) PreAllocateFromType(node.FuncTy);
+        PreAllocateFromNode(node.Lhs, visited);
+        PreAllocateFromNode(node.Rhs, visited);
+        PreAllocateFromNode(node.Cond, visited);
+        PreAllocateFromNode(node.Then, visited);
+        PreAllocateFromNode(node.Els, visited);
+        PreAllocateFromNode(node.Init, visited);
+        PreAllocateFromNode(node.Inc, visited);
+        PreAllocateFromNode(node.Body, visited);
+        PreAllocateFromNode(node.Next, visited);
+        for (Node arg = node.Args; arg != null; arg = arg.Next)
+            PreAllocateFromNode(arg, visited);
+        PreAllocateFromNode(node.CasAddr, visited);
+        PreAllocateFromNode(node.CasOld, visited);
+        PreAllocateFromNode(node.CasNew, visited);
+        PreAllocateFromNode(node.AtomicExpr, visited);
+    }
+
+    // ─── Phase 3: Register functions ─────────────────────────────
+
+    private void RegisterFunctions(Obj prog)
+    {
+        // Pass A: defined functions → MethodDef
+        for (Obj fn = prog; fn != null; fn = fn.Next)
+        {
+            if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
+            RegisterFunction(fn);
+        }
+
+        // Pass B: declared-only (extern) functions → MemberRef
+        for (Obj fn = prog; fn != null; fn = fn.Next)
+        {
+            if (!fn.IsFunction || fn.IsDefinition) continue;
+            if (_methodDefs.ContainsKey(fn)) continue;
+            if (_externalFuncRefs.ContainsKey(fn.Name)) continue;
+            RegisterExternalFunction(fn);
+        }
+    }
+
+    private void RegisterFunction(Obj fn)
+    {
+        CType funcTy = fn.Ty;
+        bool isCdecl = funcTy.CallConv != CallConv.Clrcall;
+
+        // Build method signature
+        var sig = new BlobBuilder();
+        sig.WriteByte(0x00); // DEFAULT calling convention
+
+        // Parameter count
+        int paramCount = 0;
+        for (CType p = funcTy.Params; p != null; p = p.Next) paramCount++;
+        sig.WriteCompressedInteger(paramCount);
+
+        // Return type
+        EncodeReturnType(sig, funcTy);
+
+        // Parameters
+        for (CType p = funcTy.Params; p != null; p = p.Next)
+            EncodeType(sig, p);
+
+        // Method attributes
+        MethodAttributes attrs = MethodAttributes.Assembly | MethodAttributes.Static;
+        if (isCdecl && !fn.IsStatic)
+            attrs |= (MethodAttributes)0x0008; // UnmanagedExport
+
+        var methodDef = _md.AddMethodDefinition(
+            attrs,
+            MethodImplAttributes.IL | MethodImplAttributes.Managed,
+            _md.GetOrAddString(fn.Name),
+            _md.GetOrAddBlob(sig),
+            0,
+            MetadataTokens.ParameterHandle(_nextParamRow));
+        _nextMethodRow++;
+
+        // Add parameter rows
+        int paramIdx = 1;
+        for (CType p = funcTy.Params; p != null; p = p.Next)
+        {
+            string paramName = p.Name != null ? Util.GetTokenText(p.Name) : $"_a{paramIdx}";
+            _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString(paramName), paramIdx);
+            _nextParamRow++;
+            paramIdx++;
+        }
+
+        _methodDefs[fn] = methodDef;
+
+        // Pre-register COFF symbol
+        string mangledName = MangleFunctionName(fn);
+        _symtab.PreRegisterFunctionClrToken(mangledName, methodDef);
+
+        // If this is main, register __CxxPureMSILEntry
+        if (fn.Name == "main")
+        {
+            _hasMain = true;
+            _mainMethod = methodDef;
+            _mainObj = fn;
+            RegisterCxxPureMSILEntry(fn);
+        }
+    }
+
+    private void RegisterCxxPureMSILEntry(Obj mainFn)
+    {
+        // Signature: int __clrcall(int argc, char** argv, char** envp)
+        var sig = new BlobBuilder();
+        sig.WriteByte(0x00); // DEFAULT calling convention
+        sig.WriteCompressedInteger(3); // 3 params
+
+        // Return type: int32 (no CallConvCdecl modopt — this is __clrcall)
+        sig.WriteByte((byte)SignatureTypeCode.Int32);
+
+        // Param 1: int argc
+        sig.WriteByte((byte)SignatureTypeCode.Int32);
+
+        // Param 2: char** argv — Ptr Ptr modopt(IsSignUnspecifiedByte) I1
+        sig.WriteByte((byte)SignatureTypeCode.Pointer);
+        sig.WriteByte((byte)SignatureTypeCode.Pointer);
+        sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
+        sig.WriteByte((byte)SignatureTypeCode.SByte);
+
+        // Param 3: char** envp — same encoding, but use '0' backreference in mangling
+        sig.WriteByte((byte)SignatureTypeCode.Pointer);
+        sig.WriteByte((byte)SignatureTypeCode.Pointer);
+        sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
+        sig.WriteByte((byte)SignatureTypeCode.SByte);
+
+        _cxxPureMsilEntry = _md.AddMethodDefinition(
+            MethodAttributes.Assembly | MethodAttributes.Static,
+            MethodImplAttributes.IL | MethodImplAttributes.Managed,
+            _md.GetOrAddString("__CxxPureMSILEntry"),
+            _md.GetOrAddBlob(sig),
+            0,
+            MetadataTokens.ParameterHandle(_nextParamRow));
+        _nextMethodRow++;
+
+        _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("argc"), 1);
+        _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("argv"), 2);
+        _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("envp"), 3);
+        _nextParamRow += 3;
+
+        string e = Is32 ? "" : "E";
+        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
+        _symtab.PreRegisterFunctionClrToken(mangledName, _cxxPureMsilEntry);
+    }
+
+    private void RegisterExternalFunction(Obj fn)
+    {
+        CType funcTy = fn.Ty;
+
+        // Build MemberRef signature
+        var sig = new BlobBuilder();
+        sig.WriteByte(0x00); // DEFAULT
+        int paramCount = 0;
+        for (CType p = funcTy.Params; p != null; p = p.Next) paramCount++;
+        sig.WriteCompressedInteger(paramCount);
+        EncodeReturnType(sig, funcTy);
+        for (CType p = funcTy.Params; p != null; p = p.Next)
+            EncodeType(sig, p);
+
+        var memberRef = _md.AddMemberReference(
+            _moduleTypeDef, _md.GetOrAddString(fn.Name), _md.GetOrAddBlob(sig));
+        _externalFuncRefs[fn.Name] = memberRef;
+
+        // Add DecoratedNameAttribute
+        string mangledName = MangleFunctionName(fn);
+        AddDecoratedNameAttribute(memberRef, mangledName);
+
+        // Register external CLR token
+        _symtab.AddExternalClrToken(mangledName, memberRef);
+    }
+
+    private void AddDecoratedNameAttribute(EntityHandle target, string mangledName)
+    {
+        // DecoratedNameAttribute custom attribute
+        // We need a MemberRef to the constructor: .ctor(string)
+        // For now, use raw blob encoding
+        var attrBlob = new BlobBuilder();
+        attrBlob.WriteUInt16(0x0001); // Prolog
+        attrBlob.WriteSerializedString(mangledName);
+        attrBlob.WriteUInt16(0x0000); // NumNamed
+
+        // TypeRef for DecoratedNameAttribute
+        var decoratedNameRef = _md.AddTypeReference(_mscorlibRef,
+            _md.GetOrAddString("System.Runtime.CompilerServices"),
+            _md.GetOrAddString("DecoratedNameAttribute"));
+
+        // MemberRef for .ctor(string)
+        var ctorSig = new BlobBuilder();
+        ctorSig.WriteByte(0x20); // HASTHIS
+        ctorSig.WriteCompressedInteger(1); // 1 param
+        ctorSig.WriteByte((byte)SignatureTypeCode.Void); // return void
+        ctorSig.WriteByte((byte)SignatureTypeCode.String); // param: string
+
+        var ctorRef = _md.AddMemberReference(decoratedNameRef, _md.GetOrAddString(".ctor"), _md.GetOrAddBlob(ctorSig));
+
+        _md.AddCustomAttribute(target, ctorRef, _md.GetOrAddBlob(attrBlob));
+    }
+
+    // ─── Phase 3b: Pre-register __unep@ fields ─────────────────────
+
+    private void RegisterUnepFields(Obj prog)
+    {
+        foreach (string funcName in _addressTakenFuncs)
+        {
+            // Find the function to get its mangled name
+            Obj fn = null;
+            for (Obj f = prog; f != null; f = f.Next)
+            {
+                if (f.IsFunction && f.Name == funcName && f.Ty.CallConv != CallConv.Clrcall)
+                {
+                    fn = f; break;
+                }
+            }
+            if (fn == null || !_methodDefs.ContainsKey(fn)) continue;
+
+            string mangledName = MangleFunctionName(fn);
+            string unepName = $"__unep@{mangledName}";
+
+            var unepFieldSig = new BlobBuilder();
+            unepFieldSig.WriteByte(0x06); // FIELD
+            unepFieldSig.WriteByte((byte)SignatureTypeCode.IntPtr);
+
+            var unepField = _md.AddFieldDefinition(
+                FieldAttributes.Assembly | FieldAttributes.Static | FieldAttributes.HasFieldRVA,
+                _md.GetOrAddString(unepName), _md.GetOrAddBlob(unepFieldSig));
+            _nextFieldRow++;
+            _md.AddFieldRelativeVirtualAddress(unepField, 0);
+
+            _unepFields[funcName] = unepField;
+        }
+    }
+
+    // ─── Phase 4: Register global fields ─────────────────────────
+
+    private void RegisterGlobalFields(Obj prog)
+    {
+        // Pass A: definitions
+        for (Obj g = prog; g != null; g = g.Next)
+        {
+            if (g.IsFunction || !g.IsDefinition) continue;
+            RegisterGlobalField(g);
+        }
+
+        // Pass B: externs (not yet registered)
+        for (Obj g = prog; g != null; g = g.Next)
+        {
+            if (g.IsFunction || g.IsDefinition) continue;
+            if (_fieldDefs.ContainsKey(g) || _globalFieldsByName.ContainsKey(g.Name)) continue;
+            RegisterExternField(g);
+        }
+    }
+
+    private void RegisterGlobalField(Obj g)
+    {
+        var fieldSig = new BlobBuilder();
+        fieldSig.WriteByte(0x06); // FIELD
+        EncodeType(fieldSig, g.Ty);
+
+        string fieldName;
+        if (g.IsLocal)
+        {
+            // Static local variable
+            fieldName = MangleStaticLocalName(_currentFn ?? _mainObj, g);
+        }
+        else
+        {
+            fieldName = g.Name;
+        }
+
+        FieldAttributes fieldAttrs = FieldAttributes.Assembly | FieldAttributes.Static;
+
+        // All global definitions get HasFieldRVA — even tentative (common) definitions
+        // and zero-initialized globals. The COFF symbol table determines whether
+        // the symbol is section-bound (.data/.bss) or common (Sect=0, Value=size).
+        fieldAttrs |= FieldAttributes.HasFieldRVA;
+
+        var fieldDef = _md.AddFieldDefinition(fieldAttrs,
+            _md.GetOrAddString(fieldName), _md.GetOrAddBlob(fieldSig));
+        _nextFieldRow++;
+
+        // FieldRVA table entry required when HasFieldRVA is set.
+        // Actual RVA is 0 — resolved via COFF relocations at link time.
+        if ((fieldAttrs & FieldAttributes.HasFieldRVA) != 0)
+            _md.AddFieldRelativeVirtualAddress(fieldDef, 0);
+
+        _fieldDefs[g] = fieldDef;
+        _globalFieldsByName[g.Name] = fieldDef;
+    }
+
+    private void RegisterExternField(Obj g)
+    {
+        var fieldSig = new BlobBuilder();
+        fieldSig.WriteByte(0x06); // FIELD
+        EncodeType(fieldSig, g.Ty);
+
+        FieldAttributes attrs = FieldAttributes.Assembly | FieldAttributes.Static;
+
+        var fieldDef = _md.AddFieldDefinition(attrs,
+            _md.GetOrAddString(g.Name), _md.GetOrAddBlob(fieldSig));
+        _nextFieldRow++;
+
+        _fieldDefs[g] = fieldDef;
+        _globalFieldsByName[g.Name] = fieldDef;
+    }
+
+    // ─── Phase 5: Materialize struct/array TypeDefs ───────────────
+
+    private void MaterializeStructTypeDefs()
+    {
+        foreach (var (typeId, type, name) in _pendingTypeDefs)
+        {
+            TypeDefinitionHandle handle;
+
+            if (type.Kind == TypeKind.Array)
+            {
+                var predicted = _arrayTypeDefs[name];
+                handle = _md.AddTypeDefinition(
+                    TypeAttributes.SequentialLayout | TypeAttributes.Sealed | TypeAttributes.AnsiClass,
+                    default, _md.GetOrAddString(name),
+                    GetValueTypeRef(),
+                    MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
+                    MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
+
+                Debug.Assert(handle == predicted, $"Array TypeDef handle mismatch: predicted {predicted}, got {handle}");
+                _md.AddTypeLayout(handle, 0, (uint)type.Size);
+            }
+            else
+            {
+                var predicted = _structTypeDefs[typeId];
+                handle = _md.AddTypeDefinition(
+                    TypeAttributes.SequentialLayout | TypeAttributes.Sealed | TypeAttributes.AnsiClass,
+                    default, _md.GetOrAddString(name),
+                    GetValueTypeRef(),
+                    MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
+                    MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
+
+                Debug.Assert(handle == predicted, $"Struct TypeDef handle mismatch: predicted {predicted}, got {handle}");
+                _md.AddTypeLayout(handle, 0, (uint)type.Size);
+            }
+
+            // NativeCppClassAttribute
+            AddNativeCppClassAttribute(handle);
+
+            // <alignment member> field (on 64-bit targets)
+            if (!Is32)
+            {
+                var alignFieldSig = new BlobBuilder();
+                alignFieldSig.WriteByte(0x06); // FIELD
+                // Use int64 if any member needs 8-byte alignment, else int32
+                bool needs8 = type.Align >= 8 || (type.Kind == TypeKind.Array && type.Base.Size >= 8);
+                alignFieldSig.WriteByte(needs8 ? (byte)SignatureTypeCode.Int64 : (byte)SignatureTypeCode.Int32);
+
+                _md.AddFieldDefinition(
+                    FieldAttributes.Private,
+                    _md.GetOrAddString("<alignment member>"),
+                    _md.GetOrAddBlob(alignFieldSig));
+                _nextFieldRow++;
+            }
+        }
+    }
+
+    private void AddNativeCppClassAttribute(TypeDefinitionHandle handle)
+    {
+        var attrRef = GetNativeCppClassAttrRef();
+
+        // MemberRef for .ctor()
+        var ctorSig = new BlobBuilder();
+        ctorSig.WriteByte(0x20); // HASTHIS
+        ctorSig.WriteCompressedInteger(0);
+        ctorSig.WriteByte((byte)SignatureTypeCode.Void);
+
+        var ctorRef = _md.AddMemberReference(attrRef, _md.GetOrAddString(".ctor"), _md.GetOrAddBlob(ctorSig));
+
+        var attrBlob = new BlobBuilder();
+        attrBlob.WriteUInt16(0x0001); // Prolog
+        attrBlob.WriteUInt16(0x0000); // NumNamed
+
+        _md.AddCustomAttribute(handle, ctorRef, _md.GetOrAddBlob(attrBlob));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Pass 2: IL Emission
+    // ═══════════════════════════════════════════════════════════════
+
+    private void EmitFunctions(Obj prog)
+    {
+        for (Obj fn = prog; fn != null; fn = fn.Next)
+        {
+            if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
+            EmitFunction(fn);
+        }
+    }
+
+    private void EmitFunction(Obj fn)
+    {
+        _currentFn = fn;
+        _enc = new RelocatableInstructionEncoder(
+            new BlobBuilder(), new MethodRelocationBuilder(),
+            new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+        _localSlots = new Dictionary<Obj, int>();
+        _paramSlots = new Dictionary<Obj, int>();
+        _scratchLocals = new List<(CType, int)>();
+        _maxStack = 0;
+        _stackDepth = 0;
+        _labels = new Dictionary<string, LabelHandle>();
+        _labelCount = 0;
+
+        // Assign parameter slots
+        int argIdx = 0;
+        for (Obj param = fn.Params; param != null; param = param.Next)
+            _paramSlots[param] = argIdx++;
+
+        // Assign local slots for user locals
+        int localIdx = 0;
+        for (Obj local = fn.Locals; local != null; local = local.Next)
+        {
+            if (local.IsLocal && !_paramSlots.ContainsKey(local))
+            {
+                if (local == fn.AllocaBottom) continue; // skip alloca bottom
+                if (local == fn.VaArea) continue; // skip va_area
+                _localSlots[local] = localIdx++;
+            }
+        }
+        _scratchLocalBase = localIdx;
+
+        // Emit function body
+        GenStmt(fn.Body);
+
+        // Epilogue — fallthrough return
+        if (_labels.TryGetValue($".L.return.{fn.Name}", out var retLabel))
+            _enc.MarkLabel(retLabel);
+
+        if (fn.Ty.ReturnTy.Kind != TypeKind.Void)
+        {
+            EmitDefaultValue(fn.Ty.ReturnTy);
+        }
+        _enc.OpCode(ILOpCode.Ret);
+
+        // Build locals signature
+        int totalLocals = _scratchLocalBase + _scratchLocals.Count;
+        StandaloneSignatureHandle localsSig = default;
+        if (totalLocals > 0)
+        {
+            var localsSigBlob = new BlobBuilder();
+            var enc = new BlobEncoder(localsSigBlob).LocalVariableSignature(totalLocals);
+
+            // User locals
+            for (Obj local = fn.Locals; local != null; local = local.Next)
+            {
+                if (_localSlots.ContainsKey(local))
+                    EncodeLocalType(enc.AddVariable().Type(), local.Ty);
+            }
+
+            // Scratch locals
+            foreach (var (ty, _) in _scratchLocals)
+                EncodeLocalType(enc.AddVariable().Type(), ty);
+
+            localsSig = _md.AddStandaloneSignature(_md.GetOrAddBlob(localsSigBlob));
+        }
+        _localsSigHandle = localsSig;
+
+        // Build CodeView local slot info
+        var localSlotList = new List<CodeViewManSlot>();
+        foreach (var (local, slot) in _localSlots)
+        {
+            if (local.Name != null && localsSig != default)
+            {
+                localSlotList.Add(new CodeViewManSlot(slot,
+                    MetadataTokens.GetToken(localsSig), local.Name));
+            }
+        }
+
+        // Finalize method body
+        var methodDef = _methodDefs[fn];
+        string mangledName = MangleFunctionName(fn);
+
+        _bodyEncoder.AddMethodBody(methodDef, mangledName, _enc,
+            maxStack: _maxStack, localVariablesSignature: localsSig, attributes: MethodBodyAttributes.InitLocals,
+            debugName: fn.Name,
+            localSlots: localSlotList.Count > 0 ? localSlotList.ToArray() : null);
+
+        _currentFn = null;
+    }
+
+    private void EncodeLocalType(SignatureTypeEncoder enc, CType ty)
+    {
+        // Encode using the builder directly
+        EncodeType(enc.Builder, ty);
+    }
+
+    private void EmitDefaultValue(CType ty)
+    {
+        switch (ty.Kind)
+        {
+            case TypeKind.Float:
+                _enc.LoadConstantR4(0.0f); Push(); break;
+            case TypeKind.Double:
+            case TypeKind.LDouble:
+                _enc.LoadConstantR8(0.0); Push(); break;
+            case TypeKind.LLong:
+                _enc.LoadConstantI8(0); Push(); break;
+            case TypeKind.Struct:
+            case TypeKind.Union:
+                // For struct return, push a zeroed struct
+                int scratch = GetOrAddScratchLocal(ty);
+                _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)scratch); Push();
+                _enc.OpCode(ILOpCode.Initobj); _enc.Token(GetStructTypeHandle(ty)); Pop();
+                _enc.LoadLocal(scratch); Push();
+                break;
+            default:
+                _enc.OpCode(ILOpCode.Ldc_i4_0); Push(); break;
+        }
+    }
+
+    private EntityHandle GetStructTypeHandle(CType ty)
+    {
+        int typeId = GetTypeId(ty);
+        if (_structTypeDefs.TryGetValue(typeId, out var handle))
+            return handle;
+        // Forward-declared
+        string name = GetStructName(ty);
+        if (_forwardDeclTypeRefs.TryGetValue(name, out var typeRef))
+            return typeRef;
+        return default;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Scratch locals
+    // ═══════════════════════════════════════════════════════════════
+
+    private int GetOrAddScratchLocal(CType ty)
+    {
+        // Reuse existing scratch local of same type kind
+        foreach (var (existingTy, slot) in _scratchLocals)
+        {
+            if (existingTy.Kind == ty.Kind && existingTy.Size == ty.Size &&
+                existingTy.IsUnsigned == ty.IsUnsigned)
+                return slot;
+        }
+        int newSlot = _scratchLocalBase + _scratchLocals.Count;
+        _scratchLocals.Add((ty, newSlot));
+        return newSlot;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Address generation (GenAddr)
     // ═══════════════════════════════════════════════════════════════
 
     private void GenAddr(Node node)
@@ -52,32 +1277,80 @@ public class CodeGen
         switch (node.Kind)
         {
             case NodeKind.Var:
-                if (node.Var.Ty.Kind == TypeKind.Vla) { Println($"  mov {node.Var.Offset}(%rbp), %rax"); return; }
-                if (node.Var.IsLocal) { Println($"  lea {node.Var.Offset}(%rbp), %rax"); return; }
-                if (_options.OptFpic)
+                if (node.Var.Ty.Kind == TypeKind.Vla)
                 {
-                    if (node.Var.IsTls) { Println($"  data16 lea {node.Var.Name}@tlsgd(%rip), %rdi"); Println("  .value 0x6666"); Println("  rex64"); Println("  call __tls_get_addr@PLT"); return; }
-                    Println($"  mov {node.Var.Name}@GOTPCREL(%rip), %rax"); return;
-                }
-                if (node.Var.IsTls) { Println("  mov %fs:0, %rax"); Println($"  add ${node.Var.Name}@tpoff, %rax"); return; }
-                if (node.Ty.Kind == TypeKind.Func)
-                {
-                    if (node.Var.IsDefinition) Println($"  lea {node.Var.Name}(%rip), %rax");
-                    else Println($"  mov {node.Var.Name}@GOTPCREL(%rip), %rax");
+                    // VLA pointer — load the stored pointer
+                    LoadLocalOrParam(node.Var);
                     return;
                 }
-                Println($"  lea {node.Var.Name}(%rip), %rax"); return;
-            case NodeKind.Deref: GenExpr(node.Lhs); return;
-            case NodeKind.Comma: GenExpr(node.Lhs); GenAddr(node.Rhs); return;
-            case NodeKind.Member: GenAddr(node.Lhs); Println($"  add ${node.Member.Offset}, %rax"); return;
+                if (node.Var.IsLocal)
+                {
+                    if (_paramSlots.TryGetValue(node.Var, out int argIdx))
+                    {
+                        _enc.OpCode(ILOpCode.Ldarga_s); _enc.CodeBuilder.WriteByte((byte)argIdx); Push();
+                    }
+                    else if (_localSlots.TryGetValue(node.Var, out int localIdx))
+                    {
+                        _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)localIdx); Push();
+                    }
+                    return;
+                }
+                // Global variable
+                if (_fieldDefs.TryGetValue(node.Var, out var fieldDef))
+                {
+                    _enc.OpCode(ILOpCode.Ldsflda); _enc.Token(fieldDef); Push();
+                }
+                else if (_globalFieldsByName.TryGetValue(node.Var.Name, out var fieldDef2))
+                {
+                    _enc.OpCode(ILOpCode.Ldsflda); _enc.Token(fieldDef2); Push();
+                }
+                return;
+
+            case NodeKind.Deref:
+                GenExpr(node.Lhs);
+                return;
+
+            case NodeKind.Comma:
+                GenExpr(node.Lhs); Pop(); // discard LHS value
+                GenAddr(node.Rhs);
+                return;
+
+            case NodeKind.Member:
+                GenAddr(node.Lhs);
+                if (node.Member.Offset != 0)
+                {
+                    EmitConstI4(node.Member.Offset);
+                    _enc.OpCode(ILOpCode.Add); Pop();
+                }
+                return;
+
             case NodeKind.FunCall:
-                if (node.RetBuffer != null) { GenExpr(node); return; }
+                if (node.RetBuffer != null)
+                {
+                    GenExpr(node);
+                    return;
+                }
                 break;
+
             case NodeKind.Assign:
             case NodeKind.Cond:
-                if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) { GenExpr(node); return; }
+                if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union)
+                {
+                    GenExpr(node);
+                    // Spill to scratch local
+                    int scratch = GetOrAddScratchLocal(node.Ty);
+                    _enc.StoreLocal(scratch); Pop();
+                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)scratch); Push();
+                    return;
+                }
                 break;
-            case NodeKind.VlaPtr: Println($"  lea {node.Var.Offset}(%rbp), %rax"); return;
+
+            case NodeKind.VlaPtr:
+                if (_localSlots.TryGetValue(node.Var, out int vlaSlot))
+                {
+                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)vlaSlot); Push();
+                }
+                return;
         }
         Util.ErrorTok(node.Tok, "not an lvalue");
     }
@@ -90,790 +1363,1209 @@ public class CodeGen
     {
         switch (ty.Kind)
         {
-            case TypeKind.Array: case TypeKind.Struct: case TypeKind.Union: case TypeKind.Func: case TypeKind.Vla: return;
-            case TypeKind.Float: Println("  movss (%rax), %xmm0"); return;
-            case TypeKind.Double: Println("  movsd (%rax), %xmm0"); return;
-            case TypeKind.LDouble: if (ty.Size == 8) Println("  movsd (%rax), %xmm0"); else Println("  fldt (%rax)"); return;
+            case TypeKind.Array:
+            case TypeKind.Func:
+            case TypeKind.Vla:
+                // Address IS the value
+                return;
+            case TypeKind.Struct:
+            case TypeKind.Union:
+                _enc.OpCode(ILOpCode.Ldobj); _enc.Token(GetStructTypeHandle(ty));
+                // Stack effect: pop ptr, push struct (net 0)
+                return;
+            case TypeKind.Float:
+                _enc.OpCode(ILOpCode.Ldind_r4); return;
+            case TypeKind.Double:
+            case TypeKind.LDouble:
+                _enc.OpCode(ILOpCode.Ldind_r8); return;
         }
-        string insn = ty.IsUnsigned ? "movz" : "movs";
-        if (ty.Size == 1) Println($"  {insn}bl (%rax), %eax");
-        else if (ty.Size == 2) Println($"  {insn}wl (%rax), %eax");
-        else if (ty.Size == 4) Println("  movsxd (%rax), %rax");
-        else Println("  mov (%rax), %rax");
+
+        // Integer types
+        if (ty.Size == 1)
+            _enc.OpCode(ty.IsUnsigned ? ILOpCode.Ldind_u1 : ILOpCode.Ldind_i1);
+        else if (ty.Size == 2)
+            _enc.OpCode(ty.IsUnsigned ? ILOpCode.Ldind_u2 : ILOpCode.Ldind_i2);
+        else if (ty.Size == 4)
+            _enc.OpCode(ty.IsUnsigned ? ILOpCode.Ldind_u4 : ILOpCode.Ldind_i4);
+        else
+            _enc.OpCode(ILOpCode.Ldind_i8);
+        // Stack effect: pop ptr, push value (net 0)
     }
 
     private void Store(CType ty)
     {
-        Pop("%rdi");
         switch (ty.Kind)
         {
-            case TypeKind.Struct: case TypeKind.Union:
-                for (int i = 0; i < ty.Size; i++) { Println($"  mov {i}(%rax), %r8b"); Println($"  mov %r8b, {i}(%rdi)"); }
+            case TypeKind.Struct:
+            case TypeKind.Union:
+                _enc.OpCode(ILOpCode.Stobj); _enc.Token(GetStructTypeHandle(ty));
+                Pop(2); // pops address + value
                 return;
-            case TypeKind.Float: Println("  movss %xmm0, (%rdi)"); return;
-            case TypeKind.Double: Println("  movsd %xmm0, (%rdi)"); return;
-            case TypeKind.LDouble: if (ty.Size == 8) Println("  movsd %xmm0, (%rdi)"); else Println("  fstpt (%rdi)"); return;
+            case TypeKind.Float:
+                _enc.OpCode(ILOpCode.Stind_r4); Pop(2); return;
+            case TypeKind.Double:
+            case TypeKind.LDouble:
+                _enc.OpCode(ILOpCode.Stind_r8); Pop(2); return;
         }
-        if (ty.Size == 1) Println("  mov %al, (%rdi)");
-        else if (ty.Size == 2) Println("  mov %ax, (%rdi)");
-        else if (ty.Size == 4) Println("  mov %eax, (%rdi)");
-        else Println("  mov %rax, (%rdi)");
+
+        if (ty.Size == 1) _enc.OpCode(ILOpCode.Stind_i1);
+        else if (ty.Size == 2) _enc.OpCode(ILOpCode.Stind_i2);
+        else if (ty.Size == 4) _enc.OpCode(ILOpCode.Stind_i4);
+        else _enc.OpCode(ILOpCode.Stind_i8);
+        Pop(2);
     }
 
-    private void CmpZero(CType ty)
+    // ═══════════════════════════════════════════════════════════════
+    //  Helper: Load local or parameter
+    // ═══════════════════════════════════════════════════════════════
+
+    private void LoadLocalOrParam(Obj var)
+    {
+        if (_paramSlots.TryGetValue(var, out int argIdx))
+        {
+            _enc.LoadArgument(argIdx); Push();
+        }
+        else if (_localSlots.TryGetValue(var, out int localIdx))
+        {
+            _enc.LoadLocal(localIdx); Push();
+        }
+    }
+
+    private void StoreLocalOrParam(Obj var)
+    {
+        if (_paramSlots.TryGetValue(var, out int argIdx))
+        {
+            _enc.OpCode(ILOpCode.Starg_s); _enc.CodeBuilder.WriteByte((byte)argIdx); Pop();
+        }
+        else if (_localSlots.TryGetValue(var, out int localIdx))
+        {
+            _enc.StoreLocal(localIdx); Pop();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Constant loading helpers
+    // ═══════════════════════════════════════════════════════════════
+
+    private void EmitConstI4(int value)
+    {
+        _enc.LoadConstantI4(value); Push();
+    }
+
+    private void EmitConstI4(long value)
+    {
+        _enc.LoadConstantI4((int)value); Push();
+    }
+
+    private void EmitConstI8(long value)
+    {
+        _enc.LoadConstantI8(value); Push();
+    }
+
+    /// <summary>Emit conv.i8 for pointer arithmetic widening on 64-bit.</summary>
+    private void ConvI8IfNeeded()
+    {
+        if (!Is32) _enc.OpCode(ILOpCode.Conv_i8);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Booleanize — ensure value is branch-testable
+    // ═══════════════════════════════════════════════════════════════
+
+    private void Booleanize(CType ty)
     {
         switch (ty.Kind)
         {
-            case TypeKind.Float: Println("  xorps %xmm1, %xmm1"); Println("  ucomiss %xmm1, %xmm0"); return;
-            case TypeKind.Double: Println("  xorpd %xmm1, %xmm1"); Println("  ucomisd %xmm1, %xmm0"); return;
-            case TypeKind.LDouble: if (ty.Size == 8) { Println("  xorpd %xmm1, %xmm1"); Println("  ucomisd %xmm1, %xmm0"); } else { Println("  fldz"); Println("  fucomip"); Println("  fstp %st(0)"); } return;
+            case TypeKind.Float:
+            case TypeKind.Double:
+            case TypeKind.LDouble:
+                // Compare with 0.0: ceq + ceq against 0 (double negate)
+                if (ty.Kind == TypeKind.Float)
+                    _enc.LoadConstantR4(0.0f);
+                else
+                    _enc.LoadConstantR8(0.0);
+                Push();
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                EmitConstI4(0);
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                break;
+            case TypeKind.LLong:
+            case TypeKind.Ptr:
+                // Convert to appropriate size and compare with 0
+                break;
+            default:
+                // int32 — brfalse/brtrue works directly
+                break;
         }
-        if (TypeSystem.IsInteger(ty) && ty.Size <= 4) Println("  cmp $0, %eax");
-        else Println("  cmp $0, %rax");
     }
+
+    private static bool IsAggregateType(CType ty) =>
+        ty.Kind == TypeKind.Struct || ty.Kind == TypeKind.Union || ty.Kind == TypeKind.Array;
 
     // ═══════════════════════════════════════════════════════════════
-    //  Type cast table
-    // ═══════════════════════════════════════════════════════════════
-
-    private const int I8 = 0, I16 = 1, I32 = 2, I64 = 3, U8 = 4, U16 = 5, U32 = 6, U64 = 7, F32 = 8, F64 = 9, F80 = 10;
-
-    private static int GetTypeId(CType ty) => ty.Kind switch
-    {
-        TypeKind.Char => ty.IsUnsigned ? U8 : I8,
-        TypeKind.Short => ty.IsUnsigned ? U16 : I16,
-        TypeKind.Int => ty.IsUnsigned ? U32 : I32,
-        TypeKind.Long => ty.Size == 8 ? (ty.IsUnsigned ? U64 : I64) : (ty.IsUnsigned ? U32 : I32),
-        TypeKind.LLong => ty.IsUnsigned ? U64 : I64,
-        TypeKind.Float => F32,
-        TypeKind.Double => F64,
-        TypeKind.LDouble => ty.Size == 8 ? F64 : F80,
-        _ => U64,
-    };
-
-    private static readonly string[][] CastTable = {
-        // to:  i8    i16     i32   i64      u8     u16     u32   u64      f32       f64       f80
-        /*i8 */ new[]{null,  null,   null,  "movsxd %eax, %rax", "movzbl %al, %eax", "movzwl %ax, %eax", null,  "movsxd %eax, %rax", "cvtsi2ssl %eax, %xmm0", "cvtsi2sdl %eax, %xmm0", "mov %eax, -4(%rsp); fildl -4(%rsp)"},
-        /*i16*/ new[]{"movsbl %al, %eax", null, null, "movsxd %eax, %rax", "movzbl %al, %eax", "movzwl %ax, %eax", null, "movsxd %eax, %rax", "cvtsi2ssl %eax, %xmm0", "cvtsi2sdl %eax, %xmm0", "mov %eax, -4(%rsp); fildl -4(%rsp)"},
-        /*i32*/ new[]{"movsbl %al, %eax", "movswl %ax, %eax", null, "movsxd %eax, %rax", "movzbl %al, %eax", "movzwl %ax, %eax", null, "movsxd %eax, %rax", "cvtsi2ssl %eax, %xmm0", "cvtsi2sdl %eax, %xmm0", "mov %eax, -4(%rsp); fildl -4(%rsp)"},
-        /*i64*/ new[]{"movsbl %al, %eax", "movswl %ax, %eax", null, null, "movzbl %al, %eax", "movzwl %ax, %eax", null, null, "cvtsi2ssq %rax, %xmm0", "cvtsi2sdq %rax, %xmm0", "movq %rax, -8(%rsp); fildll -8(%rsp)"},
-        /*u8 */ new[]{"movsbl %al, %eax", null, null, "movsxd %eax, %rax", null, null, null, "movsxd %eax, %rax", "cvtsi2ssl %eax, %xmm0", "cvtsi2sdl %eax, %xmm0", "mov %eax, -4(%rsp); fildl -4(%rsp)"},
-        /*u16*/ new[]{"movsbl %al, %eax", "movswl %ax, %eax", null, "movsxd %eax, %rax", "movzbl %al, %eax", null, null, "movsxd %eax, %rax", "cvtsi2ssl %eax, %xmm0", "cvtsi2sdl %eax, %xmm0", "mov %eax, -4(%rsp); fildl -4(%rsp)"},
-        /*u32*/ new[]{"movsbl %al, %eax", "movswl %ax, %eax", null, "mov %eax, %eax", "movzbl %al, %eax", "movzwl %ax, %eax", null, "mov %eax, %eax", "mov %eax, %eax; cvtsi2ssq %rax, %xmm0", "mov %eax, %eax; cvtsi2sdq %rax, %xmm0", "mov %eax, %eax; mov %rax, -8(%rsp); fildll -8(%rsp)"},
-        /*u64*/ new[]{"movsbl %al, %eax", "movswl %ax, %eax", null, null, "movzbl %al, %eax", "movzwl %ax, %eax", null, null, "cvtsi2ssq %rax, %xmm0",
-            "test %rax,%rax; js 1f; pxor %xmm0,%xmm0; cvtsi2sd %rax,%xmm0; jmp 2f; 1: mov %rax,%rdi; and $1,%eax; pxor %xmm0,%xmm0; shr %rdi; or %rax,%rdi; cvtsi2sd %rdi,%xmm0; addsd %xmm0,%xmm0; 2:",
-            "mov %rax, -8(%rsp); fildq -8(%rsp); test %rax, %rax; jns 1f;mov $1602224128, %eax; mov %eax, -4(%rsp); fadds -4(%rsp); 1:"},
-        /*f32*/ new[]{"cvttss2sil %xmm0, %eax; movsbl %al, %eax", "cvttss2sil %xmm0, %eax; movswl %ax, %eax", "cvttss2sil %xmm0, %eax", "cvttss2siq %xmm0, %rax", "cvttss2sil %xmm0, %eax; movzbl %al, %eax", "cvttss2sil %xmm0, %eax; movzwl %ax, %eax", "cvttss2siq %xmm0, %rax", "cvttss2siq %xmm0, %rax", null, "cvtss2sd %xmm0, %xmm0", "movss %xmm0, -4(%rsp); flds -4(%rsp)"},
-        /*f64*/ new[]{"cvttsd2sil %xmm0, %eax; movsbl %al, %eax", "cvttsd2sil %xmm0, %eax; movswl %ax, %eax", "cvttsd2sil %xmm0, %eax", "cvttsd2siq %xmm0, %rax", "cvttsd2sil %xmm0, %eax; movzbl %al, %eax", "cvttsd2sil %xmm0, %eax; movzwl %ax, %eax", "cvttsd2siq %xmm0, %rax", "cvttsd2siq %xmm0, %rax", "cvtsd2ss %xmm0, %xmm0", null, "movsd %xmm0, -8(%rsp); fldl -8(%rsp)"},
-        /*f80*/ new[]{
-            "fnstcw -10(%rsp); movzwl -10(%rsp), %eax; or $12, %ah; mov %ax, -12(%rsp); fldcw -12(%rsp); fistps -24(%rsp); fldcw -10(%rsp); movsbl -24(%rsp), %eax",
-            "fnstcw -10(%rsp); movzwl -10(%rsp), %eax; or $12, %ah; mov %ax, -12(%rsp); fldcw -12(%rsp); fistps -24(%rsp); fldcw -10(%rsp); movzbl -24(%rsp), %eax",
-            "fnstcw -10(%rsp); movzwl -10(%rsp), %eax; or $12, %ah; mov %ax, -12(%rsp); fldcw -12(%rsp); fistpl -24(%rsp); fldcw -10(%rsp); mov -24(%rsp), %eax",
-            "fnstcw -10(%rsp); movzwl -10(%rsp), %eax; or $12, %ah; mov %ax, -12(%rsp); fldcw -12(%rsp); fistpq -24(%rsp); fldcw -10(%rsp); mov -24(%rsp), %rax",
-            "fnstcw -10(%rsp); movzwl -10(%rsp), %eax; or $12, %ah; mov %ax, -12(%rsp); fldcw -12(%rsp); fistps -24(%rsp); fldcw -10(%rsp); movzbl -24(%rsp), %eax",
-            "fnstcw -10(%rsp); movzwl -10(%rsp), %eax; or $12, %ah; mov %ax, -12(%rsp); fldcw -12(%rsp); fistpl -24(%rsp); fldcw -10(%rsp); movswl -24(%rsp), %eax",
-            "fnstcw -10(%rsp); movzwl -10(%rsp), %eax; or $12, %ah; mov %ax, -12(%rsp); fldcw -12(%rsp); fistpl -24(%rsp); fldcw -10(%rsp); mov -24(%rsp), %eax",
-            "fnstcw -10(%rsp); movzwl -10(%rsp), %eax; or $12, %ah; mov %ax, -12(%rsp); fldcw -12(%rsp); fistpq -24(%rsp); fldcw -10(%rsp); mov -24(%rsp), %rax",
-            "fstps -8(%rsp); movss -8(%rsp), %xmm0",
-            "fstpl -8(%rsp); movsd -8(%rsp), %xmm0",
-            null},
-    };
-
-    private void Cast(CType from, CType to)
-    {
-        if (to.Kind == TypeKind.Void) return;
-        if (to.Kind == TypeKind.Bool) { CmpZero(from); Println("  setne %al"); Println("  movzx %al, %eax"); return; }
-        int t1 = GetTypeId(from), t2 = GetTypeId(to);
-        if (CastTable[t1][t2] != null) Println($"  {CastTable[t1][t2]}");
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    //  Struct passing helpers
-    // ═══════════════════════════════════════════════════════════════
-
-    private static bool HasFlonum(CType ty, int lo, int hi, int offset)
-    {
-        if (ty.Kind == TypeKind.Struct || ty.Kind == TypeKind.Union)
-        {
-            for (Member mem = ty.Members; mem != null; mem = mem.Next)
-                if (!HasFlonum(mem.Ty, lo, hi, offset + mem.Offset)) return false;
-            return true;
-        }
-        if (ty.Kind == TypeKind.Array)
-        {
-            for (int i = 0; i < ty.ArrayLen; i++)
-                if (!HasFlonum(ty.Base, lo, hi, offset + ty.Base.Size * i)) return false;
-            return true;
-        }
-        return offset < lo || hi <= offset || ty.Kind == TypeKind.Float || ty.Kind == TypeKind.Double
-            || (ty.Kind == TypeKind.LDouble && ty.Size == 8);
-    }
-
-    private static bool HasFlonum1(CType ty) => HasFlonum(ty, 0, 8, 0);
-    private static bool HasFlonum2(CType ty) => HasFlonum(ty, 8, 16, 0);
-
-    private void PushStruct(CType ty)
-    {
-        int sz = Util.AlignTo(ty.Size, 8);
-        Println($"  sub ${sz}, %rsp");
-        _depth += sz / 8;
-        for (int i = 0; i < ty.Size; i++) { Println($"  mov {i}(%rax), %r10b"); Println($"  mov %r10b, {i}(%rsp)"); }
-    }
-
-    private void PushArgs2(Node args, bool firstPass)
-    {
-        if (args == null) return;
-        PushArgs2(args.Next, firstPass);
-        if ((firstPass && !args.PassByStack) || (!firstPass && args.PassByStack)) return;
-        GenExpr(args);
-        switch (args.Ty.Kind)
-        {
-            case TypeKind.Struct: case TypeKind.Union: PushStruct(args.Ty); break;
-            case TypeKind.Float: case TypeKind.Double: Pushf(); break;
-            case TypeKind.LDouble: if (args.Ty.Size == 8) { Pushf(); } else { Println("  sub $16, %rsp"); Println("  fstpt (%rsp)"); _depth += 2; } break;
-            default: Push(); break;
-        }
-    }
-
-    private int PushArgs(Node node)
-    {
-        int stack = 0, gp = 0, fp = 0;
-        if (node.RetBuffer != null && node.Ty.Size > 16) gp++;
-
-        for (Node arg = node.Args; arg != null; arg = arg.Next)
-        {
-            CType ty = arg.Ty;
-            switch (ty.Kind)
-            {
-                case TypeKind.Struct: case TypeKind.Union:
-                    if (ty.Size > 16) { arg.PassByStack = true; stack += Util.AlignTo(ty.Size, 8) / 8; }
-                    else
-                    {
-                        bool fp1 = HasFlonum1(ty), fp2 = HasFlonum2(ty);
-                        if (fp + (fp1?1:0) + (fp2?1:0) < FpMax && gp + (fp1?0:1) + (fp2?0:1) < GpMax) { fp += (fp1?1:0) + (fp2?1:0); gp += (fp1?0:1) + (fp2?0:1); }
-                        else { arg.PassByStack = true; stack += Util.AlignTo(ty.Size, 8) / 8; }
-                    }
-                    break;
-                case TypeKind.Float: case TypeKind.Double:
-                    if (fp++ >= FpMax) { arg.PassByStack = true; stack++; }
-                    break;
-                case TypeKind.LDouble:
-                    if (arg.Ty.Size == 8) { if (fp++ >= FpMax) { arg.PassByStack = true; stack++; } }
-                    else { arg.PassByStack = true; stack += 2; }
-                    break;
-                default:
-                    if (gp++ >= GpMax) { arg.PassByStack = true; stack++; }
-                    break;
-            }
-        }
-
-        if ((_depth + stack) % 2 == 1) { Println("  sub $8, %rsp"); _depth++; stack++; }
-        PushArgs2(node.Args, true);
-        PushArgs2(node.Args, false);
-        if (node.RetBuffer != null && node.Ty.Size > 16) { Println($"  lea {node.RetBuffer.Offset}(%rbp), %rax"); Push(); }
-        return stack;
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    //  Struct copy helpers
-    // ═══════════════════════════════════════════════════════════════
-
-    private void CopyRetBuffer(Obj var)
-    {
-        CType ty = var.Ty;
-        int gp = 0, fp = 0;
-        if (HasFlonum1(ty))
-        {
-            if (ty.Size == 4) Println($"  movss %xmm0, {var.Offset}(%rbp)");
-            else Println($"  movsd %xmm0, {var.Offset}(%rbp)");
-            fp++;
-        }
-        else
-        {
-            for (int i = 0; i < Math.Min(8, ty.Size); i++) { Println($"  mov %al, {var.Offset + i}(%rbp)"); Println("  shr $8, %rax"); }
-            gp++;
-        }
-        if (ty.Size > 8)
-        {
-            if (HasFlonum2(ty))
-            {
-                if (ty.Size == 12) Println($"  movss %xmm{fp}, {var.Offset + 8}(%rbp)");
-                else Println($"  movsd %xmm{fp}, {var.Offset + 8}(%rbp)");
-            }
-            else
-            {
-                string r1 = gp == 0 ? "%al" : "%dl", r2 = gp == 0 ? "%rax" : "%rdx";
-                for (int i = 8; i < Math.Min(16, ty.Size); i++) { Println($"  mov {r1}, {var.Offset + i}(%rbp)"); Println($"  shr $8, {r2}"); }
-            }
-        }
-    }
-
-    private void CopyStructReg()
-    {
-        CType ty = _currentFn.Ty.ReturnTy;
-        int gp = 0, fp = 0;
-        Println("  mov %rax, %rdi");
-        if (HasFlonum(ty, 0, 8, 0))
-        {
-            if (ty.Size == 4) Println("  movss (%rdi), %xmm0");
-            else Println("  movsd (%rdi), %xmm0");
-            fp++;
-        }
-        else
-        {
-            Println("  mov $0, %rax");
-            for (int i = Math.Min(8, ty.Size) - 1; i >= 0; i--) { Println("  shl $8, %rax"); Println($"  mov {i}(%rdi), %al"); }
-            gp++;
-        }
-        if (ty.Size > 8)
-        {
-            if (HasFlonum(ty, 8, 16, 0))
-            {
-                if (ty.Size == 4) Println($"  movss 8(%rdi), %xmm{fp}");
-                else Println($"  movsd 8(%rdi), %xmm{fp}");
-            }
-            else
-            {
-                string r1 = gp == 0 ? "%al" : "%dl", r2 = gp == 0 ? "%rax" : "%rdx";
-                Println($"  mov $0, {r2}");
-                for (int i = Math.Min(16, ty.Size) - 1; i >= 8; i--) { Println($"  shl $8, {r2}"); Println($"  mov {i}(%rdi), {r1}"); }
-            }
-        }
-    }
-
-    private void CopyStructMem()
-    {
-        CType ty = _currentFn.Ty.ReturnTy;
-        Obj var = _currentFn.Params;
-        Println($"  mov {var.Offset}(%rbp), %rdi");
-        for (int i = 0; i < ty.Size; i++) { Println($"  mov {i}(%rax), %dl"); Println($"  mov %dl, {i}(%rdi)"); }
-    }
-
-    private void BuiltinAlloca()
-    {
-        Println("  add $15, %rdi"); Println("  and $0xfffffff0, %edi");
-        Println($"  mov {_currentFn.AllocaBottom.Offset}(%rbp), %rcx");
-        Println("  sub %rsp, %rcx"); Println("  mov %rsp, %rax"); Println("  sub %rdi, %rsp"); Println("  mov %rsp, %rdx");
-        Println("1:"); Println("  cmp $0, %rcx"); Println("  je 2f");
-        Println("  mov (%rax), %r8b"); Println("  mov %r8b, (%rdx)"); Println("  inc %rdx"); Println("  inc %rax"); Println("  dec %rcx"); Println("  jmp 1b");
-        Println("2:");
-        Println($"  mov {_currentFn.AllocaBottom.Offset}(%rbp), %rax");
-        Println("  sub %rdi, %rax");
-        Println($"  mov %rax, {_currentFn.AllocaBottom.Offset}(%rbp)");
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    //  Expression code generation
+    //  Expression code generation (GenExpr)
     // ═══════════════════════════════════════════════════════════════
 
     private void GenExpr(Node node)
     {
-        Println($"  .loc {node.Tok.File.FileNo} {node.Tok.LineNo}");
+        // Mark line number for debug info
+        if (node.Tok?.File != null)
+            _enc.MarkLineNumber(_cvFile, node.Tok.LineNo);
+
         switch (node.Kind)
         {
             case NodeKind.NullExpr: return;
+
             case NodeKind.Num:
                 switch (node.Ty.Kind)
                 {
                     case TypeKind.Float:
-                        uint fu = BitConverter.SingleToUInt32Bits((float)node.FVal);
-                        Println($"  mov ${fu}, %eax  # float {node.FVal:F6}"); Println("  movq %rax, %xmm0"); return;
+                        _enc.LoadConstantR4((float)node.FVal); Push(); return;
                     case TypeKind.Double:
-                        ulong du = BitConverter.DoubleToUInt64Bits(node.FVal);
-                        Println($"  mov ${du}, %rax  # double {node.FVal:F6}"); Println("  movq %rax, %xmm0"); return;
                     case TypeKind.LDouble:
-                        if (node.Ty.Size == 8)
-                        {
-                            ulong ldu = BitConverter.DoubleToUInt64Bits(node.FVal);
-                            Println($"  mov ${ldu}, %rax  # long double {node.FVal:F6}"); Println("  movq %rax, %xmm0");
-                        }
+                        _enc.LoadConstantR8(node.FVal); Push(); return;
+                    case TypeKind.LLong:
+                        EmitConstI8(node.Val); return;
+                    default:
+                        if (node.Ty.Kind == TypeKind.Long && _dm.LongSize == 8)
+                            EmitConstI8(node.Val);
                         else
-                        {
-                            var (u0, u1) = Util.DoubleToF80Words(node.FVal);
-                            Println($"  mov ${u0}, %rax  # long double {node.FVal:F6}"); Println("  mov %rax, -16(%rsp)");
-                            Println($"  mov ${u1}, %rax"); Println("  mov %rax, -8(%rsp)"); Println("  fldt -16(%rsp)");
-                        }
+                            EmitConstI4(node.Val);
                         return;
                 }
-                Println($"  mov ${node.Val}, %rax"); return;
 
             case NodeKind.Neg:
                 GenExpr(node.Lhs);
-                switch (node.Ty.Kind)
-                {
-                    case TypeKind.Float: Println("  mov $1, %rax"); Println("  shl $31, %rax"); Println("  movq %rax, %xmm1"); Println("  xorps %xmm1, %xmm0"); return;
-                    case TypeKind.Double: Println("  mov $1, %rax"); Println("  shl $63, %rax"); Println("  movq %rax, %xmm1"); Println("  xorpd %xmm1, %xmm0"); return;
-                    case TypeKind.LDouble: if (node.Ty.Size == 8) { Println("  mov $1, %rax"); Println("  shl $63, %rax"); Println("  movq %rax, %xmm1"); Println("  xorpd %xmm1, %xmm0"); } else Println("  fchs"); return;
-                }
-                Println("  neg %rax"); return;
-
-            case NodeKind.Var: GenAddr(node); Load(node.Ty); return;
-            case NodeKind.Member:
-                GenAddr(node); Load(node.Ty);
-                if (node.Member.IsBitfield)
-                {
-                    Println($"  shl ${64 - node.Member.BitWidth - node.Member.BitOffset}, %rax");
-                    if (node.Member.Ty.IsUnsigned) Println($"  shr ${64 - node.Member.BitWidth}, %rax");
-                    else Println($"  sar ${64 - node.Member.BitWidth}, %rax");
-                }
+                _enc.OpCode(ILOpCode.Neg);
                 return;
-            case NodeKind.Deref: GenExpr(node.Lhs); Load(node.Ty); return;
-            case NodeKind.Addr: GenAddr(node.Lhs); return;
 
-            case NodeKind.Assign:
-                GenAddr(node.Lhs); Push(); GenExpr(node.Rhs);
-                if (node.Lhs.Kind == NodeKind.Member && node.Lhs.Member.IsBitfield)
+            case NodeKind.Var:
+                if (node.Ty.Kind == TypeKind.Func || node.Var.IsFunction)
                 {
-                    Println("  mov %rax, %r8");
-                    Member mem = node.Lhs.Member;
-                    Println("  mov %rax, %rdi");
-                    Println($"  and ${(1L << mem.BitWidth) - 1}, %rdi");
-                    Println($"  shl ${mem.BitOffset}, %rdi");
-                    Println("  mov (%rsp), %rax"); Load(mem.Ty);
-                    long mask = ((1L << mem.BitWidth) - 1) << mem.BitOffset;
-                    Println($"  mov ${~mask}, %r9"); Println("  and %r9, %rax"); Println("  or %rdi, %rax");
-                    Store(node.Ty); Println("  mov %r8, %rax"); return;
-                }
-                Store(node.Ty); return;
-
-            case NodeKind.StmtExpr:
-                for (Node n = node.Body; n != null; n = n.Next) GenStmt(n);
-                return;
-            case NodeKind.Comma: GenExpr(node.Lhs); GenExpr(node.Rhs); return;
-            case NodeKind.Cast: GenExpr(node.Lhs); Cast(node.Lhs.Ty, node.Ty); return;
-
-            case NodeKind.MemZero:
-                Println($"  mov ${node.Var.Ty.Size}, %rcx"); Println($"  lea {node.Var.Offset}(%rbp), %rdi");
-                Println("  mov $0, %al"); Println("  rep stosb"); return;
-
-            case NodeKind.Cond:
-                int cc = Count(); GenExpr(node.Cond); CmpZero(node.Cond.Ty);
-                Println($"  je .L.else.{cc}"); GenExpr(node.Then); Println($"  jmp .L.end.{cc}");
-                Println($".L.else.{cc}:"); GenExpr(node.Els); Println($".L.end.{cc}:"); return;
-
-            case NodeKind.Not: GenExpr(node.Lhs); CmpZero(node.Lhs.Ty); Println("  sete %al"); Println("  movzx %al, %rax"); return;
-            case NodeKind.BitNot: GenExpr(node.Lhs); Println("  not %rax"); return;
-
-            case NodeKind.LogAnd:
-                cc = Count(); GenExpr(node.Lhs); CmpZero(node.Lhs.Ty); Println($"  je .L.false.{cc}");
-                GenExpr(node.Rhs); CmpZero(node.Rhs.Ty); Println($"  je .L.false.{cc}");
-                Println("  mov $1, %rax"); Println($"  jmp .L.end.{cc}");
-                Println($".L.false.{cc}:"); Println("  mov $0, %rax"); Println($".L.end.{cc}:"); return;
-
-            case NodeKind.LogOr:
-                cc = Count(); GenExpr(node.Lhs); CmpZero(node.Lhs.Ty); Println($"  jne .L.true.{cc}");
-                GenExpr(node.Rhs); CmpZero(node.Rhs.Ty); Println($"  jne .L.true.{cc}");
-                Println("  mov $0, %rax"); Println($"  jmp .L.end.{cc}");
-                Println($".L.true.{cc}:"); Println("  mov $1, %rax"); Println($".L.end.{cc}:"); return;
-
-            case NodeKind.FunCall:
-                if (node.Lhs.Kind == NodeKind.Var && node.Lhs.Var.Name == "alloca")
-                {
-                    GenExpr(node.Args); Println("  mov %rax, %rdi"); BuiltinAlloca(); return;
-                }
-                int stackArgs = PushArgs(node);
-                GenExpr(node.Lhs);
-                int gp = 0, fp = 0;
-                if (node.RetBuffer != null && node.Ty.Size > 16) Pop(Argreg64[gp++]);
-                for (Node arg = node.Args; arg != null; arg = arg.Next)
-                {
-                    switch (arg.Ty.Kind)
+                    // Function name used as value — get its callable address
+                    CType funcTy = node.Var.Ty;
+                    if (funcTy.CallConv == CallConv.Clrcall)
                     {
-                        case TypeKind.Struct: case TypeKind.Union:
-                            if (arg.Ty.Size > 16) continue;
-                            bool fp1 = HasFlonum1(arg.Ty), fp2 = HasFlonum2(arg.Ty);
-                            if (fp + (fp1?1:0) + (fp2?1:0) < FpMax && gp + (fp1?0:1) + (fp2?0:1) < GpMax)
-                            {
-                                if (fp1) Popf(fp++); else Pop(Argreg64[gp++]);
-                                if (arg.Ty.Size > 8) { if (fp2) Popf(fp++); else Pop(Argreg64[gp++]); }
-                            }
-                            break;
-                        case TypeKind.Float: case TypeKind.Double:
-                            if (fp < FpMax) Popf(fp++); break;
-                        case TypeKind.LDouble:
-                            if (arg.Ty.Size == 8 && fp < FpMax) Popf(fp++);
-                            break;
-                        default:
-                            if (gp < GpMax) Pop(Argreg64[gp++]); break;
+                        // __clrcall: use ldftn to get managed function pointer
+                        if (_methodDefs.TryGetValue(node.Var, out var md))
+                        {
+                            _enc.OpCode(ILOpCode.Ldftn); _enc.Token(md); Push();
+                        }
+                        else
+                        {
+                            Util.ErrorTok(node.Tok, "cannot take address of external __clrcall function");
+                        }
                     }
-                }
-                Println("  mov %rax, %r10"); Println($"  mov ${fp}, %rax"); Println("  call *%r10");
-                Println($"  add ${stackArgs * 8}, %rsp"); _depth -= stackArgs;
-
-                switch (node.Ty.Kind)
-                {
-                    case TypeKind.Bool: Println("  movzx %al, %eax"); return;
-                    case TypeKind.Char:
-                        Println(node.Ty.IsUnsigned ? "  movzbl %al, %eax" : "  movsbl %al, %eax"); return;
-                    case TypeKind.Short:
-                        Println(node.Ty.IsUnsigned ? "  movzwl %ax, %eax" : "  movswl %ax, %eax"); return;
-                }
-                if (node.RetBuffer != null && node.Ty.Size <= 16)
-                {
-                    CopyRetBuffer(node.RetBuffer);
-                    Println($"  lea {node.RetBuffer.Offset}(%rbp), %rax");
-                }
-                return;
-
-            case NodeKind.LabelVal: Println($"  lea {node.UniqueLabel}(%rip), %rax"); return;
-
-            case NodeKind.Cas:
-                GenExpr(node.CasAddr); Push(); GenExpr(node.CasNew); Push(); GenExpr(node.CasOld);
-                Println("  mov %rax, %r8"); Load(node.CasOld.Ty.Base);
-                Pop("%rdx"); Pop("%rdi");
-                int sz2 = node.CasAddr.Ty.Base.Size;
-                Println($"  lock cmpxchg {RegDx(sz2)}, (%rdi)");
-                Println("  sete %cl"); Println("  je 1f"); Println($"  mov {RegAx(sz2)}, (%r8)");
-                Println("1:"); Println("  movzbl %cl, %eax"); return;
-
-            case NodeKind.Exch:
-                GenExpr(node.Lhs); Push(); GenExpr(node.Rhs); Pop("%rdi");
-                int sz3 = node.Lhs.Ty.Base.Size;
-                Println($"  xchg {RegAx(sz3)}, (%rdi)"); return;
-        }
-
-        // Binary operations on float/double
-        switch (node.Lhs.Ty.Kind)
-        {
-            case TypeKind.Float: case TypeKind.Double:
-                GenExpr(node.Rhs); Pushf(); GenExpr(node.Lhs); Popf(1);
-                string sz = node.Lhs.Ty.Kind == TypeKind.Float ? "ss" : "sd";
-                switch (node.Kind)
-                {
-                    case NodeKind.Add: Println($"  add{sz} %xmm1, %xmm0"); return;
-                    case NodeKind.Sub: Println($"  sub{sz} %xmm1, %xmm0"); return;
-                    case NodeKind.Mul: Println($"  mul{sz} %xmm1, %xmm0"); return;
-                    case NodeKind.Div: Println($"  div{sz} %xmm1, %xmm0"); return;
-                    case NodeKind.Eq: case NodeKind.Ne: case NodeKind.Lt: case NodeKind.Le:
-                        Println($"  ucomi{sz} %xmm0, %xmm1");
-                        if (node.Kind == NodeKind.Eq) { Println("  sete %al"); Println("  setnp %dl"); Println("  and %dl, %al"); }
-                        else if (node.Kind == NodeKind.Ne) { Println("  setne %al"); Println("  setp %dl"); Println("  or %dl, %al"); }
-                        else if (node.Kind == NodeKind.Lt) Println("  seta %al");
-                        else Println("  setae %al");
-                        Println("  and $1, %al"); Println("  movzb %al, %rax"); return;
-                }
-                Util.ErrorTok(node.Tok, "invalid expression");
-                return;
-            case TypeKind.LDouble:
-                if (node.Lhs.Ty.Size == 8)
-                {
-                    // 8-byte long double (LLP64) — use SSE like double
-                    GenExpr(node.Rhs); Pushf(); GenExpr(node.Lhs); Popf(1);
-                    switch (node.Kind)
+                    else
                     {
-                        case NodeKind.Add: Println("  addsd %xmm1, %xmm0"); return;
-                        case NodeKind.Sub: Println("  subsd %xmm1, %xmm0"); return;
-                        case NodeKind.Mul: Println("  mulsd %xmm1, %xmm0"); return;
-                        case NodeKind.Div: Println("  divsd %xmm1, %xmm0"); return;
-                        case NodeKind.Eq: case NodeKind.Ne: case NodeKind.Lt: case NodeKind.Le:
-                            Println("  ucomisd %xmm0, %xmm1");
-                            if (node.Kind == NodeKind.Eq) { Println("  sete %al"); Println("  setnp %dl"); Println("  and %dl, %al"); }
-                            else if (node.Kind == NodeKind.Ne) { Println("  setne %al"); Println("  setp %dl"); Println("  or %dl, %al"); }
-                            else if (node.Kind == NodeKind.Lt) Println("  seta %al");
-                            else Println("  setae %al");
-                            Println("  and $1, %al"); Println("  movzb %al, %rax"); return;
+                        // cdecl: load the native function pointer from __unep@ field
+                        if (_unepFields.TryGetValue(node.Var.Name, out var unepField))
+                        {
+                            _enc.OpCode(ILOpCode.Ldsfld); _enc.Token(unepField); Push();
+                        }
+                        else
+                        {
+                            Util.ErrorTok(node.Tok, $"cannot take address of cdecl function '{node.Var.Name}' — __unep@ field not registered");
+                        }
                     }
-                    Util.ErrorTok(node.Tok, "invalid expression");
                     return;
                 }
-                // 16-byte long double (LP64) — use x87
-                GenExpr(node.Lhs); GenExpr(node.Rhs);
-                switch (node.Kind)
+                if (node.Var.IsLocal && !IsAggregateType(node.Ty))
                 {
-                    case NodeKind.Add: Println("  faddp"); return;
-                    case NodeKind.Sub: Println("  fsubrp"); return;
-                    case NodeKind.Mul: Println("  fmulp"); return;
-                    case NodeKind.Div: Println("  fdivrp"); return;
-                    case NodeKind.Eq: case NodeKind.Ne: case NodeKind.Lt: case NodeKind.Le:
-                        Println("  fcomip"); Println("  fstp %st(0)");
-                        if (node.Kind == NodeKind.Eq) Println("  sete %al");
-                        else if (node.Kind == NodeKind.Ne) Println("  setne %al");
-                        else if (node.Kind == NodeKind.Lt) Println("  seta %al");
-                        else Println("  setae %al");
-                        Println("  movzb %al, %rax"); return;
+                    // Simple scalar local/param — use direct load
+                    LoadLocalOrParam(node.Var);
+                    return;
                 }
-                Util.ErrorTok(node.Tok, "invalid expression");
+                GenAddr(node);
+                Load(node.Ty);
+                return;
+
+            case NodeKind.Member:
+                GenAddr(node);
+                Load(node.Ty);
+                if (node.Member.IsBitfield)
+                {
+                    int shift = (node.Member.Ty.Size * 8) - node.Member.BitWidth - node.Member.BitOffset;
+                    if (shift > 0)
+                    {
+                        EmitConstI4(shift);
+                        _enc.OpCode(ILOpCode.Shl); Pop();
+                    }
+                    int rightShift = (node.Member.Ty.Size * 8) - node.Member.BitWidth;
+                    if (rightShift > 0)
+                    {
+                        EmitConstI4(rightShift);
+                        _enc.OpCode(node.Member.Ty.IsUnsigned ? ILOpCode.Shr_un : ILOpCode.Shr); Pop();
+                    }
+                }
+                return;
+
+            case NodeKind.Deref:
+                GenExpr(node.Lhs);
+                Load(node.Ty);
+                return;
+
+            case NodeKind.Addr:
+                GenAddr(node.Lhs);
+                return;
+
+            case NodeKind.Assign:
+                // Handle bitfield assignment
+                if (node.Lhs.Kind == NodeKind.Member && node.Lhs.Member.IsBitfield)
+                {
+                    GenBitfieldAssign(node);
+                    return;
+                }
+                // Optimize: direct store to local/param for simple scalars
+                if (node.Lhs.Kind == NodeKind.Var && node.Lhs.Var.IsLocal && !IsAggregateType(node.Ty))
+                {
+                    GenExpr(node.Rhs);
+                    _enc.OpCode(ILOpCode.Dup); Push();
+                    StoreLocalOrParam(node.Lhs.Var);
+                    return;
+                }
+                GenAddr(node.Lhs);
+                GenExpr(node.Rhs);
+                // dup + stloc scratch, store, ldloc scratch
+                int assignScratch = GetOrAddScratchLocal(node.Ty);
+                _enc.OpCode(ILOpCode.Dup); Push();
+                _enc.StoreLocal(assignScratch); Pop();
+                Store(node.Ty);
+                _enc.LoadLocal(assignScratch); Push();
+                return;
+
+            case NodeKind.StmtExpr:
+                for (Node n = node.Body; n != null; n = n.Next)
+                    GenStmt(n);
+                return;
+
+            case NodeKind.Comma:
+            {
+                int depthBeforeComma = _stackDepth;
+                GenExpr(node.Lhs);
+                // Discard LHS result if it pushed anything
+                while (_stackDepth > depthBeforeComma)
+                {
+                    _enc.OpCode(ILOpCode.Pop); Pop();
+                }
+                GenExpr(node.Rhs);
+                return;
+            }
+
+            case NodeKind.Cast:
+                GenExpr(node.Lhs);
+                EmitCast(node.Lhs.Ty, node.Ty);
+                return;
+
+            case NodeKind.MemZero:
+                if (_localSlots.TryGetValue(node.Var, out int mzSlot))
+                {
+                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)mzSlot); Push();
+                    EmitConstI4(0);
+                    EmitConstI4(node.Var.Ty.Size);
+                    _enc.OpCode(ILOpCode.Initblk); Pop(3);
+                }
+                else
+                {
+                    GenAddr(new Node { Kind = NodeKind.Var, Var = node.Var, Tok = node.Tok, Ty = node.Var.Ty });
+                    EmitConstI4(0);
+                    EmitConstI4(node.Var.Ty.Size);
+                    _enc.OpCode(ILOpCode.Initblk); Pop(3);
+                }
+                return;
+
+            case NodeKind.Cond:
+            {
+                int savedDepth = _stackDepth;
+                var elseLabel = _enc.DefineLabel();
+                var endLabel = _enc.DefineLabel();
+                GenExpr(node.Cond);
+                _enc.Branch(ILOpCode.Brfalse, elseLabel); Pop();
+                _stackDepth = savedDepth;
+                GenExpr(node.Then);
+                _enc.Branch(ILOpCode.Br, endLabel);
+                _stackDepth = savedDepth;
+                _enc.MarkLabel(elseLabel);
+                GenExpr(node.Els);
+                _enc.MarkLabel(endLabel);
+                return;
+            }
+
+            case NodeKind.Not:
+                GenExpr(node.Lhs);
+                EmitConstI4(0);
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                return;
+
+            case NodeKind.BitNot:
+                GenExpr(node.Lhs);
+                _enc.OpCode(ILOpCode.Not);
+                return;
+
+            case NodeKind.LogAnd:
+            {
+                int savedDepth = _stackDepth;
+                var falseLabel = _enc.DefineLabel();
+                var endLabel = _enc.DefineLabel();
+                GenExpr(node.Lhs);
+                _enc.Branch(ILOpCode.Brfalse, falseLabel); Pop();
+                _stackDepth = savedDepth;
+                GenExpr(node.Rhs);
+                _enc.Branch(ILOpCode.Brfalse, falseLabel); Pop();
+                _stackDepth = savedDepth;
+                EmitConstI4(1);
+                _enc.Branch(ILOpCode.Br, endLabel);
+                _stackDepth = savedDepth;
+                _enc.MarkLabel(falseLabel);
+                EmitConstI4(0);
+                _enc.MarkLabel(endLabel);
+                return;
+            }
+
+            case NodeKind.LogOr:
+            {
+                int savedDepth = _stackDepth;
+                var trueLabel = _enc.DefineLabel();
+                var endLabel = _enc.DefineLabel();
+                GenExpr(node.Lhs);
+                _enc.Branch(ILOpCode.Brtrue, trueLabel); Pop();
+                _stackDepth = savedDepth;
+                GenExpr(node.Rhs);
+                _enc.Branch(ILOpCode.Brtrue, trueLabel); Pop();
+                _stackDepth = savedDepth;
+                EmitConstI4(0);
+                _enc.Branch(ILOpCode.Br, endLabel);
+                _stackDepth = savedDepth;
+                _enc.MarkLabel(trueLabel);
+                EmitConstI4(1);
+                _enc.MarkLabel(endLabel);
+                return;
+            }
+
+            case NodeKind.FunCall:
+                GenFunCall(node);
+                return;
+
+            case NodeKind.LabelVal:
+                Util.ErrorTok(node.Tok, "labels-as-values not supported in MSIL");
+                return;
+
+            case NodeKind.Cas:
+                GenCas(node);
+                return;
+
+            case NodeKind.Exch:
+                GenExch(node);
                 return;
         }
 
-        // Integer binary ops
-        GenExpr(node.Rhs); Push(); GenExpr(node.Lhs); Pop("%rdi");
-        string ax, di, dx;
-        if (node.Lhs.Ty.Size == 8 || node.Lhs.Ty.Base != null) { ax = "%rax"; di = "%rdi"; dx = "%rdx"; }
-        else { ax = "%eax"; di = "%edi"; dx = "%edx"; }
+        // Binary operations
+        GenExpr(node.Lhs);
+        GenExpr(node.Rhs);
 
         switch (node.Kind)
         {
-            case NodeKind.Add: Println($"  add {di}, {ax}"); return;
-            case NodeKind.Sub: Println($"  sub {di}, {ax}"); return;
-            case NodeKind.Mul: Println($"  imul {di}, {ax}"); return;
-            case NodeKind.Div: case NodeKind.Mod:
-                if (node.Ty.IsUnsigned) { Println($"  mov $0, {dx}"); Println($"  div {di}"); }
-                else { Println(node.Lhs.Ty.Size == 8 ? "  cqo" : "  cdq"); Println($"  idiv {di}"); }
-                if (node.Kind == NodeKind.Mod) Println("  mov %rdx, %rax");
+            case NodeKind.Add: _enc.OpCode(ILOpCode.Add); Pop(); return;
+            case NodeKind.Sub: _enc.OpCode(ILOpCode.Sub); Pop(); return;
+            case NodeKind.Mul: _enc.OpCode(ILOpCode.Mul); Pop(); return;
+            case NodeKind.Div:
+                _enc.OpCode(node.Ty.IsUnsigned ? ILOpCode.Div_un : ILOpCode.Div); Pop(); return;
+            case NodeKind.Mod:
+                _enc.OpCode(node.Ty.IsUnsigned ? ILOpCode.Rem_un : ILOpCode.Rem); Pop(); return;
+            case NodeKind.BitAnd: _enc.OpCode(ILOpCode.And); Pop(); return;
+            case NodeKind.BitOr: _enc.OpCode(ILOpCode.Or); Pop(); return;
+            case NodeKind.BitXor: _enc.OpCode(ILOpCode.Xor); Pop(); return;
+            case NodeKind.Shl: _enc.OpCode(ILOpCode.Shl); Pop(); return;
+            case NodeKind.Shr:
+                _enc.OpCode(node.Lhs.Ty.IsUnsigned ? ILOpCode.Shr_un : ILOpCode.Shr); Pop(); return;
+            case NodeKind.Eq: _enc.OpCode(ILOpCode.Ceq); Pop(); return;
+            case NodeKind.Ne:
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                EmitConstI4(0);
+                _enc.OpCode(ILOpCode.Ceq); Pop();
                 return;
-            case NodeKind.BitAnd: Println($"  and {di}, {ax}"); return;
-            case NodeKind.BitOr: Println($"  or {di}, {ax}"); return;
-            case NodeKind.BitXor: Println($"  xor {di}, {ax}"); return;
-            case NodeKind.Eq: case NodeKind.Ne: case NodeKind.Lt: case NodeKind.Le:
-                Println($"  cmp {di}, {ax}");
-                if (node.Kind == NodeKind.Eq) Println("  sete %al");
-                else if (node.Kind == NodeKind.Ne) Println("  setne %al");
-                else if (node.Kind == NodeKind.Lt) Println(node.Lhs.Ty.IsUnsigned ? "  setb %al" : "  setl %al");
-                else Println(node.Lhs.Ty.IsUnsigned ? "  setbe %al" : "  setle %al");
-                Println("  movzb %al, %rax"); return;
-            case NodeKind.Shl: Println("  mov %rdi, %rcx"); Println($"  shl %cl, {ax}"); return;
-            case NodeKind.Shr: Println("  mov %rdi, %rcx"); Println(node.Lhs.Ty.IsUnsigned ? $"  shr %cl, {ax}" : $"  sar %cl, {ax}"); return;
+            case NodeKind.Lt:
+                _enc.OpCode(node.Lhs.Ty.IsUnsigned ? ILOpCode.Clt_un : ILOpCode.Clt); Pop(); return;
+            case NodeKind.Le:
+                // a <= b  ≡  !(a > b)  ≡  (cgt/cgt.un == 0)
+                _enc.OpCode(node.Lhs.Ty.IsUnsigned ? ILOpCode.Cgt_un : ILOpCode.Cgt); Pop();
+                EmitConstI4(0);
+                _enc.OpCode(ILOpCode.Ceq); Pop();
+                return;
         }
         Util.ErrorTok(node.Tok, "invalid expression");
     }
 
+    // ─── Function call ───────────────────────────────────────────
+
+    private void GenFunCall(Node node)
+    {
+        CType funcTy = node.FuncTy;
+        bool isIndirect = node.Lhs.Kind != NodeKind.Var || !node.Lhs.Var.IsFunction;
+
+        // Check for alloca
+        if (!isIndirect && node.Lhs.Var.Name == "alloca")
+        {
+            GenExpr(node.Args);
+            _enc.OpCode(ILOpCode.Localloc);
+            // Stack: size → ptr (net 0)
+            return;
+        }
+
+        // Push arguments
+        int argCount = 0;
+        for (Node arg = node.Args; arg != null; arg = arg.Next)
+        {
+            GenExpr(arg);
+            argCount++;
+        }
+
+        if (isIndirect)
+        {
+            // Indirect call — push function pointer, then calli
+            GenExpr(node.Lhs);
+
+            // Build standalone signature for calli
+            var calliSig = new BlobBuilder();
+            if (funcTy.CallConv == CallConv.Clrcall)
+                calliSig.WriteByte((byte)SignatureCallingConvention.Default);
+            else
+                calliSig.WriteByte((byte)SignatureCallingConvention.Unmanaged | (byte)SignatureCallingConvention.Default);
+
+            int paramCount = 0;
+            for (CType p = funcTy.Params; p != null; p = p.Next) paramCount++;
+            calliSig.WriteCompressedInteger(paramCount);
+
+            // Return type
+            if (funcTy.ReturnTy.Kind == TypeKind.Void)
+                calliSig.WriteByte((byte)SignatureTypeCode.Void);
+            else
+                EncodeType(calliSig, funcTy.ReturnTy);
+
+            // Params
+            for (CType p = funcTy.Params; p != null; p = p.Next)
+                EncodeType(calliSig, p);
+
+            var calliSigHandle = _md.AddStandaloneSignature(_md.GetOrAddBlob(calliSig));
+            _enc.CallIndirect(calliSigHandle);
+            Pop(argCount + 1); // pop args + function pointer
+        }
+        else
+        {
+            // Direct call
+            string targetName = node.Lhs.Var.Name;
+            if (_methodDefs.TryGetValue(node.Lhs.Var, out var methodDef))
+            {
+                _enc.Call(methodDef);
+            }
+            else if (_externalFuncRefs.TryGetValue(targetName, out var memberRef))
+            {
+                _enc.Call(memberRef);
+            }
+            else
+            {
+                // Register on the fly (might be a forward reference)
+                RegisterExternalFunction(node.Lhs.Var);
+                _enc.Call(_externalFuncRefs[targetName]);
+            }
+            Pop(argCount);
+        }
+
+        // Push return value if non-void
+        if (funcTy.ReturnTy.Kind != TypeKind.Void)
+            Push();
+    }
+
+    // ─── Atomic operations ───────────────────────────────────────
+
+    private void GenCas(Node node)
+    {
+        // __atomic_compare_exchange_n → Interlocked.CompareExchange(ref, value, comparand)
+        // Returns bool: true if exchange happened
+        GenExpr(node.CasAddr);  // address
+        GenExpr(node.CasNew);   // desired value
+        GenExpr(node.CasOld);   // Load old value from *old_ptr
+        Load(node.CasOld.Ty.Base);
+
+        // Call Interlocked.CompareExchange(ref int, int, int)
+        var interlocked = GetInterlockedRef();
+        var sig = new BlobBuilder();
+        sig.WriteByte(0x00); // DEFAULT
+        sig.WriteCompressedInteger(3);
+        sig.WriteByte((byte)SignatureTypeCode.Int32); // return
+        sig.WriteByte((byte)SignatureTypeCode.Pointer);
+        sig.WriteByte((byte)SignatureTypeCode.Int32); // ref param
+        sig.WriteByte((byte)SignatureTypeCode.Int32);
+        sig.WriteByte((byte)SignatureTypeCode.Int32);
+
+        var cxchgRef = _md.AddMemberReference(interlocked,
+            _md.GetOrAddString("CompareExchange"), _md.GetOrAddBlob(sig));
+        _enc.Call(cxchgRef);
+        Pop(2); // 3 args → 1 result
+
+        // Compare result with comparand to get bool
+        GenExpr(node.CasOld);
+        Load(node.CasOld.Ty.Base);
+        _enc.OpCode(ILOpCode.Ceq); Pop();
+    }
+
+    private void GenExch(Node node)
+    {
+        // __atomic_exchange_n → Interlocked.Exchange(ref int, int)
+        GenExpr(node.Lhs); // address
+        GenExpr(node.Rhs); // new value
+
+        var interlocked = GetInterlockedRef();
+        var sig = new BlobBuilder();
+        sig.WriteByte(0x00);
+        sig.WriteCompressedInteger(2);
+        sig.WriteByte((byte)SignatureTypeCode.Int32);
+        sig.WriteByte((byte)SignatureTypeCode.Pointer);
+        sig.WriteByte((byte)SignatureTypeCode.Int32);
+        sig.WriteByte((byte)SignatureTypeCode.Int32);
+
+        var xchgRef = _md.AddMemberReference(interlocked,
+            _md.GetOrAddString("Exchange"), _md.GetOrAddBlob(sig));
+        _enc.Call(xchgRef);
+        Pop(); // 2 args → 1 result
+    }
+
+    // ─── Bitfield assignment ─────────────────────────────────────
+
+    private void GenBitfieldAssign(Node node)
+    {
+        Member mem = node.Lhs.Member;
+        GenAddr(node.Lhs);
+
+        // Save address for later store
+        _enc.OpCode(ILOpCode.Dup); Push();
+
+        GenExpr(node.Rhs);
+
+        // Save the truncated value for the expression result
+        long mask = (1L << mem.BitWidth) - 1;
+        int assignScratch = GetOrAddScratchLocal(node.Ty);
+        _enc.OpCode(ILOpCode.Dup); Push();
+        _enc.StoreLocal(assignScratch); Pop();
+
+        // Mask and shift new value into position
+        EmitConstI4(mask);
+        _enc.OpCode(ILOpCode.And); Pop();
+        if (mem.BitOffset > 0)
+        {
+            EmitConstI4(mem.BitOffset);
+            _enc.OpCode(ILOpCode.Shl); Pop();
+        }
+
+        // Load old value, mask out old bits, OR in new bits
+        // Stack: addr, shifted_new
+        // We need: addr, (old & ~field_mask) | shifted_new
+        // Duplicate addr, load old value
+        // This requires reordering; use scratch
+        int newValScratch = GetOrAddScratchLocal(_types.TyInt);
+        _enc.StoreLocal(newValScratch); Pop();
+        _enc.OpCode(ILOpCode.Dup); Push(); // dup addr
+        Load(mem.Ty); // load old value
+
+        long clearMask = ~(mask << mem.BitOffset);
+        EmitConstI4(clearMask);
+        _enc.OpCode(ILOpCode.And); Pop();
+        _enc.LoadLocal(newValScratch); Push();
+        _enc.OpCode(ILOpCode.Or); Pop();
+
+        Store(node.Ty);
+
+        _enc.LoadLocal(assignScratch); Push();
+    }
+
+    // ─── Type cast ───────────────────────────────────────────────
+
+    private void EmitCast(CType from, CType to)
+    {
+        if (to.Kind == TypeKind.Void) { Pop(); return; }
+        if (to.Kind == TypeKind.Bool)
+        {
+            // Non-zero → 1, zero → 0
+            switch (from.Kind)
+            {
+                case TypeKind.Float:
+                case TypeKind.Double:
+                case TypeKind.LDouble:
+                    if (from.Kind == TypeKind.Float)
+                        _enc.LoadConstantR4(0.0f);
+                    else
+                        _enc.LoadConstantR8(0.0);
+                    Push();
+                    _enc.OpCode(ILOpCode.Ceq); Pop();
+                    EmitConstI4(0);
+                    _enc.OpCode(ILOpCode.Ceq); Pop();
+                    break;
+                default:
+                    EmitConstI4(0);
+                    if (from.Size == 8 || from.Kind == TypeKind.Ptr) _enc.OpCode(ILOpCode.Conv_i8);
+                    _enc.OpCode(ILOpCode.Cgt_un); Pop();
+                    break;
+            }
+            return;
+        }
+
+        // From float/double
+        if (TypeSystem.IsFlonum(from) && TypeSystem.IsInteger(to))
+        {
+            if (to.Size <= 4)
+                _enc.OpCode(to.IsUnsigned ? ILOpCode.Conv_u4 : ILOpCode.Conv_i4);
+            else
+                _enc.OpCode(to.IsUnsigned ? ILOpCode.Conv_u8 : ILOpCode.Conv_i8);
+            return;
+        }
+        if (TypeSystem.IsInteger(from) && TypeSystem.IsFlonum(to))
+        {
+            if (to.Kind == TypeKind.Float)
+                _enc.OpCode(ILOpCode.Conv_r4);
+            else
+                _enc.OpCode(ILOpCode.Conv_r8);
+            return;
+        }
+        if (TypeSystem.IsFlonum(from) && TypeSystem.IsFlonum(to))
+        {
+            if (to.Kind == TypeKind.Float)
+                _enc.OpCode(ILOpCode.Conv_r4);
+            else
+                _enc.OpCode(ILOpCode.Conv_r8);
+            return;
+        }
+
+        // Integer → integer
+        if (to.Kind == TypeKind.Ptr || (to.Kind == TypeKind.Long && _dm.LongSize == 8) || to.Kind == TypeKind.LLong)
+        {
+            if (from.Size <= 4)
+                _enc.OpCode(from.IsUnsigned ? ILOpCode.Conv_u8 : ILOpCode.Conv_i8);
+            return;
+        }
+        if (to.Size == 1)
+            _enc.OpCode(to.IsUnsigned ? ILOpCode.Conv_u1 : ILOpCode.Conv_i1);
+        else if (to.Size == 2)
+            _enc.OpCode(to.IsUnsigned ? ILOpCode.Conv_u2 : ILOpCode.Conv_i2);
+        else if (to.Size == 4 && from.Size == 8)
+            _enc.OpCode(ILOpCode.Conv_i4);
+        // If same size, no conv needed
+    }
+
     // ═══════════════════════════════════════════════════════════════
-    //  Statement code generation
+    //  Statement code generation (GenStmt)
     // ═══════════════════════════════════════════════════════════════
 
     private void GenStmt(Node node)
     {
-        Println($"  .loc {node.Tok.File.FileNo} {node.Tok.LineNo}");
+        if (node.Tok?.File != null)
+            _enc.MarkLineNumber(_cvFile, node.Tok.LineNo);
+
         switch (node.Kind)
         {
             case NodeKind.If:
-                int c = Count(); GenExpr(node.Cond); CmpZero(node.Cond.Ty);
-                Println($"  je  .L.else.{c}"); GenStmt(node.Then); Println($"  jmp .L.end.{c}");
-                Println($".L.else.{c}:"); if (node.Els != null) GenStmt(node.Els); Println($".L.end.{c}:"); return;
-            case NodeKind.For:
-                c = Count();
-                if (node.Init != null) GenStmt(node.Init);
-                Println($".L.begin.{c}:");
-                if (node.Cond != null) { GenExpr(node.Cond); CmpZero(node.Cond.Ty); Println($"  je {node.BrkLabel}"); }
-                GenStmt(node.Then); Println($"{node.ContLabel}:");
-                if (node.Inc != null) GenExpr(node.Inc);
-                Println($"  jmp .L.begin.{c}"); Println($"{node.BrkLabel}:"); return;
-            case NodeKind.Do:
-                c = Count(); Println($".L.begin.{c}:"); GenStmt(node.Then);
-                Println($"{node.ContLabel}:"); GenExpr(node.Cond); CmpZero(node.Cond.Ty);
-                Println($"  jne .L.begin.{c}"); Println($"{node.BrkLabel}:"); return;
-            case NodeKind.Switch:
+            {
+                var elseLabel = _enc.DefineLabel();
+                var endLabel = _enc.DefineLabel();
                 GenExpr(node.Cond);
-                for (Node n = node.CaseNext; n != null; n = n.CaseNext)
+                _enc.Branch(ILOpCode.Brfalse, elseLabel); Pop();
+                GenStmt(node.Then);
+                _enc.Branch(ILOpCode.Br, endLabel);
+                _enc.MarkLabel(elseLabel);
+                if (node.Els != null) GenStmt(node.Els);
+                _enc.MarkLabel(endLabel);
+                return;
+            }
+
+            case NodeKind.For:
+            {
+                var beginLabel = _enc.DefineLabel();
+                var contLabel = _enc.DefineLabel();
+                var brkLabel = _enc.DefineLabel();
+                if (node.ContLabel != null) _labels[node.ContLabel] = contLabel;
+                if (node.BrkLabel != null) _labels[node.BrkLabel] = brkLabel;
+
+                if (node.Init != null) GenStmt(node.Init);
+                _enc.MarkLabel(beginLabel);
+                if (node.Cond != null)
                 {
-                    string cax = node.Cond.Ty.Size == 8 ? "%rax" : "%eax";
-                    string cdi = node.Cond.Ty.Size == 8 ? "%rdi" : "%edi";
-                    if (n.Begin == n.End) { Println($"  cmp ${n.Begin}, {cax}"); Println($"  je {n.Label}"); }
-                    else { Println($"  mov {cax}, {cdi}"); Println($"  sub ${n.Begin}, {cdi}"); Println($"  cmp ${n.End - n.Begin}, {cdi}"); Println($"  jbe {n.Label}"); }
+                    GenExpr(node.Cond);
+                    _enc.Branch(ILOpCode.Brfalse, brkLabel); Pop();
                 }
-                if (node.DefaultCase != null) Println($"  jmp {node.DefaultCase.Label}");
-                Println($"  jmp {node.BrkLabel}"); GenStmt(node.Then); Println($"{node.BrkLabel}:"); return;
-            case NodeKind.Case: Println($"{node.Label}:"); GenStmt(node.Lhs); return;
-            case NodeKind.Block: for (Node n = node.Body; n != null; n = n.Next) GenStmt(n); return;
-            case NodeKind.Goto: Println($"  jmp {node.UniqueLabel}"); return;
-            case NodeKind.GotoExpr: GenExpr(node.Lhs); Println("  jmp *%rax"); return;
-            case NodeKind.Label: Println($"{node.UniqueLabel}:"); GenStmt(node.Lhs); return;
+                GenStmt(node.Then);
+                _enc.MarkLabel(contLabel);
+                if (node.Inc != null)
+                {
+                    int incDepth = _stackDepth;
+                    GenExpr(node.Inc);
+                    while (_stackDepth > incDepth) { _enc.OpCode(ILOpCode.Pop); Pop(); }
+                }
+                _enc.Branch(ILOpCode.Br, beginLabel);
+                _enc.MarkLabel(brkLabel);
+                return;
+            }
+
+            case NodeKind.Do:
+            {
+                var beginLabel = _enc.DefineLabel();
+                var contLabel = _enc.DefineLabel();
+                var brkLabel = _enc.DefineLabel();
+                if (node.ContLabel != null) _labels[node.ContLabel] = contLabel;
+                if (node.BrkLabel != null) _labels[node.BrkLabel] = brkLabel;
+
+                _enc.MarkLabel(beginLabel);
+                GenStmt(node.Then);
+                _enc.MarkLabel(contLabel);
+                GenExpr(node.Cond);
+                _enc.Branch(ILOpCode.Brtrue, beginLabel); Pop();
+                _enc.MarkLabel(brkLabel);
+                return;
+            }
+
+            case NodeKind.Switch:
+            {
+                var brkLabel = _enc.DefineLabel();
+                if (node.BrkLabel != null) _labels[node.BrkLabel] = brkLabel;
+
+                // x64: always if/else chain (no IL switch)
+                GenExpr(node.Cond);
+                int condScratch = GetOrAddScratchLocal(node.Cond.Ty);
+                _enc.StoreLocal(condScratch); Pop();
+
+                for (Node c = node.CaseNext; c != null; c = c.CaseNext)
+                {
+                    var caseLabel = _enc.DefineLabel();
+                    _labels[c.Label] = caseLabel;
+
+                    if (c.Begin == c.End)
+                    {
+                        _enc.LoadLocal(condScratch); Push();
+                        EmitConstI4(c.Begin);
+                        _enc.Branch(ILOpCode.Beq, caseLabel); Pop(2);
+                    }
+                    else
+                    {
+                        // Range case: val - begin <= (end - begin)
+                        _enc.LoadLocal(condScratch); Push();
+                        EmitConstI4(c.Begin);
+                        _enc.OpCode(ILOpCode.Sub); Pop();
+                        EmitConstI4(c.End - c.Begin);
+                        _enc.Branch(ILOpCode.Ble_un, caseLabel); Pop(2);
+                    }
+                }
+
+                if (node.DefaultCase != null)
+                {
+                    var defaultLabel = _enc.DefineLabel();
+                    _labels[node.DefaultCase.Label] = defaultLabel;
+                    _enc.Branch(ILOpCode.Br, defaultLabel);
+                }
+                else
+                {
+                    _enc.Branch(ILOpCode.Br, brkLabel);
+                }
+
+                GenStmt(node.Then);
+                _enc.MarkLabel(brkLabel);
+                return;
+            }
+
+            case NodeKind.Case:
+                if (_labels.TryGetValue(node.Label, out var cLabel))
+                    _enc.MarkLabel(cLabel);
+                GenStmt(node.Lhs);
+                return;
+
+            case NodeKind.Block:
+                for (Node n = node.Body; n != null; n = n.Next)
+                    GenStmt(n);
+                return;
+
+            case NodeKind.Goto:
+                if (!_labels.TryGetValue(node.UniqueLabel, out var gotoTarget))
+                {
+                    gotoTarget = _enc.DefineLabel();
+                    _labels[node.UniqueLabel] = gotoTarget;
+                }
+                _enc.Branch(ILOpCode.Br, gotoTarget);
+                return;
+
+            case NodeKind.GotoExpr:
+                Util.ErrorTok(node.Tok, "computed goto not supported in MSIL");
+                return;
+
+            case NodeKind.Label:
+                if (!_labels.TryGetValue(node.UniqueLabel, out var labelTarget))
+                {
+                    labelTarget = _enc.DefineLabel();
+                    _labels[node.UniqueLabel] = labelTarget;
+                }
+                _enc.MarkLabel(labelTarget);
+                GenStmt(node.Lhs);
+                return;
+
             case NodeKind.Return:
                 if (node.Lhs != null)
                 {
                     GenExpr(node.Lhs);
-                    CType ty = node.Lhs.Ty;
-                    if (ty.Kind == TypeKind.Struct || ty.Kind == TypeKind.Union)
-                    {
-                        if (ty.Size <= 16) CopyStructReg(); else CopyStructMem();
-                    }
+                    Pop(); // ret consumes
                 }
-                Println($"  jmp .L.return.{_currentFn.Name}"); return;
-            case NodeKind.ExprStmt: GenExpr(node.Lhs); return;
-            case NodeKind.Asm: Println($"  {node.AsmStr}"); return;
+                _enc.OpCode(ILOpCode.Ret);
+                return;
+
+            case NodeKind.ExprStmt:
+            {
+                int depthBefore = _stackDepth;
+                GenExpr(node.Lhs);
+                // Pop any leftover value to maintain stack neutrality
+                while (_stackDepth > depthBefore)
+                {
+                    _enc.OpCode(ILOpCode.Pop); Pop();
+                }
+                return;
+            }
+
+            case NodeKind.Asm:
+                Util.ErrorTok(node.Tok, "inline assembly not supported in MSIL");
+                return;
         }
         Util.ErrorTok(node.Tok, "invalid statement");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Variable offset assignment
+    //  __CxxPureMSILEntry body emission
     // ═══════════════════════════════════════════════════════════════
 
-    private void AssignLvarOffsets(Obj prog)
+    private void EmitCxxPureMSILEntry()
     {
-        for (Obj fn = prog; fn != null; fn = fn.Next)
+        if (!_hasMain) return;
+
+        var enc = new RelocatableInstructionEncoder(
+            new BlobBuilder(), new MethodRelocationBuilder(),
+            new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+
+        // Count main's parameters
+        int mainParamCount = 0;
+        for (CType p = _mainObj.Ty.Params; p != null; p = p.Next)
+            mainParamCount++;
+
+        // Load argc and argv up to what main declares
+        if (mainParamCount >= 1)
         {
-            if (!fn.IsFunction) continue;
-            int top = 16, bottom = 0, gp = 0, fp = 0;
-
-            for (Obj var = fn.Params; var != null; var = var.Next)
-            {
-                CType ty = var.Ty;
-                switch (ty.Kind)
-                {
-                    case TypeKind.Struct: case TypeKind.Union:
-                        if (ty.Size <= 16)
-                        {
-                            bool fp1 = HasFlonum(ty, 0, 8, 0), fp2 = HasFlonum(ty, 8, 16, 8);
-                            if (fp + (fp1?1:0) + (fp2?1:0) < FpMax && gp + (fp1?0:1) + (fp2?0:1) < GpMax)
-                            { fp += (fp1?1:0) + (fp2?1:0); gp += (fp1?0:1) + (fp2?0:1); continue; }
-                        }
-                        break;
-                    case TypeKind.Float: case TypeKind.Double:
-                        if (fp++ < FpMax) continue; break;
-                    case TypeKind.LDouble:
-                        if (ty.Size == 8) { if (fp++ < FpMax) continue; }
-                        break;
-                    default:
-                        if (gp++ < GpMax) continue; break;
-                }
-                top = Util.AlignTo(top, 8); var.Offset = top; top += var.Ty.Size;
-            }
-
-            for (Obj var = fn.Locals; var != null; var = var.Next)
-            {
-                if (var.Offset != 0) continue;
-                int align = (var.Ty.Kind == TypeKind.Array && var.Ty.Size >= 16) ? Math.Max(16, var.Align) : var.Align;
-                bottom += var.Ty.Size; bottom = Util.AlignTo(bottom, align); var.Offset = -bottom;
-            }
-            fn.StackSize = Util.AlignTo(bottom, 16);
+            enc.OpCode(ILOpCode.Ldarg_0); // argc
         }
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    //  Data emission
-    // ═══════════════════════════════════════════════════════════════
-
-    private void EmitData(Obj prog)
-    {
-        for (Obj var = prog; var != null; var = var.Next)
+        if (mainParamCount >= 2)
         {
-            if (var.IsFunction || !var.IsDefinition) continue;
-            if (var.IsStatic) Println($"  .local {var.Name}"); else Println($"  .globl {var.Name}");
-
-            int align = (var.Ty.Kind == TypeKind.Array && var.Ty.Size >= 16) ? Math.Max(16, var.Align) : var.Align;
-
-            if (_options.OptFcommon && var.IsTentative) { Println($"  .comm {var.Name}, {var.Ty.Size}, {align}"); continue; }
-
-            if (var.InitData != null)
-            {
-                if (var.IsTls) Println("  .section .tdata,\"awT\",@progbits"); else Println("  .data");
-                Println($"  .type {var.Name}, @object"); Println($"  .size {var.Name}, {var.Ty.Size}");
-                Println($"  .align {align}"); Println($"{var.Name}:");
-
-                Relocation rel = var.Rel;
-                int pos = 0;
-                while (pos < var.Ty.Size)
-                {
-                    if (rel != null && rel.Offset == pos)
-                    {
-                        Println($"  .quad {rel.Label()}{rel.Addend:+0;-#}");
-                        rel = rel.Next; pos += 8;
-                    }
-                    else
-                    {
-                        Println($"  .byte {(sbyte)var.InitData[pos++]}");
-                    }
-                }
-                continue;
-            }
-
-            if (var.IsTls) Println("  .section .tbss,\"awT\",@nobits"); else Println("  .bss");
-            Println($"  .align {align}"); Println($"{var.Name}:"); Println($"  .zero {var.Ty.Size}");
+            enc.OpCode(ILOpCode.Ldarg_1); // argv
         }
+
+        enc.Call(_mainMethod);
+
+        // If main returns void, push 0
+        if (_mainObj.Ty.ReturnTy.Kind == TypeKind.Void)
+            enc.OpCode(ILOpCode.Ldc_i4_0);
+
+        enc.OpCode(ILOpCode.Ret);
+
+        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
+        _bodyEncoder.AddMethodBody(_cxxPureMsilEntry, mangledName, enc,
+            maxStack: Math.Max(mainParamCount, 1), localVariablesSignature: default, attributes: MethodBodyAttributes.InitLocals,
+            debugName: "__CxxPureMSILEntry");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Store helpers for function parameters
+    //  NEP machinery emission
     // ═══════════════════════════════════════════════════════════════
 
-    private void StoreFp(int r, int offset, int sz)
-    {
-        if (sz == 4) Println($"  movss %xmm{r}, {offset}(%rbp)");
-        else if (sz == 8) Println($"  movsd %xmm{r}, {offset}(%rbp)");
-        else Util.Unreachable();
-    }
-
-    private void StoreGp(int r, int offset, int sz)
-    {
-        switch (sz)
-        {
-            case 1: Println($"  mov {Argreg8[r]}, {offset}(%rbp)"); return;
-            case 2: Println($"  mov {Argreg16[r]}, {offset}(%rbp)"); return;
-            case 4: Println($"  mov {Argreg32[r]}, {offset}(%rbp)"); return;
-            case 8: Println($"  mov {Argreg64[r]}, {offset}(%rbp)"); return;
-            default:
-                for (int i = 0; i < sz; i++) { Println($"  mov {Argreg8[r]}, {offset + i}(%rbp)"); Println($"  shr $8, {Argreg64[r]}"); }
-                return;
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    //  Text emission
-    // ═══════════════════════════════════════════════════════════════
-
-    private void EmitText(Obj prog)
+    private void EmitNepMachinery(Obj prog)
     {
         for (Obj fn = prog; fn != null; fn = fn.Next)
         {
             if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
-            if (fn.IsStatic) Println($"  .local {fn.Name}"); else Println($"  .globl {fn.Name}");
-            Println("  .text"); Println($"  .type {fn.Name}, @function"); Println($"{fn.Name}:");
-            _currentFn = fn;
+            if (fn.IsStatic) continue; // static functions don't get NEP exports
 
-            Println("  push %rbp"); Println("  mov %rsp, %rbp");
-            Println($"  sub ${fn.StackSize}, %rsp");
-            Println($"  mov %rsp, {fn.AllocaBottom.Offset}(%rbp)");
+            var methodDef = _methodDefs[fn];
+            string mangledName = MangleFunctionName(fn);
 
-            if (fn.VaArea != null)
+            var bareSym = EmitNepForMethod(
+                MetadataTokens.GetToken(methodDef), fn.Name, mangledName);
+
+            // If function address is taken and it's cdecl, emit __unep@ slot
+            if (fn.Ty.CallConv != CallConv.Clrcall && _addressTakenFuncs.Contains(fn.Name))
             {
-                int gp = 0, fp = 0;
-                for (Obj var = fn.Params; var != null; var = var.Next)
-                { if (TypeSystem.IsFlonum(var.Ty)) fp++; else gp++; }
-                int off = fn.VaArea.Offset;
-                Println($"  movl ${gp * 8}, {off}(%rbp)");
-                Println($"  movl ${fp * 8 + 48}, {off + 4}(%rbp)");
-                Println($"  movq %rbp, {off + 8}(%rbp)"); Println($"  addq $16, {off + 8}(%rbp)");
-                Println($"  movq %rbp, {off + 16}(%rbp)"); Println($"  addq ${off + 24}, {off + 16}(%rbp)");
-                Println($"  movq %rdi, {off + 24}(%rbp)"); Println($"  movq %rsi, {off + 32}(%rbp)");
-                Println($"  movq %rdx, {off + 40}(%rbp)"); Println($"  movq %rcx, {off + 48}(%rbp)");
-                Println($"  movq %r8, {off + 56}(%rbp)"); Println($"  movq %r9, {off + 64}(%rbp)");
-                for (int i = 0; i < 8; i++) Println($"  movsd %xmm{i}, {off + 72 + i * 8}(%rbp)");
+                EmitUnepSlot(fn, bareSym);
             }
+        }
 
-            int gp2 = 0, fp2 = 0;
-            for (Obj var = fn.Params; var != null; var = var.Next)
+        // NEP for __CxxPureMSILEntry if it exists
+        if (_hasMain)
+        {
+            string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
+            EmitNepForMethod(
+                MetadataTokens.GetToken(_cxxPureMsilEntry), "__CxxPureMSILEntry", mangledName);
+        }
+    }
+
+    /// <summary>
+    /// Emit NEP machinery for a single method: __mep@ slot, thunk, bare-name alias, ilfixup.
+    /// Inlined from ClrIjw.EmitNepMachinery to avoid cross-project dependency.
+    /// </summary>
+    private CoffSymbolHandle EmitNepForMethod(int methodToken, string bareName, string mangledSuffix)
+    {
+        // (1) __mep@?fn slot in .data
+        int slotOffset = _dataStream.Count;
+        for (int i = 0; i < PtrSize; i++) _dataStream.WriteByte(0);
+
+        var mepDataSym = _symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, LogicalSection.Data, slotOffset);
+        var tokenSym = _symtab.GetOrAddUndefinedClrTokenSymbol(methodToken.ToString("X8"));
+        new CoffRelocationEncoder(_coffHeader, _dataRelocs).AddTokenRelocation(slotOffset, tokenSym);
+
+        // (2) NEP thunk: FF 25 [rel32] indirect jump
+        int thunkOffset = _nepStream.Count;
+        _nepStream.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
+        _nepRelocs.WriteInt32(thunkOffset + 2);
+        _nepRelocs.WriteInt32(mepDataSym._value);
+        _nepRelocs.WriteUInt16(Is32 ? (ushort)0x0006 : (ushort)0x0004); // DIR32 / REL32
+
+        // (3) Bare-name COFF alias
+        var bareSym = _symtab.AddExternalDataSymbol(SymPrefix + bareName, LogicalSection.Nep, thunkOffset);
+
+        // (4) ILFixup entry
+        int ilfixupOffset = _ilFixupStream.Count;
+        _ilFixupStream.WriteInt32(0); // RVA placeholder
+        _ilFixupStream.WriteInt16(1); // Count
+        _ilFixupStream.WriteInt16(Is32 ? (short)0x0009 : (short)0x000A);
+        new CoffRelocationEncoder(_coffHeader, _ilFixupRelocs).AddImageRelativeRelocation(ilfixupOffset, mepDataSym);
+
+        return bareSym;
+    }
+
+    private void EmitUnepSlot(Obj fn, CoffSymbolHandle bareSym)
+    {
+        if (!_unepSlotOffsets.TryGetValue(fn.Name, out int slotOffset)) return;
+
+        // ADDR relocation to the bare-name NEP thunk symbol
+        new CoffRelocationEncoder(_coffHeader, _dataRelocs)
+            .AddAddressRelocation(slotOffset, bareSym);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Global data emission
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>Maps __unep@ field name → pre-allocated offset in .data for the slot.</summary>
+    private readonly Dictionary<string, int> _unepSlotOffsets = new();
+
+    private void EmitGlobalData(Obj prog)
+    {
+        for (Obj g = prog; g != null; g = g.Next)
+        {
+            if (g.IsFunction) continue;
+            if (!g.IsDefinition) continue;
+
+            if (!_fieldDefs.TryGetValue(g, out var fieldDef)) continue;
+
+            if (g.InitData != null)
             {
-                if (var.Offset > 0) continue;
-                CType ty = var.Ty;
-                switch (ty.Kind)
+                // Initialized global → .data
+                int offset = _dataStream.Count;
+                _dataStream.WriteBytes(g.InitData);
+
+                _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Data, offset, out _);
+
+                // Emit relocations for pointer initializers
+                for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
                 {
-                    case TypeKind.Struct: case TypeKind.Union:
-                        if (HasFlonum(ty, 0, 8, 0)) StoreFp(fp2++, var.Offset, Math.Min(8, ty.Size));
-                        else StoreGp(gp2++, var.Offset, Math.Min(8, ty.Size));
-                        if (ty.Size > 8) { if (HasFlonum(ty, 8, 16, 0)) StoreFp(fp2++, var.Offset + 8, ty.Size - 8); else StoreGp(gp2++, var.Offset + 8, ty.Size - 8); }
-                        break;
-                    case TypeKind.Float: case TypeKind.Double: StoreFp(fp2++, var.Offset, ty.Size); break;
-                    case TypeKind.LDouble:
-                        if (ty.Size == 8) StoreFp(fp2++, var.Offset, ty.Size);
-                        else StoreGp(gp2++, var.Offset, ty.Size);
-                        break;
-                    default: StoreGp(gp2++, var.Offset, ty.Size); break;
+                    string targetName = rel.Label();
+                    // Find the COFF symbol for the target
+                    var targetSym = _symtab.GetOrAddUndefinedClrTokenSymbol(targetName);
+                    new CoffRelocationEncoder(_coffHeader, _dataRelocs)
+                        .AddAddressRelocation(offset + rel.Offset, targetSym);
                 }
             }
+            else if (g.IsTentative)
+            {
+                // Tentative definition → common symbol
+                _symtab.AddCommonDataClrToken(g.Name, fieldDef, g.Ty.Size, out _);
+            }
+            else
+            {
+                // Zero-initialized → .bss
+                int bssOffset = _bssSize;
+                _bssSize = Util.AlignTo(_bssSize + g.Ty.Size, g.Align);
 
-            GenStmt(fn.Body);
-            System.Diagnostics.Debug.Assert(_depth == 0);
-
-            if (fn.Name == "main") Println("  mov $0, %rax");
-            Println($".L.return.{fn.Name}:"); Println("  mov %rbp, %rsp"); Println("  pop %rbp"); Println("  ret");
+                _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Bss, bssOffset, out _);
+            }
         }
+
+        // Pre-allocate __unep@ data slots (must be before IL emission)
+        foreach (var (funcName, unepField) in _unepFields)
+        {
+            // Find the function's mangled name
+            Obj fn = null;
+            for (Obj f = prog; f != null; f = f.Next)
+                if (f.IsFunction && f.Name == funcName) { fn = f; break; }
+            if (fn == null) continue;
+
+            string mangledName = MangleFunctionName(fn);
+            string unepName = $"__unep@{mangledName}";
+
+            int slotOffset = _dataStream.Count;
+            for (int i = 0; i < PtrSize; i++) _dataStream.WriteByte(0);
+            _unepSlotOffsets[funcName] = slotOffset;
+
+            _symtab.AddDataClrToken(unepName, unepField, LogicalSection.Data, slotOffset, out _);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Scan for address-taken functions
+    // ═══════════════════════════════════════════════════════════════
+
+    private void ScanAddressTaken(Obj prog)
+    {
+        for (Obj fn = prog; fn != null; fn = fn.Next)
+        {
+            if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
+            ScanAddressTakenNode(fn.Body);
+
+            // Also check global initializers that reference functions
+            for (Obj g = prog; g != null; g = g.Next)
+            {
+                if (g.IsFunction) continue;
+                for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
+                {
+                    string label = rel.Label();
+                    _addressTakenFuncs.Add(label);
+                }
+            }
+        }
+    }
+
+    private void ScanAddressTakenNode(Node node)
+    {
+        if (node == null) return;
+        // Explicit address-of: &func
+        if (node.Kind == NodeKind.Addr && node.Lhs?.Kind == NodeKind.Var &&
+            node.Lhs.Var.IsFunction)
+        {
+            _addressTakenFuncs.Add(node.Lhs.Var.Name);
+        }
+        // Implicit function-to-pointer: using function name as a value
+        // (e.g., `fp = add;` without `&`)
+        if (node.Kind == NodeKind.Var && node.Var != null && node.Var.IsFunction &&
+            node.Var.Ty.CallConv != CallConv.Clrcall)
+        {
+            _addressTakenFuncs.Add(node.Var.Name);
+        }
+        // Function passed as argument to another function (e.g., `apply(add, 1, 2)`)
+        if (node.Kind == NodeKind.FunCall)
+        {
+            for (Node arg = node.Args; arg != null; arg = arg.Next)
+            {
+                if (arg.Kind == NodeKind.Var && arg.Var != null && arg.Var.IsFunction &&
+                    arg.Var.Ty.CallConv != CallConv.Clrcall)
+                    _addressTakenFuncs.Add(arg.Var.Name);
+            }
+        }
+        ScanAddressTakenNode(node.Lhs);
+        ScanAddressTakenNode(node.Rhs);
+        ScanAddressTakenNode(node.Cond);
+        ScanAddressTakenNode(node.Then);
+        ScanAddressTakenNode(node.Els);
+        ScanAddressTakenNode(node.Init);
+        ScanAddressTakenNode(node.Inc);
+        ScanAddressTakenNode(node.Body);
+        ScanAddressTakenNode(node.Next);
+        for (Node arg = node.Args; arg != null; arg = arg.Next)
+            ScanAddressTakenNode(arg);
     }
 
     // ═══════════════════════════════════════════════════════════════
     //  Entry point
     // ═══════════════════════════════════════════════════════════════
 
-    public void Generate(Obj prog, TextWriter output)
+    public byte[] Generate(Obj prog, string objName, string sourceFile)
     {
-        _out = output;
-        CFile[] files = _tokenizer.GetInputFiles();
-        foreach (CFile f in files)
-            Println($"  .file {f.FileNo} \"{f.Name}\"");
+        _md = new MetadataBuilder();
+        _coffHeader = new CoffHeaderBuilder(TargetMachine, 0);
+        _symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
 
-        AssignLvarOffsets(prog);
-        EmitData(prog);
-        EmitText(prog);
+        _ilStreamBuilder = new BlobBuilder();
+        _ilRelocBuilder = new BlobBuilder();
+        _dataStream = new BlobBuilder();
+        _dataRelocs = new BlobBuilder();
+        _nepStream = new BlobBuilder();
+        _nepRelocs = new BlobBuilder();
+        _ilFixupStream = new BlobBuilder();
+        _ilFixupRelocs = new BlobBuilder();
+        _bssSize = 0;
+
+        // AssemblyRef: mscorlib
+        _mscorlibRef = _md.AddAssemblyReference(
+            _md.GetOrAddString("mscorlib"),
+            new Version(4, 0, 0, 0),
+            default,
+            _md.GetOrAddBlob(MscorlibPkt),
+            default,
+            _md.GetOrAddBlob(MscorlibHash));
+
+        // CodeView debug info
+        _codeviewSymbols = new CodeViewSymbolBuilder(_coffHeader);
+        _codeviewSymbols.AddObjNameAndCompile3(objName,
+            language: CodeViewLanguage.C,
+            machine: CvMachine,
+            feMajor: 19, feMinor: 50, feBuild: 35730,
+            beMajor: 19, beMinor: 50, beBuild: 35730,
+            "chibil C compiler",
+            compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
+
+        // Source file registration
+        if (File.Exists(sourceFile))
+        {
+            byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
+            _cvFile = _codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
+        }
+        else
+        {
+            _cvFile = _codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.None, Array.Empty<byte>());
+        }
+
+        _bodyEncoder = new RelocatableMethodBodyStreamEncoder(
+            _ilStreamBuilder, _ilRelocBuilder, _symtab, _coffHeader, _codeviewSymbols);
+
+        // TU hash (from source path, matching MSVC behavior)
+        byte[] pathHash = SHA256.HashData(Encoding.UTF8.GetBytes(sourceFile));
+        _tuHash = BitConverter.ToString(pathHash, 0, 4).Replace("-", "").ToLowerInvariant();
+
+        // Scan for address-taken functions before metadata registration
+        ScanAddressTaken(prog);
+
+        // Pass 1: Metadata
+        RegisterMetadata(prog, objName);
+
+        // Global data — MUST be registered before IL emission (token ordering)
+        EmitGlobalData(prog);
+
+        // Pass 2: IL Emission
+        EmitFunctions(prog);
+
+        // Post-pass: __CxxPureMSILEntry
+        EmitCxxPureMSILEntry();
+
+        // NEP machinery
+        EmitNepMachinery(prog);
+
+        // Build COFF and serialize
+        var coffBuilder = new ManagedCoffBuilder(_coffHeader, new MetadataRootBuilder(_md), _symtab, _codeviewSymbols,
+            _ilStreamBuilder, _ilRelocBuilder,
+            dataStream: _dataStream, dataRelocs: _dataRelocs,
+            ilFixupStream: _ilFixupStream, ilFixupRelocs: _ilFixupRelocs,
+            nepStream: _nepStream, nepRelocs: _nepRelocs,
+            bssSize: _bssSize);
+
+        var output = new BlobBuilder();
+        coffBuilder.Serialize(output);
+
+        return output.ToArray();
     }
 }
