@@ -1,4 +1,4 @@
-namespace Chibicc;
+namespace Chibil;
 
 /// <summary>
 /// Type system — singleton types, constructors, and type annotation.

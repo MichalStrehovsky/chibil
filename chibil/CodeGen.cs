@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Chibicc;
+namespace Chibil;
 
 /// <summary>
 /// x86-64 code generator — port of codegen.c.
@@ -40,8 +40,8 @@ public class CodeGen
     private void Pushf() { Println("  sub $8, %rsp"); Println("  movsd %xmm0, (%rsp)"); _depth++; }
     private void Popf(int reg) { Println($"  movsd (%rsp), %xmm{reg}"); Println("  add $8, %rsp"); _depth--; }
 
-    private static string RegDx(int sz) => sz switch { 1 => "%dl", 2 => "%dx", 4 => "%edx", 8 => "%rdx", _ => throw new ChibiccException("unreachable") };
-    private static string RegAx(int sz) => sz switch { 1 => "%al", 2 => "%ax", 4 => "%eax", 8 => "%rax", _ => throw new ChibiccException("unreachable") };
+    private static string RegDx(int sz) => sz switch { 1 => "%dl", 2 => "%dx", 4 => "%edx", 8 => "%rdx", _ => throw new ChibiException("unreachable") };
+    private static string RegAx(int sz) => sz switch { 1 => "%al", 2 => "%ax", 4 => "%eax", 8 => "%rax", _ => throw new ChibiException("unreachable") };
 
     // ═══════════════════════════════════════════════════════════════
     //  Address generation

@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Text;
 
-namespace Chibicc;
+namespace Chibil;
 
 /// <summary>
 /// Recursive descent parser — port of parse.c.
@@ -277,7 +277,7 @@ public class Parser
                 (UNSIGNED + LONG + LONG) or (UNSIGNED + LONG + LONG + INT) => _types.TyUlongLong,
                 FLOAT => _types.TyFloat, DOUBLE => _types.TyDouble,
                 (LONG + DOUBLE) => _types.TyLdouble,
-                _ => throw new ChibiccException($"invalid type")
+                _ => throw new ChibiException($"invalid type")
             };
             tok = tok.Next;
         }

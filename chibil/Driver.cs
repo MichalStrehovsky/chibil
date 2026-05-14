@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 
-namespace Chibicc;
+namespace Chibil;
 
 /// <summary>
 /// Driver — port of main.c.
@@ -34,7 +34,7 @@ public class Driver
 
         if (_optCc1)
         {
-            AddDefaultIncludePaths(args.Length > 0 ? args[0] : "chibicc");
+            AddDefaultIncludePaths(args.Length > 0 ? args[0] : "chibil");
             Cc1(tokenizer, _preprocessor);
             return;
         }
@@ -109,7 +109,7 @@ public class Driver
         // Validate that arg-taking options have an argument
         for (int i = 0; i < args.Length; i++)
             if (TakeArg(args[i]) && i + 1 >= args.Length)
-            { Console.Error.WriteLine("chibicc [ -o <path> ] <file>"); Environment.Exit(1); }
+            { Console.Error.WriteLine("chibil [ -o <path> ] <file>"); Environment.Exit(1); }
 
         var idirafter = new List<string>();
 
@@ -118,7 +118,7 @@ public class Driver
             string arg = args[i];
             if (arg == "-###") { _optHashHashHash = true; continue; }
             if (arg == "-cc1") { _optCc1 = true; continue; }
-            if (arg == "--help") { Console.Error.WriteLine("chibicc [ -o <path> ] <file>"); Environment.Exit(0); }
+            if (arg == "--help") { Console.Error.WriteLine("chibil [ -o <path> ] <file>"); Environment.Exit(0); }
             if (arg == "-o") { _optO = args[++i]; continue; }
             if (arg.StartsWith("-o") && arg.Length > 2) { _optO = arg[2..]; continue; }
             if (arg == "-S") { _optS = true; continue; }
@@ -189,7 +189,7 @@ public class Driver
     private FileType ParseOptX(string s) => s switch
     {
         "c" => FileType.C, "assembler" => FileType.Asm, "none" => FileType.None,
-        _ => throw new ChibiccException($"unknown argument for -x: {s}")
+        _ => throw new ChibiException($"unknown argument for -x: {s}")
     };
 
     private string QuoteMakefile(string s)

@@ -1,4 +1,4 @@
-namespace Chibicc;
+namespace Chibil;
 
 /// <summary>
 /// UTF-8 encoding/decoding and Unicode character classification.
