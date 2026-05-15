@@ -1284,6 +1284,12 @@ public class CodeGen
                     LoadLocalOrParam(node.Var);
                     return;
                 }
+                if (node.Var.IsFunction || node.Var.Ty.Kind == TypeKind.Func)
+                {
+                    // &func — emit function address (same as GenExpr Var for functions)
+                    EmitFunctionAddress(node.Var, node.Tok);
+                    return;
+                }
                 if (node.Var.IsLocal)
                 {
                     if (_paramSlots.TryGetValue(node.Var, out int argIdx))
@@ -1470,38 +1476,82 @@ public class CodeGen
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Booleanize — ensure value is branch-testable
+    //  Branch normalization helpers
     // ═══════════════════════════════════════════════════════════════
 
-    private void Booleanize(CType ty)
+    private void NormalizeToBranchable(CType ty)
     {
         switch (ty.Kind)
         {
             case TypeKind.Float:
             case TypeKind.Double:
             case TypeKind.LDouble:
-                // Compare with 0.0: ceq + ceq against 0 (double negate)
-                if (ty.Kind == TypeKind.Float)
-                    _enc.LoadConstantR4(0.0f);
-                else
-                    _enc.LoadConstantR8(0.0);
-                Push();
+            case TypeKind.LLong:
+            case TypeKind.Long when _dm.LongSize == 8:
+                EmitTypedZero(ty);
                 _enc.OpCode(ILOpCode.Ceq); Pop();
                 EmitConstI4(0);
                 _enc.OpCode(ILOpCode.Ceq); Pop();
                 break;
+        }
+    }
+
+    private void EmitTypedZero(CType ty)
+    {
+        switch (ty.Kind)
+        {
+            case TypeKind.Float:
+                _enc.LoadConstantR4(0.0f); Push();
+                return;
+            case TypeKind.Double:
+            case TypeKind.LDouble:
+                _enc.LoadConstantR8(0.0); Push();
+                return;
             case TypeKind.LLong:
-            case TypeKind.Ptr:
-                // Convert to appropriate size and compare with 0
-                break;
+                EmitConstI8(0);
+                return;
+            case TypeKind.Long:
+                // LP64: long is 8 bytes = int64
+                if (_dm.LongSize == 8) { EmitConstI8(0); return; }
+                EmitConstI4(0);
+                return;
             default:
-                // int32 — brfalse/brtrue works directly
-                break;
+                EmitConstI4(0);
+                return;
         }
     }
 
     private static bool IsAggregateType(CType ty) =>
         ty.Kind == TypeKind.Struct || ty.Kind == TypeKind.Union || ty.Kind == TypeKind.Array;
+
+    /// <summary>Push a callable function address onto the evaluation stack.</summary>
+    private void EmitFunctionAddress(Obj fn, Token tok = null)
+    {
+        CType funcTy = fn.Ty;
+        if (funcTy.CallConv == CallConv.Clrcall)
+        {
+            if (_methodDefs.TryGetValue(fn, out var md))
+            {
+                _enc.OpCode(ILOpCode.Ldftn); _enc.Token(md); Push();
+            }
+            else
+            {
+                Util.ErrorTok(tok ?? fn.Tok, "cannot take address of external __clrcall function");
+            }
+        }
+        else
+        {
+            // cdecl: load the native function pointer from __unep@ field
+            if (_unepFields.TryGetValue(fn.Name, out var unepField))
+            {
+                _enc.OpCode(ILOpCode.Ldsfld); _enc.Token(unepField); Push();
+            }
+            else
+            {
+                Util.ErrorTok(tok ?? fn.Tok, $"cannot take address of cdecl function '{fn.Name}' — __unep@ field not registered");
+            }
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════
     //  Expression code generation (GenExpr)
@@ -1543,32 +1593,7 @@ public class CodeGen
             case NodeKind.Var:
                 if (node.Ty.Kind == TypeKind.Func || node.Var.IsFunction)
                 {
-                    // Function name used as value — get its callable address
-                    CType funcTy = node.Var.Ty;
-                    if (funcTy.CallConv == CallConv.Clrcall)
-                    {
-                        // __clrcall: use ldftn to get managed function pointer
-                        if (_methodDefs.TryGetValue(node.Var, out var md))
-                        {
-                            _enc.OpCode(ILOpCode.Ldftn); _enc.Token(md); Push();
-                        }
-                        else
-                        {
-                            Util.ErrorTok(node.Tok, "cannot take address of external __clrcall function");
-                        }
-                    }
-                    else
-                    {
-                        // cdecl: load the native function pointer from __unep@ field
-                        if (_unepFields.TryGetValue(node.Var.Name, out var unepField))
-                        {
-                            _enc.OpCode(ILOpCode.Ldsfld); _enc.Token(unepField); Push();
-                        }
-                        else
-                        {
-                            Util.ErrorTok(node.Tok, $"cannot take address of cdecl function '{node.Var.Name}' — __unep@ field not registered");
-                        }
-                    }
+                    EmitFunctionAddress(node.Var, node.Tok);
                     return;
                 }
                 if (node.Var.IsLocal && !IsAggregateType(node.Ty))
@@ -1637,7 +1662,17 @@ public class CodeGen
 
             case NodeKind.StmtExpr:
                 for (Node n = node.Body; n != null; n = n.Next)
-                    GenStmt(n);
+                {
+                    if (n.Next == null && n.Kind == NodeKind.ExprStmt)
+                    {
+                        // Last expression in statement expression — its value IS the result.
+                        GenExpr(n.Lhs);
+                    }
+                    else
+                    {
+                        GenStmt(n);
+                    }
+                }
                 return;
 
             case NodeKind.Comma:
@@ -1681,6 +1716,7 @@ public class CodeGen
                 var elseLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
                 GenExpr(node.Cond);
+                NormalizeToBranchable(node.Cond.Ty);
                 _enc.Branch(ILOpCode.Brfalse, elseLabel); Pop();
                 _stackDepth = savedDepth;
                 GenExpr(node.Then);
@@ -1694,7 +1730,7 @@ public class CodeGen
 
             case NodeKind.Not:
                 GenExpr(node.Lhs);
-                EmitConstI4(0);
+                EmitTypedZero(node.Lhs.Ty);
                 _enc.OpCode(ILOpCode.Ceq); Pop();
                 return;
 
@@ -1709,9 +1745,11 @@ public class CodeGen
                 var falseLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
                 GenExpr(node.Lhs);
+                NormalizeToBranchable(node.Lhs.Ty);
                 _enc.Branch(ILOpCode.Brfalse, falseLabel); Pop();
                 _stackDepth = savedDepth;
                 GenExpr(node.Rhs);
+                NormalizeToBranchable(node.Rhs.Ty);
                 _enc.Branch(ILOpCode.Brfalse, falseLabel); Pop();
                 _stackDepth = savedDepth;
                 EmitConstI4(1);
@@ -1729,9 +1767,11 @@ public class CodeGen
                 var trueLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
                 GenExpr(node.Lhs);
+                NormalizeToBranchable(node.Lhs.Ty);
                 _enc.Branch(ILOpCode.Brtrue, trueLabel); Pop();
                 _stackDepth = savedDepth;
                 GenExpr(node.Rhs);
+                NormalizeToBranchable(node.Rhs.Ty);
                 _enc.Branch(ILOpCode.Brtrue, trueLabel); Pop();
                 _stackDepth = savedDepth;
                 EmitConstI4(0);
@@ -1786,10 +1826,14 @@ public class CodeGen
                 _enc.OpCode(ILOpCode.Ceq); Pop();
                 return;
             case NodeKind.Lt:
+                // clt already returns 0 for NaN (unordered), which is correct for C's
+                // "NaN < x is false". Only Le needs the _un variant (via inverted cgt.un).
                 _enc.OpCode(node.Lhs.Ty.IsUnsigned ? ILOpCode.Clt_un : ILOpCode.Clt); Pop(); return;
             case NodeKind.Le:
-                // a <= b  ≡  !(a > b)  ≡  (cgt/cgt.un == 0)
-                _enc.OpCode(node.Lhs.Ty.IsUnsigned ? ILOpCode.Cgt_un : ILOpCode.Cgt); Pop();
+                // a <= b  ≡  !(a > b)  ≡  (cgt_un == 0) for unsigned/float
+                // For floats, must use Cgt_un so NaN comparisons return unordered=1→false
+                _enc.OpCode((node.Lhs.Ty.IsUnsigned || TypeSystem.IsFlonum(node.Lhs.Ty))
+                    ? ILOpCode.Cgt_un : ILOpCode.Cgt); Pop();
                 EmitConstI4(0);
                 _enc.OpCode(ILOpCode.Ceq); Pop();
                 return;
@@ -1983,7 +2027,7 @@ public class CodeGen
 
     private void EmitCast(CType from, CType to)
     {
-        if (to.Kind == TypeKind.Void) { Pop(); return; }
+        if (to.Kind == TypeKind.Void) { if (from.Kind != TypeKind.Void) { _enc.OpCode(ILOpCode.Pop); Pop(); } return; }
         if (to.Kind == TypeKind.Bool)
         {
             // Non-zero → 1, zero → 0
@@ -2021,7 +2065,14 @@ public class CodeGen
         }
         if (TypeSystem.IsInteger(from) && TypeSystem.IsFlonum(to))
         {
-            if (to.Kind == TypeKind.Float)
+            if (from.IsUnsigned)
+            {
+                // conv.r.un interprets the stack value as unsigned for all integer sizes
+                _enc.OpCode(ILOpCode.Conv_r_un);
+                if (to.Kind == TypeKind.Float)
+                    _enc.OpCode(ILOpCode.Conv_r4); // conv.r.un produces float64, narrow to float32
+            }
+            else if (to.Kind == TypeKind.Float)
                 _enc.OpCode(ILOpCode.Conv_r4);
             else
                 _enc.OpCode(ILOpCode.Conv_r8);
@@ -2068,6 +2119,7 @@ public class CodeGen
                 var elseLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
                 GenExpr(node.Cond);
+                NormalizeToBranchable(node.Cond.Ty);
                 _enc.Branch(ILOpCode.Brfalse, elseLabel); Pop();
                 GenStmt(node.Then);
                 _enc.Branch(ILOpCode.Br, endLabel);
@@ -2090,6 +2142,7 @@ public class CodeGen
                 if (node.Cond != null)
                 {
                     GenExpr(node.Cond);
+                    NormalizeToBranchable(node.Cond.Ty);
                     _enc.Branch(ILOpCode.Brfalse, brkLabel); Pop();
                 }
                 GenStmt(node.Then);
@@ -2117,6 +2170,7 @@ public class CodeGen
                 GenStmt(node.Then);
                 _enc.MarkLabel(contLabel);
                 GenExpr(node.Cond);
+                NormalizeToBranchable(node.Cond.Ty);
                 _enc.Branch(ILOpCode.Brtrue, beginLabel); Pop();
                 _enc.MarkLabel(brkLabel);
                 return;

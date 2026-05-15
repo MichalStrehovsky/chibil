@@ -213,7 +213,7 @@ public class Parser
                 else if (Util.Equal(tok, "static")) attr.IsStatic = true;
                 else if (Util.Equal(tok, "extern")) attr.IsExtern = true;
                 else if (Util.Equal(tok, "inline")) attr.IsInline = true;
-                else attr.IsTls = true;
+                else { attr.IsTls = true; Util.ErrorTok(tok, "thread-local storage is not supported in MSIL mode"); }
                 if (attr.IsTypedef && ((attr.IsStatic?1:0) + (attr.IsExtern?1:0) + (attr.IsInline?1:0) + (attr.IsTls?1:0) > 1))
                     Util.ErrorTok(tok, "typedef may not be used together with static, extern, inline, __thread or _Thread_local");
                 tok = tok.Next; continue;
@@ -1740,6 +1740,8 @@ public class Parser
         CType rty = ty.ReturnTy;
         if ((rty.Kind == TypeKind.Struct || rty.Kind == TypeKind.Union) && rty.Size > 16) NewLvar("", _types.PointerTo(rty));
         fn.Params = _locals;
+        if (ty.IsVariadic && ty.Params != null)
+            Util.ErrorTok(ty.Name, "variadic function definitions are not supported in MSIL mode");
         if (ty.IsVariadic) fn.VaArea = NewLvar("__va_area__", TypeSystem.ArrayOf(_types.TyChar, 136));
         fn.AllocaBottom = NewLvar("__alloca_size__", _types.PointerTo(_types.TyChar));
         tok = Util.Skip(tok, "{");
