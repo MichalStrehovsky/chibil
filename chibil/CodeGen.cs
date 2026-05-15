@@ -271,10 +271,21 @@ public class CodeGen
                 sig.WriteByte((byte)SignatureTypeCode.Boolean);
                 break;
             case TypeKind.Char:
-                // plain char: modopt(IsSignUnspecifiedByte) int8
-                sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-                sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
-                sig.WriteByte((byte)SignatureTypeCode.SByte);
+                if (ty.IsUnsigned)
+                {
+                    // unsigned char: uint8 (no modopt)
+                    sig.WriteByte((byte)SignatureTypeCode.Byte);
+                }
+                else
+                {
+                    // plain char or signed char: modopt(IsSignUnspecifiedByte) int8
+                    // Note: C distinguishes plain char from signed char, but both map
+                    // to int8 with the modopt marker. The modopt is harmless for
+                    // signed char and required for plain char.
+                    sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
+                    sig.WriteByte((byte)SignatureTypeCode.SByte);
+                }
                 break;
             case TypeKind.Short:
                 sig.WriteByte(ty.IsUnsigned ? (byte)SignatureTypeCode.UInt16 : (byte)SignatureTypeCode.Int16);
@@ -462,7 +473,13 @@ public class CodeGen
     private string MangleFunctionName(Obj fn)
     {
         CType funcTy = fn.Ty;
-        string cc = funcTy.CallConv == CallConv.Clrcall ? "M" : "A";
+        string cc = funcTy.CallConv switch
+        {
+            CallConv.Clrcall => "M",
+            // On x64, __stdcall is silently treated as __cdecl by MSVC
+            CallConv.Stdcall => Is32 ? "G" : "A",
+            _ => "A", // cdecl
+        };
         // Static functions get TU-hash-scoped names to avoid cross-TU collisions
         string name = fn.IsStatic ? $"{fn.Name}_?A0x{_tuHash}" : fn.Name;
         var sb = new StringBuilder();
@@ -557,7 +574,12 @@ public class CodeGen
 
     private void MangleFuncPtr(StringBuilder sb, CType funcTy)
     {
-        string cc = funcTy.CallConv == CallConv.Clrcall ? "M" : "A";
+        string cc = funcTy.CallConv switch
+        {
+            CallConv.Clrcall => "M",
+            CallConv.Stdcall => Is32 ? "G" : "A",
+            _ => "A",
+        };
         sb.Append($"P6{cc}");
         MangleType(sb, funcTy.ReturnTy, isReturn: false);
         int count = 0;
@@ -567,7 +589,12 @@ public class CodeGen
             count++;
         }
         if (count == 0) sb.Append('X');
-        sb.Append("@Z");
+        // Only real variadic (has explicit ...) uses ZZ terminator.
+        // K&R empty-paren (IsVariadic=true, Params=null) is unprototyped, not variadic.
+        if (funcTy.IsVariadic && funcTy.Params != null)
+            sb.Append("ZZ");
+        else
+            sb.Append("@Z");
     }
 
     /// <summary>MSVC number encoding for array dimensions.</summary>

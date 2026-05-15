@@ -105,4 +105,20 @@ public class AuditPhase2Tests : ChibiTestBase
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 50);
     }
+
+    [Fact]
+    public void UnsignedCharEncoding()
+    {
+        Compile("""
+            unsigned char get_uchar(void) { return 255; }
+            signed char get_schar(void) { return -1; }
+            int main() {
+                unsigned char u = get_uchar();
+                signed char s = get_schar();
+                return (int)u + (int)s + 1;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 255);
+    }
 }
