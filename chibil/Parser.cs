@@ -1151,9 +1151,9 @@ public class Parser
         {
             if (_currentSwitch == null) Util.ErrorTok(tok, "stray case");
             var node = NewNode(NodeKind.Case, tok);
-            int begin = (int)ConstExpr(ref tok, tok.Next);
-            int end;
-            if (Util.Equal(tok, "...")) { end = (int)ConstExpr(ref tok, tok.Next); if (end < begin) Util.ErrorTok(tok, "empty case range specified"); }
+            long begin = ConstExpr(ref tok, tok.Next);
+            long end;
+            if (Util.Equal(tok, "...")) { end = ConstExpr(ref tok, tok.Next); if (end < begin) Util.ErrorTok(tok, "empty case range specified"); }
             else end = begin;
             tok = Util.Skip(tok, ":"); node.Label = NewUniqueName(); node.Lhs = Stmt(ref rest, tok);
             node.Begin = begin; node.End = end; node.CaseNext = _currentSwitch.CaseNext; _currentSwitch.CaseNext = node; return node;

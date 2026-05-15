@@ -1257,12 +1257,23 @@ public class CodeGen
 
     private int GetOrAddScratchLocal(CType ty)
     {
-        // Reuse existing scratch local of same type kind
+        // Reuse existing scratch local of same type.
+        // For struct/union/array, require exact type identity (TypeDef handle match)
+        // since IL verifier requires assignment-compatible value types.
         foreach (var (existingTy, slot) in _scratchLocals)
         {
             if (existingTy.Kind == ty.Kind && existingTy.Size == ty.Size &&
                 existingTy.IsUnsigned == ty.IsUnsigned)
+            {
+                // Struct/union/array: only reuse if same canonical type
+                if (ty.Kind == TypeKind.Struct || ty.Kind == TypeKind.Union || ty.Kind == TypeKind.Array)
+                {
+                    if (GetTypeId(existingTy) == GetTypeId(ty))
+                        return slot;
+                    continue; // different struct type, keep looking
+                }
                 return slot;
+            }
         }
         int newSlot = _scratchLocalBase + _scratchLocals.Count;
         _scratchLocals.Add((ty, newSlot));
@@ -1332,9 +1343,13 @@ public class CodeGen
                 return;
 
             case NodeKind.FunCall:
-                if (node.RetBuffer != null)
+                // Struct-returning call — evaluate, spill to scratch, return address
+                if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union)
                 {
                     GenExpr(node);
+                    int scratch = GetOrAddScratchLocal(node.Ty);
+                    _enc.StoreLocal(scratch); Pop();
+                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)scratch); Push();
                     return;
                 }
                 break;
@@ -2047,7 +2062,8 @@ public class CodeGen
                     break;
                 default:
                     EmitConstI4(0);
-                    if (from.Size == 8 || from.Kind == TypeKind.Ptr) _enc.OpCode(ILOpCode.Conv_i8);
+                    if (from.Kind == TypeKind.Ptr) _enc.OpCode(ILOpCode.Conv_i);
+                    else if (from.Size == 8) _enc.OpCode(ILOpCode.Conv_i8);
                     _enc.OpCode(ILOpCode.Cgt_un); Pop();
                     break;
             }
@@ -2088,7 +2104,14 @@ public class CodeGen
         }
 
         // Integer → integer
-        if (to.Kind == TypeKind.Ptr || (to.Kind == TypeKind.Long && _dm.LongSize == 8) || to.Kind == TypeKind.LLong)
+        if (to.Kind == TypeKind.Ptr)
+        {
+            // Pointer: use conv.i/conv.u (native int) — correct for both 32-bit and 64-bit
+            if (from.Size <= 4)
+                _enc.OpCode(from.IsUnsigned ? ILOpCode.Conv_u : ILOpCode.Conv_i);
+            return;
+        }
+        if ((to.Kind == TypeKind.Long && _dm.LongSize == 8) || to.Kind == TypeKind.LLong)
         {
             if (from.Size <= 4)
                 _enc.OpCode(from.IsUnsigned ? ILOpCode.Conv_u8 : ILOpCode.Conv_i8);
@@ -2190,20 +2213,21 @@ public class CodeGen
                 {
                     var caseLabel = _enc.DefineLabel();
                     _labels[c.Label] = caseLabel;
+                    bool is64 = node.Cond.Ty.Size == 8;
 
                     if (c.Begin == c.End)
                     {
                         _enc.LoadLocal(condScratch); Push();
-                        EmitConstI4(c.Begin);
+                        if (is64) EmitConstI8(c.Begin); else EmitConstI4(c.Begin);
                         _enc.Branch(ILOpCode.Beq, caseLabel); Pop(2);
                     }
                     else
                     {
                         // Range case: val - begin <= (end - begin)
                         _enc.LoadLocal(condScratch); Push();
-                        EmitConstI4(c.Begin);
+                        if (is64) EmitConstI8(c.Begin); else EmitConstI4(c.Begin);
                         _enc.OpCode(ILOpCode.Sub); Pop();
-                        EmitConstI4(c.End - c.Begin);
+                        if (is64) EmitConstI8(c.End - c.Begin); else EmitConstI4(c.End - c.Begin);
                         _enc.Branch(ILOpCode.Ble_un, caseLabel); Pop(2);
                     }
                 }
@@ -2303,7 +2327,7 @@ public class CodeGen
         for (CType p = _mainObj.Ty.Params; p != null; p = p.Next)
             mainParamCount++;
 
-        // Load argc and argv up to what main declares
+        // Load argc, argv, and envp up to what main declares
         if (mainParamCount >= 1)
         {
             enc.OpCode(ILOpCode.Ldarg_0); // argc
@@ -2311,6 +2335,10 @@ public class CodeGen
         if (mainParamCount >= 2)
         {
             enc.OpCode(ILOpCode.Ldarg_1); // argv
+        }
+        if (mainParamCount >= 3)
+        {
+            enc.OpCode(ILOpCode.Ldarg_2); // envp
         }
 
         enc.Call(_mainMethod);
