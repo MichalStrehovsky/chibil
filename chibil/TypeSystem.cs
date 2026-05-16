@@ -85,6 +85,7 @@ public class TypeSystem
             {
                 if (!IsCompatible(t1.ReturnTy, t2.ReturnTy)) return false;
                 if (t1.IsVariadic != t2.IsVariadic) return false;
+                if (t1.CallConv != t2.CallConv) return false;
                 CType p1 = t1.Params, p2 = t2.Params;
                 for (; p1 != null && p2 != null; p1 = p1.Next, p2 = p2.Next)
                     if (!IsCompatible(p1, p2)) return false;

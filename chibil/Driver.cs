@@ -253,7 +253,7 @@ public class Driver
 
     private string CreateTmpfile()
     {
-        string path = Path.GetTempFileName();
+        string path = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         Tmpfiles.Add(path);
         return path;
     }

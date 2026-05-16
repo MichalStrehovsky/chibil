@@ -121,4 +121,17 @@ public class AuditPhase2Tests : ChibiTestBase
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 255);
     }
+
+    [Fact(Skip = "Parser does not yet use IsCompatible for function redeclaration checking")]
+    public void CallConvMismatchRejected()
+    {
+        // IsCompatible now compares CallConv, but the parser doesn't yet
+        // use it for redeclaration checking. When it does, this test should pass.
+        CompileExpectingError("""
+            int __clrcall f(void);
+            int __cdecl f(void) { return 0; }
+            int main() { return f(); }
+            """)
+        .AssertErrorContains("conflicting");
+    }
 }
