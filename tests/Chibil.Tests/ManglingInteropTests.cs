@@ -266,9 +266,96 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  3. Struct and union parameters
-    // ═══════════════════════════════════════════════════════════════
+    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    public void Backref_TypedefPtrSharesSlot()
+    {
+        // typedef int* and raw int* must share the same backref slot
+        // Verified: MSVC produces ?...YAHPEAH0@Z (PEAH + backref '0')
+        Compile("""
+            typedef int *IntPtr;
+            int br_tdp(IntPtr a, int *b) { return 42; }
+            """)
+        .MsvcCompile("int br_tdp(int*, int*); int main(void) { int x; return br_tdp(&x, &x); }")
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    public void Backref_TypedefStructSharesSlot()
+    {
+        // typedef struct Point and raw struct Point must share a backref slot
+        // Verified: MSVC produces ?...YAHUPoint@@0@Z (UPoint@@ + backref '0')
+        Compile("""
+            struct Point { int x; int y; };
+            typedef struct Point PointT;
+            int br_tds(PointT a, struct Point b) { return 42; }
+            """)
+        .MsvcCompile("""
+            struct Point { int x; int y; };
+            int br_tds(struct Point, struct Point);
+            int main(void) { struct Point p = {1, 2}; return br_tds(p, p); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences — func ptr inner params share outer backref table")]
+    public void Backref_FuncPtrSharesOuterTable()
+    {
+        // int* as first param gets slot 0; inside the func ptr param,
+        // int* backrefs to slot 0 from the outer table
+        // Verified: MSVC produces ?...YAHPEAHP6AH0@Z0@Z
+        Compile("""
+            int br_fps(int *a, int (*fn)(int *), int *b) { return 42; }
+            """)
+        .MsvcCompile("""
+            int br_fps(int*, int (*)(int*), int*);
+            int main(void) { int x; return br_fps(&x, 0, &x); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    public void Backref_StructPtrInsideFuncPtr()
+    {
+        // struct Point* as first param gets slot 0; inside func ptr,
+        // struct Point* backrefs to slot 0; third param also backrefs
+        // Verified: MSVC produces ?...YAHPEAUPoint@@P6AH0@Z0@Z
+        Compile("""
+            struct Point { int x; int y; };
+            int br_sfp(struct Point *a, int (*fn)(struct Point *), struct Point *b) { return 42; }
+            """)
+        .MsvcCompile("""
+            struct Point { int x; int y; };
+            int br_sfp(struct Point*, int (*)(struct Point*), struct Point*);
+            int main(void) { struct Point p = {1,2}; return br_sfp(&p, 0, &p); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    public void Backref_PtrToPtrRepeated()
+    {
+        // int** = PEAPEAH (multi-char) → gets a backref slot
+        // Verified: MSVC produces ?...YAHPEAPEAH0@Z
+        Compile("int br_pp2(int **a, int **b) { return 42; }")
+        .MsvcCompile("int br_pp2(int**, int**); int main(void) { int *p; return br_pp2(&p, &p); }")
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void Backref_ConstPtrVsPlainPtrNoDup()
+    {
+        // const int* (PEBH) and int* (PEAH) are DIFFERENT types — no backref
+        // Verified: MSVC produces ?...YAHPEBHPEAH@Z (no backref digit)
+        Compile("int br_cpnp(const int *a, int *b) { return 42; }")
+        .MsvcCompile("int br_cpnp(const int*, int*); int main(void) { int x; return br_cpnp(&x, &x); }")
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
 
     [Fact]
     public void Struct_ByValue()
@@ -417,6 +504,25 @@ public class ManglingInteropTests : ChibiTestBase
             enum Color { RED, GREEN, BLUE };
             int en_prim(enum Color, int);
             int main(void) { return en_prim(RED, 1); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact(Skip = "BUG: chibil mangles enum as H (int) instead of W4Dir@@ + BUG H-2 backreferences")]
+    public void Enum_TypedefSharesSlot()
+    {
+        // typedef enum Dir and raw enum Dir must share a backref slot
+        // Verified: MSVC produces ?...YAHW4Dir@@0@Z
+        Compile("""
+            enum Dir { UP, DOWN, LEFT, RIGHT };
+            typedef enum Dir DirT;
+            int en_tds(DirT a, enum Dir b) { return 42; }
+            """)
+        .MsvcCompile("""
+            enum Dir { UP, DOWN, LEFT, RIGHT };
+            int en_tds(enum Dir, enum Dir);
+            int main(void) { return en_tds(UP, DOWN); }
             """)
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
@@ -1053,8 +1159,8 @@ public class ManglingInteropTests : ChibiTestBase
     // ═══════════════════════════════════════════════════════════════
     //  16. Const/volatile pointer qualifiers on the pointer itself
     //      P = unqualified, Q = const ptr, R = volatile ptr, S = const volatile ptr
-    //      Note: MSVC drops top-level qualifiers on function parameters,
-    //      so int * const p mangles the same as int * p in a param list.
+    //      Verified with MSVC: top-level const on pointer-self is NOT
+    //      dropped — int * const → QEAH, distinct from int * → PEAH.
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
@@ -1076,6 +1182,28 @@ public class ManglingInteropTests : ChibiTestBase
             int ptr_cvi(const volatile int*);
             int main(void) { volatile int x = 1; return ptr_cvi(&x); }
             """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact(Skip = "BUG: chibil emits P (unqualified) instead of Q (const) for int * const — PEAH vs QEAH")]
+    public void Ptr_ConstPtrSelf()
+    {
+        // int * const p → QEAH (pointer-self const, NOT dropped at top level)
+        // Verified: MSVC produces ?...YAHQEAH@Z
+        Compile("int ptr_cps(int * const p) { return 42; }")
+        .MsvcCompile("int ptr_cps(int * const); int main(void) { int x; return ptr_cps(&x); }")
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact(Skip = "BUG: chibil emits P (unqualified) instead of R (volatile) for int * volatile — PEAH vs REAH")]
+    public void Ptr_VolatilePtrSelf()
+    {
+        // int * volatile p → REAH (pointer-self volatile)
+        // Verified: MSVC produces ?...YAHREAH@Z
+        Compile("int ptr_vps(int * volatile p) { return 42; }")
+        .MsvcCompile("int ptr_vps(int * volatile); int main(void) { int x; return ptr_vps(&x); }")
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
