@@ -113,6 +113,7 @@ public class TypeSystem
             Base = ty.Base,
             Name = ty.Name,
             NamePos = ty.NamePos,
+            TagName = ty.TagName,
             ArrayLen = ty.ArrayLen,
             VlaLen = ty.VlaLen,
             VlaSize = ty.VlaSize,

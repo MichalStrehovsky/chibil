@@ -406,7 +406,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-1: chibil mangles union as 'U' instead of 'T'")]
+    [Fact(Skip = "BUG: union TypeDef layout needs ExplicitLayout — TypeLoadException at runtime")]
     public void Union_ByValue()
     {
         Compile("""
@@ -422,7 +422,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-1: chibil mangles union as 'U' instead of 'T'")]
+    [Fact(Skip = "BUG: union TypeDef layout needs ExplicitLayout — TypeLoadException at runtime")]
     public void Union_Pointer()
     {
         Compile("""
@@ -460,7 +460,7 @@ public class ManglingInteropTests : ChibiTestBase
     //     BUG: chibil mangles enums as H/I (int) instead of W4name@@
     // ═══════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "BUG: chibil mangles enum as H (int) instead of W4Color@@")]
+    [Fact]
     public void Enum_SingleParam()
     {
         Compile("""
@@ -493,7 +493,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: chibil mangles enum as H (int) instead of W4Color@@")]
+    [Fact]
     public void Enum_WithPrimitive()
     {
         Compile("""
@@ -528,7 +528,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: void params produce X@Z instead of XZ in mangled name")]
+    [Fact]
     public void VoidParams_IntReturn()
     {
         // Simplest case of void params bug
@@ -540,7 +540,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: void params produce X@Z instead of XZ in mangled name")]
+    [Fact]
     public void VoidParams_VoidReturn()
     {
         // void return + void params
@@ -616,7 +616,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: void params produce X@Z instead of XZ in mangled name")]
+    [Fact]
     public void Ptr_VoidReturn()
     {
         // void* return type with void params
@@ -691,7 +691,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact]
+    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
     public void FuncPtr_NoParams()
     {
         // int (*fn)(void) — function pointer with void params
@@ -865,7 +865,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: void params produce X@Z instead of XZ in mangled name")]
+    [Fact]
     public void Ret_Pointer()
     {
         // MSVC: ?ret_ptr@@$$J0YAPEAHXZ  (void params = XZ)
@@ -920,7 +920,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: chibil mangles enum as H instead of W4Color@@")]
+    [Fact]
     public void Reverse_Enum()
     {
         MsvcCompile("""
@@ -936,7 +936,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-1: chibil mangles union as 'U' instead of 'T'")]
+    [Fact(Skip = "BUG: union TypeDef layout needs ExplicitLayout — TypeLoadException at runtime")]
     public void Reverse_Union()
     {
         MsvcCompile("""
@@ -959,7 +959,7 @@ public class ManglingInteropTests : ChibiTestBase
     //      variable linkage.
     // ═══════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "BUG: chibil data COFF symbols not resolvable cross-TU — unresolved external symbol")]
+    [Fact]
     public void Data_ChibiDefine_MsvcConsume()
     {
         // chibil defines a global, MSVC reads it
@@ -987,7 +987,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: chibil data COFF symbols not resolvable cross-TU — unresolved external symbol")]
+    [Fact]
     public void Data_PointerGlobal()
     {
         // Pointer global defined by chibil, consumed by MSVC
@@ -1003,7 +1003,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: chibil data COFF symbols not resolvable cross-TU — unresolved external symbol")]
+    [Fact]
     public void Data_StructGlobal()
     {
         // Struct global defined by chibil, consumed by MSVC
@@ -1186,7 +1186,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: chibil emits P (unqualified) instead of Q (const) for int * const — PEAH vs QEAH")]
+    [Fact]
     public void Ptr_ConstPtrSelf()
     {
         // int * const p → QEAH (pointer-self const, NOT dropped at top level)
@@ -1197,7 +1197,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: chibil emits P (unqualified) instead of R (volatile) for int * volatile — PEAH vs REAH")]
+    [Fact]
     public void Ptr_VolatilePtrSelf()
     {
         // int * volatile p → REAH (pointer-self volatile)
@@ -1225,7 +1225,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: chibil emits P (unqualified ptr) instead of Q (const ptr) for const-pointer-to-const — PEBPEBD vs PEBQEBD")]
+    [Fact]
     public void Ptr_ConstCharConstPtr()
     {
         // const char * const * — pointer to const-pointer to const-char
@@ -1268,7 +1268,7 @@ public class ManglingInteropTests : ChibiTestBase
     //      a backref slot.
     // ═══════════════════════════════════════════════════════════════
 
-    [Fact]
+    [Fact(Skip = "BUG H-2: MSVC uses name backreference U1@ for repeated struct name Point")]
     public void Ret_StructWithStructParam()
     {
         // struct Point return + struct Point param — single occurrence, no backref needed

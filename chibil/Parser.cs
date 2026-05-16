@@ -454,6 +454,7 @@ public class Parser
             rest = tok; return found;
         }
         tok = Util.Skip(tok, "{");
+        if (tag != null) ty.TagName = Util.GetTokenText(tag);
         int i = 0, val = 0;
         while (!ConsumeEnd(ref rest, tok))
         {
@@ -563,11 +564,12 @@ public class Parser
             rest = tok;
             CType ty2 = FindTag(tag);
             if (ty2 != null) return ty2;
-            ty.Size = -1; PushTagScope(tag, ty); return ty;
+            ty.Size = -1; ty.TagName = Util.GetTokenText(tag); PushTagScope(tag, ty); return ty;
         }
         tok = Util.Skip(tok, "{");
         StructMembers(ref tok, tok, ty);
         rest = AttributeList(tok, ty);
+        if (tag != null) ty.TagName = Util.GetTokenText(tag);
         if (tag != null)
         {
             string tagName = Util.GetTokenText(tag);
@@ -1655,6 +1657,17 @@ public class Parser
             if (!first) tok = Util.Skip(tok, ","); first = false;
             CType ty = Declarator(ref tok, tok, basety);
             if (ty.Name == null) Util.ErrorTok(ty.NamePos, "typedef name omitted");
+            // For anonymous enum/struct/union, use the typedef name as the tag
+            if (ty.TagName == null && (ty.Kind == TypeKind.Enum || ty.Kind == TypeKind.Struct || ty.Kind == TypeKind.Union))
+            {
+                string tdName = GetIdent(ty.Name);
+                // Set on this type and all Origin ancestors that lack a tag
+                for (CType c = ty; c != null; c = c.Origin)
+                {
+                    if (c.TagName != null) break;
+                    c.TagName = tdName;
+                }
+            }
             PushScope(GetIdent(ty.Name)).TypeDef = ty;
         }
         return tok;

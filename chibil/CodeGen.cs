@@ -455,10 +455,28 @@ public class CodeGen
 
     private static string GetStructName(CType ty)
     {
+        // Prefer TagName (set by parser from struct/union tag) over Name
+        // (which Declarator overwrites with the variable/parameter name)
+        string tag = GetTagName(ty);
+        if (tag != null)
+            return tag;
         if (ty.Name != null)
             return Util.GetTokenText(ty.Name);
         // Anonymous struct — use a generated name
         return $"<anon_{GetTypeId(ty):X8}>";
+    }
+
+    /// <summary>Walk the Origin chain to find the tag name of an enum/struct/union.</summary>
+    private static string GetTagName(CType ty)
+    {
+        CType cur = ty;
+        while (cur != null)
+        {
+            if (cur.TagName != null)
+                return cur.TagName;
+            cur = cur.Origin;
+        }
+        return null;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -490,8 +508,9 @@ public class CodeGen
             MangleType(sb, p, isReturn: false);
             paramCount++;
         }
-        if (paramCount == 0) sb.Append('X'); // void params
-        if (funcTy.IsVariadic)
+        if (paramCount == 0)
+            sb.Append("XZ"); // void params: X = no params, Z = terminator
+        else if (funcTy.IsVariadic)
             sb.Append("ZZ");
         else
             sb.Append("@Z");
@@ -514,9 +533,26 @@ public class CodeGen
                 sb.Append(ty.IsUnsigned ? 'G' : 'F');
                 break;
             case TypeKind.Int:
-            case TypeKind.Enum:
                 sb.Append(ty.IsUnsigned ? 'I' : 'H');
                 break;
+            case TypeKind.Enum:
+                {
+                    // Walk Origin chain to find the tag name
+                    string enumName = GetTagName(ty);
+                    if (enumName != null)
+                    {
+                        if (isReturn) sb.Append("?A");
+                        sb.Append("W4");
+                        sb.Append(enumName);
+                        sb.Append("@@");
+                    }
+                    else
+                    {
+                        // Anonymous enum with no tag or typedef — mangle as underlying int
+                        sb.Append(ty.IsUnsigned ? 'I' : 'H');
+                    }
+                    break;
+                }
             case TypeKind.Long:
                 if (_dm.LongSize == 4)
                     sb.Append(ty.IsUnsigned ? 'K' : 'J');
@@ -537,9 +573,14 @@ public class CodeGen
                 ManglePointer(sb, _types.PointerTo(ty.Base));
                 break;
             case TypeKind.Struct:
-            case TypeKind.Union:
                 if (isReturn) sb.Append("?A");
                 sb.Append('U');
+                sb.Append(GetStructName(ty));
+                sb.Append("@@");
+                break;
+            case TypeKind.Union:
+                if (isReturn) sb.Append("?A");
+                sb.Append('T');
                 sb.Append(GetStructName(ty));
                 sb.Append("@@");
                 break;
@@ -557,21 +598,31 @@ public class CodeGen
 
         if (baseTy.Kind == TypeKind.Func)
         {
-            // Function pointer: P6A<ret><params>@Z or P6M<ret><params>@Z
-            MangleFuncPtr(sb, baseTy);
+            // Function pointer: P6/Q6/R6/S6 depending on pointer-self qualifiers
+            MangleFuncPtr(sb, baseTy, ty.IsConst, ty.IsVolatile);
             return;
         }
 
-        // Determine const/volatile qualifier letter
-        if (baseTy.IsConst && baseTy.IsVolatile) sb.Append($"P{e}D");
-        else if (baseTy.IsConst) sb.Append($"P{e}B");
-        else if (baseTy.IsVolatile) sb.Append($"P{e}C");
-        else sb.Append($"P{e}A");
+        // Pointer-self qualifiers: P=none, Q=const, R=volatile, S=const volatile
+        char ptrQual;
+        if (ty.IsConst && ty.IsVolatile) ptrQual = 'S';
+        else if (ty.IsConst) ptrQual = 'Q';
+        else if (ty.IsVolatile) ptrQual = 'R';
+        else ptrQual = 'P';
+
+        // Pointee qualifiers: A=none, B=const, C=volatile, D=const volatile
+        char pteeQual;
+        if (baseTy.IsConst && baseTy.IsVolatile) pteeQual = 'D';
+        else if (baseTy.IsConst) pteeQual = 'B';
+        else if (baseTy.IsVolatile) pteeQual = 'C';
+        else pteeQual = 'A';
+
+        sb.Append($"{ptrQual}{e}{pteeQual}");
 
         MangleType(sb, baseTy, isReturn: false);
     }
 
-    private void MangleFuncPtr(StringBuilder sb, CType funcTy)
+    private void MangleFuncPtr(StringBuilder sb, CType funcTy, bool ptrIsConst = false, bool ptrIsVolatile = false)
     {
         string cc = funcTy.CallConv switch
         {
@@ -579,7 +630,13 @@ public class CodeGen
             CallConv.Stdcall => "G", // only on x86
             _ => "A",
         };
-        sb.Append($"P6{cc}");
+        // Pointer-self qualifiers: P=none, Q=const, R=volatile, S=const volatile
+        char ptrQual;
+        if (ptrIsConst && ptrIsVolatile) ptrQual = 'S';
+        else if (ptrIsConst) ptrQual = 'Q';
+        else if (ptrIsVolatile) ptrQual = 'R';
+        else ptrQual = 'P';
+        sb.Append($"{ptrQual}6{cc}");
         MangleType(sb, funcTy.ReturnTy, isReturn: false);
         int count = 0;
         for (CType p = funcTy.Params; p != null; p = p.Next)
@@ -587,10 +644,9 @@ public class CodeGen
             MangleType(sb, p, isReturn: false);
             count++;
         }
-        if (count == 0) sb.Append('X');
-        // Only real variadic (has explicit ...) uses ZZ terminator.
-        // K&R empty-paren (IsVariadic=true, Params=null) is unprototyped, not variadic.
-        if (funcTy.IsVariadic && funcTy.Params != null)
+        if (count == 0)
+            sb.Append("XZ"); // void params inside func ptr also use XZ
+        else if (funcTy.IsVariadic && funcTy.Params != null)
             sb.Append("ZZ");
         else
             sb.Append("@Z");
@@ -2509,19 +2565,34 @@ public class CodeGen
                 }
                 _dataStream.WriteBytes(data);
 
-                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Data, offset, out _);
+                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Data, offset, out _,
+                    isExternal: !g.IsStatic && !g.IsLocal);
                 _dataCoffSymbols[g.Name] = coffSym;
             }
             else if (g.IsTentative)
             {
-                var coffSym = _symtab.AddCommonDataClrToken(g.Name, fieldDef, g.Ty.Size, out _);
-                _dataCoffSymbols[g.Name] = coffSym;
+                if (g.IsStatic)
+                {
+                    // Static tentative → BSS with Static storage class (internal linkage)
+                    int bssOffset = _bssSize;
+                    _bssSize = Util.AlignTo(_bssSize + g.Ty.Size, g.Align);
+                    var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Bss, bssOffset, out _,
+                        isExternal: false);
+                    _dataCoffSymbols[g.Name] = coffSym;
+                }
+                else
+                {
+                    // External tentative → common symbol (linker allocates)
+                    var coffSym = _symtab.AddCommonDataClrToken(g.Name, fieldDef, g.Ty.Size, out _);
+                    _dataCoffSymbols[g.Name] = coffSym;
+                }
             }
             else
             {
                 int bssOffset = _bssSize;
                 _bssSize = Util.AlignTo(_bssSize + g.Ty.Size, g.Align);
-                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Bss, bssOffset, out _);
+                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Bss, bssOffset, out _,
+                    isExternal: !g.IsStatic && !g.IsLocal);
                 _dataCoffSymbols[g.Name] = coffSym;
             }
         }

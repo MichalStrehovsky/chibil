@@ -1971,11 +1971,12 @@ namespace System.Reflection.PortableExecutable
         /// Adds a CLR token symbol for a field definition using a <see cref="LogicalSection"/>
         /// whose actual section number is resolved later via <see cref="ResolveDeferredSections"/>.
         /// </summary>
-        public CoffSymbolHandle AddDataClrToken(string name, EntityHandle handle, LogicalSection section, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol)
+        public CoffSymbolHandle AddDataClrToken(string name, EntityHandle handle, LogicalSection section, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol, bool isExternal = false)
         {
             int token = MetadataTokens.GetToken(handle);
 
-            CoffSymbolHandle index = GetOrAddCoffSymbolDeferred(name, (uint)sectionOffset, section, CoffSymbolType.Null, CoffSymbolStorageClass.Static, 0);
+            var storageClass = isExternal ? CoffSymbolStorageClass.External : CoffSymbolStorageClass.Static;
+            CoffSymbolHandle index = GetOrAddCoffSymbolDeferred(name, (uint)sectionOffset, section, CoffSymbolType.Null, storageClass, 0);
 
             string tokenSymbolName = token.ToString("X8");
             if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
