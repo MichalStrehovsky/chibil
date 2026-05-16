@@ -49,6 +49,54 @@ public sealed class CompilationBuilder : IDisposable
     }
 
     /// <summary>
+    /// Compile a C source string into an object file using MSVC (cl.exe)
+    /// with <c>/clr /BC</c> to produce a mixed-mode assembly, and add it
+    /// to this builder.
+    /// </summary>
+    /// <param name="source">C source code.</param>
+    /// <param name="extraArgs">
+    /// Additional cl.exe flags (e.g. "/O2", "/DFOO").
+    /// </param>
+    public CompilationBuilder MsvcCompile(string source, string[] extraArgs = null)
+    {
+        var name = $"input{_fileCounter++}";
+        var sourceFile = Path.Combine(_tempDir, $"{name}.c");
+        var objFile = Path.Combine(_tempDir, $"{name}.obj");
+
+        File.WriteAllText(sourceFile, source);
+
+        var psi = new ProcessStartInfo("cl.exe")
+        {
+            WorkingDirectory = _tempDir,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.ArgumentList.Add("/c");
+        psi.ArgumentList.Add("/clr");
+        psi.ArgumentList.Add("/BC");
+        psi.ArgumentList.Add($"/Fo{objFile}");
+        if (extraArgs != null)
+            foreach (var arg in extraArgs)
+                psi.ArgumentList.Add(arg);
+        psi.ArgumentList.Add(sourceFile);
+
+        using var proc = Process.Start(psi)!;
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        proc.WaitForExit();
+        var stderr = stderrTask.Result;
+        var stdout = stdoutTask.Result;
+
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"cl.exe failed with exit code {proc.ExitCode}.\nstdout:\n{stdout}\nstderr:\n{stderr}");
+
+        _objFiles.Add(objFile);
+        return this;
+    }
+
+    /// <summary>
     /// Link all accumulated object files into an executable using link.exe.
     /// <c>mscoree.lib</c> is included automatically (required for CLR/IJW objects).
     /// </summary>

@@ -44,6 +44,17 @@ public abstract class ChibiTestBase : IDisposable
         }
     }
 
+    /// <summary>
+    /// Compile a C source string using MSVC (cl.exe /clr /BC), starting a
+    /// new fluent compilation chain.
+    /// </summary>
+    protected CompilationBuilder MsvcCompile(string source, string[] extraArgs = null)
+    {
+        _builder?.Dispose();
+        _builder = new CompilationBuilder();
+        return _builder.MsvcCompile(source, extraArgs);
+    }
+
     public void Dispose()
     {
         _builder?.Dispose();
