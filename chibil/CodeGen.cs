@@ -476,8 +476,7 @@ public class CodeGen
         string cc = funcTy.CallConv switch
         {
             CallConv.Clrcall => "M",
-            // On x64, __stdcall is silently treated as __cdecl by MSVC
-            CallConv.Stdcall => Is32 ? "G" : "A",
+            CallConv.Stdcall => "G", // only reaches here on x86 (normalized to Cdecl on x64)
             _ => "A", // cdecl
         };
         // Static functions get TU-hash-scoped names to avoid cross-TU collisions
@@ -577,7 +576,7 @@ public class CodeGen
         string cc = funcTy.CallConv switch
         {
             CallConv.Clrcall => "M",
-            CallConv.Stdcall => Is32 ? "G" : "A",
+            CallConv.Stdcall => "G", // only on x86
             _ => "A",
         };
         sb.Append($"P6{cc}");

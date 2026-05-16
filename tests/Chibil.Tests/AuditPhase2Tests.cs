@@ -122,16 +122,28 @@ public class AuditPhase2Tests : ChibiTestBase
         .RunAndCheck(exitCode: 255);
     }
 
-    [Fact(Skip = "Parser does not yet use IsCompatible for function redeclaration checking")]
+    [Fact]
     public void CallConvMismatchRejected()
     {
-        // IsCompatible now compares CallConv, but the parser doesn't yet
-        // use it for redeclaration checking. When it does, this test should pass.
         CompileExpectingError("""
-            int __clrcall f(void);
-            int __cdecl f(void) { return 0; }
-            int main() { return f(); }
+            int __clrcall f(int x);
+            int f(int x) { return x; }
+            int main() { return f(42); }
             """)
         .AssertErrorContains("conflicting");
+    }
+
+    [Fact]
+    public void ConstTypedefPlusVolatilePreservesBoth()
+    {
+        // typedef const int CI; volatile CI x = 42;
+        // Both const AND volatile must be preserved (OR-merge, not replace)
+        Compile("""
+            typedef const int CI;
+            volatile CI x = 42;
+            int main() { return x; }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
     }
 }

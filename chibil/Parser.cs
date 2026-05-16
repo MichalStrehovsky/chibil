@@ -287,9 +287,10 @@ public class Parser
         if (isAtomic || isConst || isVolatile)
         {
             ty = TypeSystem.CopyType(ty);
-            ty.IsAtomic = isAtomic;
-            ty.IsConst = isConst;
-            ty.IsVolatile = isVolatile;
+            // OR-merge: preserve qualifiers from typedef origin
+            ty.IsAtomic |= isAtomic;
+            ty.IsConst |= isConst;
+            ty.IsVolatile |= isVolatile;
         }
         rest = tok;
         return ty;
@@ -365,7 +366,13 @@ public class Parser
     {
         if (Util.Equal(tok, "__cdecl")) { tok = tok.Next; return CallConv.Cdecl; }
         if (Util.Equal(tok, "__clrcall")) { tok = tok.Next; return CallConv.Clrcall; }
-        if (Util.Equal(tok, "__stdcall")) { tok = tok.Next; return CallConv.Stdcall; }
+        if (Util.Equal(tok, "__stdcall"))
+        {
+            tok = tok.Next;
+            // On x64, __stdcall is silently treated as __cdecl (all CCs converge to MS-x64 ABI).
+            // Normalize early so downstream code doesn't need special cases.
+            return _options.DataModel.PointerSize == 4 ? CallConv.Stdcall : CallConv.Cdecl;
+        }
         return CallConv.Cdecl;
     }
 
@@ -1724,7 +1731,14 @@ public class Parser
             // fn.Ty here so the MethodDef gets the correct signature from the
             // definition. For cross-TU, the linker will reject mismatched signatures.
             if (Util.Equal(tok, "{"))
-                fn.Ty = ty;
+            {
+                // Check calling convention compatibility (MSVC rejects clrcall vs cdecl)
+                if (fn.Ty.CallConv != ty.CallConv)
+                    Util.ErrorTok(ty.Name, "conflicting calling conventions in redeclaration");
+
+                if (fn.Ty.IsVariadic && fn.Ty.Params == null)
+                    fn.Ty = ty; // unprototyped K&R → update from definition
+            }
         }
         else
         {
