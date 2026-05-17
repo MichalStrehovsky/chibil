@@ -406,7 +406,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "CLR limitation: ExplicitLayout union TypeDef crashes at runtime — also fails with pure MSVC")]
+    [Fact]
     public void Union_ByValue()
     {
         Compile("""
@@ -422,7 +422,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "CLR limitation: ExplicitLayout union TypeDef crashes at runtime — also fails with pure MSVC")]
+    [Fact]
     public void Union_Pointer()
     {
         Compile("""
@@ -936,7 +936,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "CLR limitation: ExplicitLayout union TypeDef crashes at runtime — also fails with pure MSVC")]
+    [Fact(Skip = "MSVC /BC bug: cl /clr /BC emits union alignment member with offset 0xFFFFFFFF instead of 0 — crashes CLR")]
     public void Reverse_Union()
     {
         MsvcCompile("""
@@ -1371,4 +1371,5 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 }
+
 

@@ -1280,8 +1280,13 @@ public class CodeGen
             else
             {
                 var predicted = _structTypeDefs[typeId];
+                // Unions use ExplicitLayout (all members at offset 0);
+                // structs use SequentialLayout
+                var layoutAttr = type.Kind == TypeKind.Union
+                    ? TypeAttributes.ExplicitLayout
+                    : TypeAttributes.SequentialLayout;
                 handle = _md.AddTypeDefinition(
-                    TypeAttributes.SequentialLayout | TypeAttributes.Sealed | TypeAttributes.AnsiClass,
+                    layoutAttr | TypeAttributes.Sealed | TypeAttributes.AnsiClass,
                     default, _md.GetOrAddString(name),
                     GetValueTypeRef(),
                     MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
@@ -1303,11 +1308,16 @@ public class CodeGen
                 bool needs8 = type.Align >= 8;
                 alignFieldSig.WriteByte(needs8 ? (byte)SignatureTypeCode.Int64 : (byte)SignatureTypeCode.Int32);
 
-                _md.AddFieldDefinition(
+                var alignField = _md.AddFieldDefinition(
                     FieldAttributes.Private,
                     _md.GetOrAddString("<alignment member>"),
                     _md.GetOrAddBlob(alignFieldSig));
                 _nextFieldRow++;
+
+                // For ExplicitLayout (unions), set field offset to 0
+                // (MSVC /clr C++ uses offset 0; /clr /BC incorrectly uses 0xFFFFFFFF)
+                if (type.Kind == TypeKind.Union)
+                    _md.AddFieldLayout(alignField, 0);
             }
         }
     }
