@@ -627,7 +627,10 @@ public class CodeGen
                 ManglePointer(sb, ty);
                 break;
             case TypeKind.Array:
-                // Array parameter decays to pointer
+                // Array parameter decays to pointer (handled by ManglePointer
+                // when the parser produces Ptr(Array) via FuncParams decay).
+                // This branch handles the 1D case; multi-dim is caught by
+                // ManglePointer's baseTy.Kind == Array check.
                 ManglePointer(sb, _types.PointerTo(ty.Base));
                 break;
             case TypeKind.Struct:
@@ -684,6 +687,27 @@ public class CodeGen
             return;
         }
 
+        if (baseTy.Kind == TypeKind.Array)
+        {
+            // Pointer to array (from multi-dim array param decay):
+            // emit pointer qualifiers + Y-encoded array dimensions
+            char ptrQualArr;
+            if (ty.IsConst && ty.IsVolatile) ptrQualArr = 'S';
+            else if (ty.IsConst) ptrQualArr = 'Q';
+            else if (ty.IsVolatile) ptrQualArr = 'R';
+            else ptrQualArr = 'P';
+
+            char pteeQualArr;
+            if (baseTy.IsConst && baseTy.IsVolatile) pteeQualArr = 'D';
+            else if (baseTy.IsConst) pteeQualArr = 'B';
+            else if (baseTy.IsVolatile) pteeQualArr = 'C';
+            else pteeQualArr = 'A';
+
+            sb.Append($"{ptrQualArr}{e}{pteeQualArr}");
+            MangleArrayDims(sb, baseTy);
+            return;
+        }
+
         // Pointer-self qualifiers: P=none, Q=const, R=volatile, S=const volatile
         char ptrQual;
         if (ty.IsConst && ty.IsVolatile) ptrQual = 'S';
@@ -736,6 +760,29 @@ public class CodeGen
             sb.Append("ZZ");
         else
             sb.Append("@Z");
+    }
+
+    /// <summary>
+    /// Emit MSVC Y-encoding for inner array dimensions in multi-dim array parameter decay.
+    /// Format: Y<ndims><bound1>...<boundN><elemtype>
+    /// </summary>
+    private void MangleArrayDims(StringBuilder sb, CType ty)
+    {
+        sb.Append('Y');
+        // Count inner dimensions and collect bounds
+        int ndims = 0;
+        var dims = new List<int>();
+        CType cur = ty;
+        while (cur.Kind == TypeKind.Array)
+        {
+            ndims++;
+            dims.Add(cur.ArrayLen);
+            cur = cur.Base;
+        }
+        sb.Append(EncodeNumber(ndims));
+        foreach (int dim in dims)
+            sb.Append(EncodeNumber(dim));
+        MangleType(sb, cur, isReturn: false);
     }
 
     /// <summary>MSVC number encoding for array dimensions.</summary>
@@ -1247,13 +1294,13 @@ public class CodeGen
             // NativeCppClassAttribute
             AddNativeCppClassAttribute(handle);
 
-            // <alignment member> field (on 64-bit targets)
-            if (!Is32)
+            // <alignment member> field (on 64-bit targets, structs/unions only — not arrays)
+            if (!Is32 && type.Kind != TypeKind.Array)
             {
                 var alignFieldSig = new BlobBuilder();
                 alignFieldSig.WriteByte(0x06); // FIELD
                 // Use int64 if any member needs 8-byte alignment, else int32
-                bool needs8 = type.Align >= 8 || (type.Kind == TypeKind.Array && type.Base.Size >= 8);
+                bool needs8 = type.Align >= 8;
                 alignFieldSig.WriteByte(needs8 ? (byte)SignatureTypeCode.Int64 : (byte)SignatureTypeCode.Int32);
 
                 _md.AddFieldDefinition(

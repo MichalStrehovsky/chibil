@@ -406,7 +406,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: union TypeDef layout needs ExplicitLayout — TypeLoadException at runtime")]
+    [Fact(Skip = "CLR limitation: ExplicitLayout union TypeDef crashes at runtime — also fails with pure MSVC")]
     public void Union_ByValue()
     {
         Compile("""
@@ -422,7 +422,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: union TypeDef layout needs ExplicitLayout — TypeLoadException at runtime")]
+    [Fact(Skip = "CLR limitation: ExplicitLayout union TypeDef crashes at runtime — also fails with pure MSVC")]
     public void Union_Pointer()
     {
         Compile("""
@@ -936,7 +936,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: union TypeDef layout needs ExplicitLayout — TypeLoadException at runtime")]
+    [Fact(Skip = "CLR limitation: ExplicitLayout union TypeDef crashes at runtime — also fails with pure MSVC")]
     public void Reverse_Union()
     {
         MsvcCompile("""
@@ -1312,7 +1312,7 @@ public class ManglingInteropTests : ChibiTestBase
     //      int arr[3][4] decays to int (*)[4] which uses Y encoding
     // ═══════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "BUG: multi-dimensional array param produces TypeDef metadata mismatch + mangling inconsistency")]
+    [Fact]
     public void Array_MultiDim()
     {
         // int arr[3][4] → outer dimension decays, inner preserved
