@@ -159,7 +159,7 @@ public class ManglingInteropTests : ChibiTestBase
     //     BUG H-2: chibil doesn't emit backreference digits (0-9)
     // ═══════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences — _J repeated as _J_J instead of _J0")]
+    [Fact]
     public void Backref_TwoLongLongs()
     {
         // long long = _J (2 chars) → first gets slot 0, second should be '0'
@@ -169,7 +169,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences — PEAH repeated instead of PEAH0")]
+    [Fact]
     public void Backref_TwoIntPtrs()
     {
         // int* = PEAH (4 chars on x64) → backref
@@ -179,7 +179,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Backref_IntThenTwoIntPtrs()
     {
         // int (H, 1 char → no slot), int* (PEAH → slot 0), int* (→ '0')
@@ -189,7 +189,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Backref_IntPtrDoublePtrIntPtr()
     {
         // int* → slot 0 (PEAH), double* → slot 1 (PEAN), int* → '0'
@@ -199,7 +199,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Backref_TwoVoidPtrs()
     {
         // void* = PEAX (4 chars) → backref
@@ -209,7 +209,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Backref_TwoUnsignedLongLongs()
     {
         // unsigned long long = _K (2 chars) → backref
@@ -219,7 +219,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Backref_TwoConstCharPtrs()
     {
         // const char* = PEBD (4 chars) → backref
@@ -232,7 +232,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Backref_ThreeDistinctMultiCharTypes()
     {
         // int* → slot 0, double* → slot 1, long long → slot 2
@@ -246,7 +246,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Backref_InterleavedWithSingleCharTypes()
     {
         // int* (slot 0), int (no slot), int* (→ '0'), double (no slot)
@@ -256,7 +256,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences — _N is 2 chars and gets a slot")]
+    [Fact]
     public void Backref_TwoBools()
     {
         // _Bool = _N (2 chars) → gets backref slot
@@ -266,7 +266,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Backref_TypedefPtrSharesSlot()
     {
         // typedef int* and raw int* must share the same backref slot
@@ -280,7 +280,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Backref_TypedefStructSharesSlot()
     {
         // typedef struct Point and raw struct Point must share a backref slot
@@ -299,7 +299,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences — func ptr inner params share outer backref table")]
+    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
     public void Backref_FuncPtrSharesOuterTable()
     {
         // int* as first param gets slot 0; inside the func ptr param,
@@ -316,7 +316,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
     public void Backref_StructPtrInsideFuncPtr()
     {
         // struct Point* as first param gets slot 0; inside func ptr,
@@ -335,7 +335,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Backref_PtrToPtrRepeated()
     {
         // int** = PEAPEAH (multi-char) → gets a backref slot
@@ -389,7 +389,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences — repeated struct UPoint@@ should use backref")]
+    [Fact]
     public void Struct_RepeatedByValue()
     {
         // struct Point → UPoint@@ (8 chars) → backref
@@ -476,7 +476,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: chibil mangles enum as H (int) instead of W4Color@@ + BUG H-2 backreferences")]
+    [Fact]
     public void Enum_Repeated()
     {
         // enum Color → W4Color@@ (9 chars) → backref
@@ -509,7 +509,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: chibil mangles enum as H (int) instead of W4Dir@@ + BUG H-2 backreferences")]
+    [Fact]
     public void Enum_TypedefSharesSlot()
     {
         // typedef enum Dir and raw enum Dir must share a backref slot
@@ -664,7 +664,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences — repeated function pointer type needs backref")]
+    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
     public void FuncPtr_Repeated()
     {
         // Two identical function pointer params → backref
@@ -755,7 +755,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Mixed_RepeatedPtrWithPrimitives()
     {
         // int* (slot 0), int (no slot), int* (→ '0'), double (no slot)
@@ -768,7 +768,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Mixed_ManyDistinctTypes()
     {
         // Test with many distinct multi-char types to exercise slot allocation
@@ -785,7 +785,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences")]
+    [Fact]
     public void Mixed_StructPtrAndIntPtr()
     {
         // struct* (slot 0), int* (slot 1), struct* (→ '0')
@@ -806,7 +806,7 @@ public class ManglingInteropTests : ChibiTestBase
     //  9. Calling convention (__clrcall)
     // ═══════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences — __clrcall + repeated type")]
+    [Fact]
     public void ClrCall_WithBackref()
     {
         // __clrcall with repeated long long — tests clrcall mangling (M) + backref
@@ -882,7 +882,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences — return type does not create slot but params do")]
+    [Fact]
     public void Ret_StructWithRepeatedStructParam()
     {
         // Return type struct Point doesn't create a backref slot,
@@ -907,7 +907,7 @@ public class ManglingInteropTests : ChibiTestBase
     //      Tests that chibil can correctly declare and call MSVC functions
     // ═══════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "BUG H-2: chibil doesn't emit backreferences in extern declarations")]
+    [Fact]
     public void Reverse_TwoIntPtrs()
     {
         // MSVC defines, chibil declares and calls — tests extern mangling
@@ -1268,7 +1268,7 @@ public class ManglingInteropTests : ChibiTestBase
     //      a backref slot.
     // ═══════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "BUG H-2: MSVC uses name backreference U1@ for repeated struct name Point")]
+    [Fact]
     public void Ret_StructWithStructParam()
     {
         // struct Point return + struct Point param — single occurrence, no backref needed

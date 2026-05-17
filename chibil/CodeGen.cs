@@ -74,6 +74,10 @@ public class CodeGen
     private int _anonGlobalCounter;
     private string _tuHash;
 
+    // Name mangling backref tables (reset per function)
+    private List<string> _nameBackRefs;
+    private Dictionary<string, int> _argBackRefs;
+
     // __unep@ fields for address-taken cdecl functions
     private readonly Dictionary<string, FieldDefinitionHandle> _unepFields = new();
 
@@ -501,11 +505,18 @@ public class CodeGen
         string name = fn.IsStatic ? $"{fn.Name}_?A0x{_tuHash}" : fn.Name;
         var sb = new StringBuilder();
         sb.Append($"?{name}@@$$J0Y{cc}");
+
+        // Initialize backref tables for this function
+        _nameBackRefs = new List<string> { fn.Name }; // function name = slot 0
+        _argBackRefs = new Dictionary<string, int>();
+
+        // Return type: uses name backrefs but does NOT participate in arg backref table
         MangleType(sb, funcTy.ReturnTy, isReturn: true);
+
         int paramCount = 0;
         for (CType p = funcTy.Params; p != null; p = p.Next)
         {
-            MangleType(sb, p, isReturn: false);
+            MangleArgType(sb, p);
             paramCount++;
         }
         if (paramCount == 0)
@@ -515,6 +526,42 @@ public class CodeGen
         else
             sb.Append("@Z");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Mangle a function argument type with backreference support.
+    /// If the full mangled type string was seen before, emit a digit (0-9).
+    /// Otherwise emit the full type and register it for future backrefs.
+    /// </summary>
+    private void MangleArgType(StringBuilder sb, CType ty)
+    {
+        // Mangle into a temp buffer WITHOUT name or arg backrefs to get the
+        // canonical arg-type key. Both tables must be disabled: name backrefs
+        // change the string (preventing arg-type matches), and arg backrefs
+        // would pollute the live table for nested func-ptr params.
+        var savedNameBackRefs = _nameBackRefs;
+        var savedArgBackRefs = _argBackRefs;
+        _nameBackRefs = null;
+        _argBackRefs = new Dictionary<string, int>(); // isolated table for canonical pass
+        var tmp = new StringBuilder();
+        MangleType(tmp, ty, isReturn: false);
+        string canonical = tmp.ToString();
+        _nameBackRefs = savedNameBackRefs;
+        _argBackRefs = savedArgBackRefs;
+
+        // Check arg-type backref table using the canonical (no-backref) key
+        if (_argBackRefs.TryGetValue(canonical, out int slot))
+        {
+            sb.Append((char)('0' + slot));
+            return;
+        }
+
+        // No arg-type match — mangle again WITH name backrefs for final output
+        MangleType(sb, ty, isReturn: false);
+
+        // Register the canonical key if multi-char and slots available
+        if (canonical.Length > 1 && _argBackRefs.Count < 10)
+            _argBackRefs[canonical] = _argBackRefs.Count;
     }
 
     private void MangleType(StringBuilder sb, CType ty, bool isReturn)
@@ -537,14 +584,12 @@ public class CodeGen
                 break;
             case TypeKind.Enum:
                 {
-                    // Walk Origin chain to find the tag name
                     string enumName = GetTagName(ty);
                     if (enumName != null)
                     {
                         if (isReturn) sb.Append("?A");
                         sb.Append("W4");
-                        sb.Append(enumName);
-                        sb.Append("@@");
+                        MangleTagName(sb, enumName);
                     }
                     else
                     {
@@ -575,20 +620,43 @@ public class CodeGen
             case TypeKind.Struct:
                 if (isReturn) sb.Append("?A");
                 sb.Append('U');
-                sb.Append(GetStructName(ty));
-                sb.Append("@@");
+                MangleTagName(sb, GetStructName(ty));
                 break;
             case TypeKind.Union:
                 if (isReturn) sb.Append("?A");
                 sb.Append('T');
-                sb.Append(GetStructName(ty));
-                sb.Append("@@");
+                MangleTagName(sb, GetStructName(ty));
                 break;
             case TypeKind.Func:
                 // Function pointer type
                 MangleFuncPtr(sb, ty);
                 break;
         }
+    }
+
+    /// <summary>
+    /// Emit a struct/union/enum tag name with name-backref support.
+    /// First occurrence: emit name + "@@" (global scope) and register in name table.
+    /// Subsequent: emit digit + "@" (backref + scope terminator).
+    /// </summary>
+    private void MangleTagName(StringBuilder sb, string name)
+    {
+        if (_nameBackRefs != null)
+        {
+            int idx = _nameBackRefs.IndexOf(name);
+            if (idx >= 0)
+            {
+                // Name backref: digit replaces name@, then @ for scope
+                sb.Append((char)('0' + idx));
+                sb.Append('@');
+                return;
+            }
+            if (_nameBackRefs.Count < 10)
+                _nameBackRefs.Add(name);
+        }
+        // First occurrence: name + @@ (global scope)
+        sb.Append(name);
+        sb.Append("@@");
     }
 
     private void ManglePointer(StringBuilder sb, CType ty)
@@ -641,7 +709,12 @@ public class CodeGen
         int count = 0;
         for (CType p = funcTy.Params; p != null; p = p.Next)
         {
-            MangleType(sb, p, isReturn: false);
+            // Func ptr params share the outer function's backref tables
+            // (only when called from MangleFunctionName context)
+            if (_argBackRefs != null)
+                MangleArgType(sb, p);
+            else
+                MangleType(sb, p, isReturn: false);
             count++;
         }
         if (count == 0)
@@ -674,6 +747,14 @@ public class CodeGen
     private string MangleArrayTypeName(CType ty)
     {
         Debug.Assert(ty.Kind == TypeKind.Array);
+
+        // Neutralize backref tables — array TypeDef names must be stable keys
+        // independent of which function's mangling state is active
+        var savedNameBackRefs = _nameBackRefs;
+        var savedArgBackRefs = _argBackRefs;
+        _nameBackRefs = null;
+        _argBackRefs = null;
+
         var sb = new StringBuilder("$ArrayType$$$BY");
 
         // Count dimensions
@@ -692,6 +773,9 @@ public class CodeGen
 
         // Element type code
         MangleType(sb, cur, isReturn: false);
+
+        _nameBackRefs = savedNameBackRefs;
+        _argBackRefs = savedArgBackRefs;
         return sb.ToString();
     }
 
