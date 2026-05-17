@@ -10,33 +10,28 @@ REM    build.cmd bmp         - build the reproducible BMP harness
 REM    build.cmd checksum    - build the reproducible checksum validator
 REM
 REM  Prerequisites:
-REM    - Visual Studio with C++ and /clr support (run from VS Developer Prompt)
+REM    - Visual Studio with C++ tools (run from VS Developer Command Prompt)
 REM    - .NET SDK (for dotnet run)
 REM    - PureDOOM submodule initialized (git submodule update --init)
 REM
 REM  This script builds:
-REM    obj\minicrt.obj  - Managed CRT with .cctor support (compiled with cl /clr)
-REM    bin\pal.dll      - Platform Abstraction Layer DLL for windowed mode
-REM    obj\pal.lib      - Import library for pal.dll in windowed mode
-REM    obj\pal.obj      - Managed PAL object in harness modes
-REM    bin\doom.exe     - DOOM executable (compiled with chibil, linked with link.exe)
+REM    obj\pal.obj      - Platform Abstraction Layer (compiled with chibil)
+REM    obj\doom.obj     - DOOM engine (compiled with chibil)
+REM    bin\doom.exe     - DOOM executable (linked with link.exe)
 REM ============================================================================
 
 set CHIBIL_DIR=%~dp0..\..\chibil
 set BUILD_MODE=%~1
 if "%BUILD_MODE%"=="" set BUILD_MODE=window
 
-set HARNESS_BUILD=0
-set CHIBIL_DEFINES=
+set CHIBIL_DEFINES=-D_WIN64 -D_WIN32 -DDOOM_WIN32
 if /I "%BUILD_MODE%"=="window" goto :mode_done
 if /I "%BUILD_MODE%"=="bmp" (
-    set HARNESS_BUILD=1
-    set CHIBIL_DEFINES=-DREPRODUCIBLE_HARNESS
+    set CHIBIL_DEFINES=%CHIBIL_DEFINES% -DREPRODUCIBLE_HARNESS
     goto :mode_done
 )
 if /I "%BUILD_MODE%"=="checksum" (
-    set HARNESS_BUILD=1
-    set CHIBIL_DEFINES=-DREPRODUCIBLE_HARNESS -DVALIDATE_CHECKSUM
+    set CHIBIL_DEFINES=%CHIBIL_DEFINES% -DREPRODUCIBLE_HARNESS -DVALIDATE_CHECKSUM
     goto :mode_done
 )
 
@@ -50,63 +45,32 @@ if not exist obj mkdir obj
 if not exist bin mkdir bin
 
 REM --------------------------------------------------------------------------
-REM  Step 1: Build minicrt.obj (managed CRT with .cctor iterator)
+REM  Step 1: Compile pal.c with chibil
 REM --------------------------------------------------------------------------
-echo [1/4] Building minicrt.obj...
-cl /c /Z7 /Zl /clr ..\..\scenarios\minicrt.cc /Foobj\minicrt.obj >nul 2>&1
+echo [1/3] Compiling pal.c with chibil...
+dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -cc1-input pal.c -cc1-output obj\pal.obj
 if errorlevel 1 (
-    echo ERROR: Failed to compile minicrt.cc
-    echo Make sure you are running from a VS Developer Command Prompt with /clr support.
+    echo ERROR: Failed to compile pal.c with chibil
     exit /b 1
 )
 
 REM --------------------------------------------------------------------------
-REM  Step 2: Build PAL
+REM  Step 2: Compile doom.c with chibil (C -> MSIL COFF .obj)
 REM --------------------------------------------------------------------------
-if "%HARNESS_BUILD%"=="1" (
-    echo [2/4] Compiling pal.c with chibil...
-    dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -D_WIN64 -cc1-input pal.c -cc1-output obj\pal.obj
-    if errorlevel 1 (
-        echo ERROR: Failed to compile pal.c with chibil
-        exit /b 1
-    )
-) else (
-    echo [2/4] Building pal.dll...
-    cl /c /Z7 /O2 /DPAL_BUILD_DLL pal.c /Foobj\pal.obj >nul 2>&1
-    if errorlevel 1 (
-        echo ERROR: Failed to compile pal.c
-        exit /b 1
-    )
-    link /nologo /DLL /DEBUG obj\pal.obj kernel32.lib user32.lib gdi32.lib /OUT:bin\pal.dll /IMPLIB:obj\pal.lib >nul 2>&1
-    if errorlevel 1 (
-        echo ERROR: Failed to link pal.dll
-        exit /b 1
-    )
-)
-
-REM --------------------------------------------------------------------------
-REM  Step 3: Compile doom.c with chibil (C -> MSIL COFF .obj)
-REM --------------------------------------------------------------------------
-echo [3/4] Compiling doom.c with chibil...
-dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -D_WIN64 -cc1-input doom.c -cc1-output obj\doom.obj
+echo [2/3] Compiling doom.c with chibil...
+dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -cc1-input doom.c -cc1-output obj\doom.obj
 if errorlevel 1 (
     echo ERROR: Failed to compile doom.c with chibil
     exit /b 1
 )
 
 REM --------------------------------------------------------------------------
-REM  Step 4: Link doom.exe
+REM  Step 3: Link doom.exe
 REM --------------------------------------------------------------------------
-echo [4/4] Linking doom.exe...
-if "%HARNESS_BUILD%"=="1" (
-    link /nologo /DEBUG /subsystem:console obj\doom.obj obj\pal.obj obj\minicrt.obj kernel32.lib ^
-         mscoree.lib ^
-         /out:bin\doom.exe
-) else (
-    link /nologo /DEBUG /subsystem:console obj\doom.obj obj\minicrt.obj obj\pal.lib ^
-         mscoree.lib ^
-         /out:bin\doom.exe
-)
+echo [3/3] Linking doom.exe...
+link /nologo /DEBUG /entry:main /subsystem:console obj\doom.obj obj\pal.obj ^
+     kernel32.lib user32.lib gdi32.lib mscoree.lib ^
+     /out:bin\doom.exe
 if errorlevel 1 (
     echo ERROR: Failed to link doom.exe
     exit /b 1
@@ -133,8 +97,9 @@ echo(
 echo Build successful
 echo   bin\doom.exe  - DOOM executable (MSIL, compiled with chibil)
 echo   bin\doom.runtimeconfig.json - runtime configuration for modern .NET
-if "%HARNESS_BUILD%"=="1" echo   mode          - %BUILD_MODE% harness
-if not "%HARNESS_BUILD%"=="1" echo   bin\pal.dll   - Platform Abstraction Layer (native)
+if /I "%BUILD_MODE%"=="bmp" echo   mode          - BMP harness (headless, saves frames)
+if /I "%BUILD_MODE%"=="checksum" echo   mode          - checksum validator (headless)
+if /I "%BUILD_MODE%"=="window" echo   mode          - windowed (interactive)
 echo To run: cd into PureDOOM directory, set HOME environment
 echo variable to where you want .doomrc, then:
 echo   ..\bin\doom.exe
