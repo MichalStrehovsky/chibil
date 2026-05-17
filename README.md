@@ -8,7 +8,7 @@ It is complete enough to run [DOOM](samples/doom) (PureDOOM).
 
 ## Pipeline
 
-Chibil takes C source files and generates COFF OBJ files. These OBJ files are binary-compatible with OBJ files produced by the MSVC compiler in `/clr:pure` mode. link.exe from Visual Studio is used to link the object files together and produce final executables. One can actually mix and match C++/CLI and chibil-produced object files.
+Chibil takes C source files and generates COFF OBJ files. These OBJ files are binary-compatible with OBJ files produced by the MSVC compiler in `/clr` mode. link.exe from Visual Studio is used to link the object files together and produce final executables. One can actually mix and match C++/CLI and chibil-produced object files.
 
 Chibil will probably have its own linker later, if for no other reason, just so we don't need Windows.
 
