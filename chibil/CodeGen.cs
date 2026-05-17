@@ -3,7 +3,6 @@ using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -461,16 +460,25 @@ public class CodeGen
     //  Type identity helpers
     // ═══════════════════════════════════════════════════════════════
 
-    /// <summary>Get a stable identity for a struct/union type for dedup.</summary>
-    private static int GetTypeId(CType ty)
+    // Monotonic counter for stable, collision-free type IDs
+    private readonly Dictionary<CType, int> _typeIdMap = new(ReferenceEqualityComparer.Instance);
+    private int _nextTypeId;
+
+    /// <summary>Get a stable, collision-free identity for a struct/union type for dedup.</summary>
+    private int GetTypeId(CType ty)
     {
         // Walk through Origin chain to find the canonical type
         CType canonical = ty;
         while (canonical.Origin != null) canonical = canonical.Origin;
-        return RuntimeHelpers.GetHashCode(canonical);
+        if (!_typeIdMap.TryGetValue(canonical, out int id))
+        {
+            id = ++_nextTypeId;
+            _typeIdMap[canonical] = id;
+        }
+        return id;
     }
 
-    private static string GetStructName(CType ty)
+    private string GetStructName(CType ty)
     {
         // Prefer TagName (set by parser from struct/union tag) over Name
         // (which Declarator overwrites with the variable/parameter name)
