@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC cast.c
-// LINK: link cast.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC cast.c
+// LINK: link cast.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 int cast_widen(char c, short s)
 {

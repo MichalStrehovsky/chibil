@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC sparse-switch.c
-// LINK: link sparse-switch.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC sparse-switch.c
+// LINK: link sparse-switch.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 //
 // Tests how MSVC compiles switch statements with sparse case values.
 // Dense switches (consecutive 0..N) use the IL 'switch' instruction.

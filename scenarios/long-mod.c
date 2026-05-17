@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC long-mod.c
-// LINK: link long-mod.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC long-mod.c
+// LINK: link long-mod.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 long add_long(long a, long b)
 {

@@ -17,6 +17,11 @@ public class LiteralTest
     {
         byte[] emitted = EmitObj(machine);
         string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
+
+        string emittedDir = Path.Combine(AppContext.BaseDirectory, "emitted", "literal", refDir);
+        Directory.CreateDirectory(emittedDir);
+        File.WriteAllBytes(Path.Combine(emittedDir, "literal.obj"), emitted);
+
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "literal", refDir, "literal.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -26,6 +31,10 @@ public class LiteralTest
 
     static byte[] EmitObj(Machine machine)
     {
+        bool is32 = machine == Machine.I386;
+        int ptrSize = is32 ? 4 : 8;
+        string symPrefix = is32 ? "_" : "";
+
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
@@ -41,6 +50,11 @@ public class LiteralTest
             md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default,
             md.GetOrAddBlob(mscorlibHash));
+
+        // ─── TypeRef: CallConvCdecl (modopt on return types under /clr) ───
+        var callConvCdeclRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"),
+            md.GetOrAddString("CallConvCdecl"));
 
         // ─── TypeRefs (only what's needed) ────────────────────────────────
         var valueTypeRef = md.AddTypeReference(mscorlibRef, md.GetOrAddString("System"), md.GetOrAddString("ValueType"));
@@ -117,7 +131,7 @@ public class LiteralTest
         var methodSigBuilder = new BlobBuilder();
         new BlobEncoder(methodSigBuilder).MethodSignature()
             .Parameters(0, out var rtEnc, out var parEnc);
-        rtEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(rtEnc, callConvCdeclRef);
 
         var mainMethod = md.AddMethodDefinition(
             MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008 /* UnmanagedExport */,
@@ -158,11 +172,16 @@ public class LiteralTest
 
         // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
 
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
         var dataStreamBuilder = new BlobBuilder();
+        var dataRelocBuilder = new BlobBuilder();
+        var nepStreamBuilder = new BlobBuilder();
+        var nepRelocBuilder = new BlobBuilder();
+        var ilFixupStreamBuilder = new BlobBuilder();
+        var ilFixupRelocBuilder = new BlobBuilder();
 
         // ─── .data section: "Hello\0" + padding + "World!\0" = 15 bytes ──
         dataStreamBuilder.WriteBytes(new byte[] { 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x00 }); // "Hello\0" at offset 0
@@ -181,8 +200,8 @@ public class LiteralTest
         codeviewSymbols.AddObjNameAndCompile3(objPath,
             language: CodeViewLanguage.C,
             machine: cvMachine,
-            feMajor: 19, feMinor: 50, feBuild: 35728,
-            beMajor: 19, beMinor: 50, beBuild: 35728,
+            feMajor: 19, feMinor: 50, feBuild: 35730,
+            beMajor: 19, beMinor: 50, beBuild: 35730,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
@@ -240,13 +259,22 @@ public class LiteralTest
             new CodeViewManSlot(2, MetadataTokens.GetToken(localsSig), "c"),
         };
 
-        bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", encoder,
+        bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YAHXZ", encoder,
             maxStack: 4, localVariablesSignature: localsSig, attributes: 0,
             localSlots: localSlots, debugName: "main");
 
+        // ─── IJW machinery for main ──────────────────────────────────────
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+
         // ─── Build COFF ───────────────────────────────────────────────────
         var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder, dataStreamBuilder);
+            ilStreamBuilder, ilRelocBuilder,
+            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
+            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
+            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
 
         // ─── Serialize ────────────────────────────────────────────────────
         var output = new BlobBuilder();

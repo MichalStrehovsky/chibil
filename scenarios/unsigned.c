@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC unsigned.c
-// LINK: link unsigned.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC unsigned.c
+// LINK: link unsigned.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 //
 // Tests unsigned-specific IL instructions that differ from their signed
 // counterparts: div.un, rem.un, shr.un, bge.un.s, bgt.un.s, ble.un.s,

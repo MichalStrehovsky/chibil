@@ -1,6 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /clr:pure /TP global.c
-// LINK: link global.obj /incremental:no /debug /entry:main /subsystem:console minicrt.obj /include:?.cctor@@$$FYMXXZ
-// NOTE: we pass /TP instead of /BC because the MSVC++ compiler rejects global initializers in /BC /clr:pure mode (error C2099).
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC global.c
+// LINK: link global.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 int g_initialized = 42;
 int g_uninitialized;

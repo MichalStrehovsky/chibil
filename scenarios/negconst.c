@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC negconst.c
-// LINK: link negconst.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC negconst.c
+// LINK: link negconst.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 //
 // Tests how MSVC loads various constant values into the IL eval stack.
 // Shows every ldc.i4 variant: ldc.i4.m1 (-1), ldc.i4.0..8 (small),

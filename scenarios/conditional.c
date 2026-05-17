@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC conditional.c
-// LINK: link conditional.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC conditional.c
+// LINK: link conditional.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 int abs_val(int x)
 {

@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC funcptr.c
-// LINK: link funcptr.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC funcptr.c
+// LINK: link funcptr.obj mscoree.lib /incremental:no /debug /entry:main /subsystem:console
 
 int add(int a, int b) { return a + b; }
 int sub_fn(int a, int b) { return a - b; }

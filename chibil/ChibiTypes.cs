@@ -20,7 +20,7 @@ public enum TokenKind
 
 public enum TypeKind
 {
-    Void, Bool, Char, Short, Int, Long,
+    Void, Bool, Char, Short, Int, Long, LLong,
     Float, Double, LDouble,
     Enum, Ptr, Func, Array, Vla, Struct, Union,
 }
@@ -37,6 +37,13 @@ public enum NodeKind
     FunCall, ExprStmt, StmtExpr,
     Var, VlaPtr, Num, Cast, MemZero,
     Asm, Cas, Exch,
+}
+
+public enum CallConv
+{
+    Cdecl,    // __cdecl — default for C functions
+    Clrcall,  // __clrcall — managed calling convention
+    Stdcall,  // __stdcall — for P/Invoke (Win32 API)
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -93,16 +100,13 @@ public class Hideset
 
 public class CType
 {
-    private static int _nextTypeId;
-    public int TypeId = System.Threading.Interlocked.Increment(ref _nextTypeId);
-
-    public static int AllocateTypeId() => System.Threading.Interlocked.Increment(ref _nextTypeId);
-
     public TypeKind Kind;
     public int Size;
     public int Align;
     public bool IsUnsigned;
     public bool IsAtomic;
+    public bool IsConst;
+    public bool IsVolatile;
     public CType Origin; // for type compatibility check
 
     // Pointer-to or array-of type
@@ -111,6 +115,7 @@ public class CType
     // Declaration
     public Token Name;
     public Token NamePos;
+    public string TagName; // struct/union/enum tag name, preserved across declarator rewrites
 
     // Array
     public int ArrayLen;
@@ -128,7 +133,7 @@ public class CType
     public CType ReturnTy;
     public CType Params;
     public bool IsVariadic;
-    public bool IsNativeCallConv; // true if declared __stdcall/__cdecl/__fastcall (not __clrcall)
+    public CallConv CallConv; // __cdecl (default), __clrcall, __stdcall
     public CType Next;
 
     public CType() { }
@@ -199,7 +204,6 @@ public class Obj
     // Static inline function
     public bool IsLive;
     public bool IsRoot;
-    public bool IsStringLiteral; // true for string literals (immutable, can use HasFieldRVA)
     public List<string> Refs = new();
 }
 
@@ -381,12 +385,32 @@ public class CondIncl
 //  CompilerOptions (cross-module shared state)
 // ═══════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════
+//  DataModel
+// ═══════════════════════════════════════════════════════════════════
+
+public class DataModel(int longSize, int ldoubleSize, int ldoubleAlign, int pointerSize)
+{
+    public int LongSize => longSize;
+    public int LDoubleSize => ldoubleSize;
+    public int LDoubleAlign => ldoubleAlign;
+    public int PointerSize => pointerSize;
+
+    public static readonly DataModel LP64  = new(longSize: 8, ldoubleSize: 16, ldoubleAlign: 16, pointerSize: 8);
+    public static readonly DataModel LLP64 = new(longSize: 4, ldoubleSize: 8,  ldoubleAlign: 8,  pointerSize: 8);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  CompilerOptions
+// ═══════════════════════════════════════════════════════════════════
+
 public class CompilerOptions
 {
     public List<string> IncludePaths = new();
     public bool OptFpic;
     public bool OptFcommon = true;
     public string BaseFile;
+    public DataModel DataModel = DataModel.LLP64;
 }
 
 // ═══════════════════════════════════════════════════════════════════

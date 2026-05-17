@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC struct.c
-// LINK: link struct.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC struct.c
+// LINK: link struct.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 
 typedef struct _MyStruct

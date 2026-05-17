@@ -1,12 +1,16 @@
 # Notes for the MSIL Backend
 
 This file captures metadata generation patterns discovered during the
-`/clr:pure` research that are **not** covered by a dedicated scenario
-but are important for a future compiler backend.
+`/clr` mixed-mode IJW research that are **not** covered by a dedicated
+scenario but are important for a future compiler backend.
+
+> Most scenarios in this directory now compile with `/clr /BC`. A handful
+> of patterns (notably the `__CxxPureMSILEntry` shim in `main-argv.c`)
+> still use `/clr:pure /TP` and are flagged inline below.
 
 ## Enums are just int32
 
-MSVC `/clr:pure` generates **no TypeDef** for C enum types. Enum values
+MSVC `/clr` generates **no TypeDef** for C enum types. Enum values
 are inlined as integer constants. The parameter and local signatures use
 plain `int32` regardless of the enum type. Verified against `enum.c`
 reference .obj: `use_enum(enum Color c)` has signature `int32(int32)`.
@@ -108,120 +112,35 @@ int counter(void) {
 ```
 
 The field name follows the pattern `?A0x<hash>.?count@?1??counter@@9@9`
-where `<hash>` is a translation-unit hash. The field has flags
-`Assembly | Static` (0x0013) and type `int32`. Unlike global variables,
-static locals do **not** get `FixedAddressValueTypeAttribute` and do
-**not** need CRTMA initializer functions (when zero-initialized).
+where `<hash>` is a translation-unit hash. The field carries flags
+`Assembly | Static | HasFieldRVA` (0x0113) and type `int32`. The bytes
+themselves live in `.bss` (uninitialized C linkage internal): the
+section has `IMAGE_SCN_CNT_UNINITIALIZED_DATA`, `SizeOfRawData = 4`,
+and `PointerToRawData = 0` — no file bytes, the loader zero-fills at
+image load. chibil supports this via `LogicalSection.Bss` plus the
+`bssSize` parameter on `ManagedCoffBuilder` (`AddDataClrToken(...,
+LogicalSection.Bss, 0)` binds the field's CLR-token alias to the
+section). This differs from external uninitialized globals (e.g.
+`int g_uninitialized;` in `global.c`), which use a common symbol
+(Sect=0 External, Value=size).
 
 The IL accesses the field via `ldsfld` / `stsfld` with a CLR token
 relocation to the field definition.
 
 See the `static-local` scenario for the full pattern.
 
-## Global variable initializers require C++ mode
+## Global variable initializers
 
-The MSVC `/BC` (C backend) mode rejects any global variable with an
-initializer, even `int g = 42;` (error C2099: "initializer is not a
-constant"). Global initializers require `/TP` (C++ backend) mode, which
-generates:
+Under `/clr /BC` MSVC accepts non-constant global initializers
+(`char* str = "Hello!";` in `init.c`, `int (*m)() = &get;` in
+`global-advanced.c`) and lowers them with the standard managed
+FieldRVA pattern: the global gets `HasFieldRVA`, its bytes live in
+`.data` (or `.bss` for zero-initialized internal-linkage statics),
+and a `DIR32`/`ADDR64` reloc points to whatever the initializer
+references (string literal address, NEP thunk via `__unep@`, etc.).
 
-1. An initializer function `??__E<name>@@YMXXZ`
-2. A `.CRTMA$XCC` section entry pointing to the initializer
-3. The module constructor (`.cctor`) iterates the CRTMA table at startup
-
-For a compiler backend, this means any global with a non-zero initializer
-needs a dynamic initializer function and a CRTMA slot. Zero-initialized
-globals (BSS) work without initializers.
-
-See the `init` and `global` scenarios for the full CRTMA pattern.
-
-Note this is a mismatch with C where global initialization fiasco is
-not possible. It would be possible to express C initialization
-semantics with IL:
-
-```
-.assembly extern mscorlib {}
-.assembly relocsmethod {}
-
-.class explicit sealed '$ArrayType7'
-       extends [mscorlib]System.ValueType
-{
-    .pack 1
-    .size 7
-}
-
-// --- RVA data ---
-.data D_literal   = bytearray(48)
-.data D_literal_1 = bytearray(65 6C 6C 6F 21 00)
-
-.data D_hello = &(D_literal)
-.data D_e     = &(D_literal_1)
-
-// VTable slot and fixup â€” pointer-sized
-#ifdef TARGET_64BIT
-.data D_m = int64(0)
-.vtfixup [1] int64 at D_m
-#else
-.data D_m = int32(0)
-.vtfixup [1] int32 at D_m
-#endif
-
-// --- RVA-mapped fields ---
-.field static valuetype '$ArrayType7' '$literal' at D_literal
-.field static int8*      hello at D_hello
-.field static int8*      e     at D_e
-.field static native int m     at D_m
-
-.method static int32 get() cil managed
-{
-    .vtentry 1 : 1
-    ldc.i4 42
-    ret
-}
-
-.method static int32 main() cil managed
-{
-    .entrypoint
-    .maxstack 2
-
-    ldsfld     native int m
-    calli      int32()
-
-    ldsfld     int8* hello
-    ldind.i1
-    add
-
-    ldsfld     int8* e
-    ldind.i1
-    add
-
-    ret
-}
-```
-
-The above corresponds to:
-
-```
-char hello[] = "Hello!";
-char* e = &hello[1];
-
-int get()
-{
-    return 42;
-}
-
-int (*m)() = &get;
-
-int main()
-{
-    return m() + hello[0] + *e;
-}
-```
-
-However, the CLR only supports this on Windows (it's refused on Linux)
-and there's problems with tooling too (trimming doesn't understand this),
-native AOT doesn't understand this. ReadyToRun doesn't understand this.
-It would all be likely fixable though.
+See `global.c`, `init.c`, and `global-advanced.c` for the
+`/clr /BC` FieldRVA pattern.
 
 ## Atomic operations map to System.Threading.Interlocked
 
@@ -236,12 +155,13 @@ signature and `modreq(IsVolatile) int32` for volatile locals.
 
 See the `atomic` scenario for the full pattern.
 
-## TLS is blocked in /clr:pure
+## TLS is blocked under /clr
 
 `__declspec(thread)`, `_Thread_local`, and C11 `thread_local` are all
-rejected by MSVC in `/clr:pure` mode (error C3389/C3403). The chibil
-backend would need to either reject TLS variables or map them to
-`[ThreadStatic]` attributes (managed thread-local storage).
+rejected by MSVC under `/clr` (error C3389/C3403, the same as under
+`/clr:pure`). The chibil backend would need to either reject TLS
+variables or map them to `[ThreadStatic]` attributes (managed
+thread-local storage).
 
 ## Function pointers use FnPtr in signatures
 
@@ -439,10 +359,11 @@ a separate TypeDef `$ArrayType$$$BY123H` (Size:48) where `12` encodes
 the total dimensions (`3*4 = 12` in hex? No — `BY123H` encodes the
 shape as `[3][4]` with size codes `12` and `3`).
 
-## $ArrayType naming convention for element types
+## `$ArrayType$` element type codes
 
-The `$ArrayType$$$BY<count><type>` naming convention uses a single
-letter for the element type. Known type codes:
+The element-type letter in `$ArrayType$$$BY<dims><bounds><elem>` is
+the same set of single-letter codes used in function signatures. The
+ones that actually appear in the scenarios:
 
 | Code | C type | MSIL type |
 |------|--------|-----------|
@@ -450,9 +371,9 @@ letter for the element type. Known type codes:
 | `G` | `unsigned short` / `wchar_t` | UI2 |
 | `H` | `int` | I4 |
 
-The `<count>` is the array dimension minus 1 (zero-based). So `char[6]`
-→ `$ArrayType$$$BY05D` (Size:6), `int[10]` → `$ArrayType$$$BY09H`
-(Size:40), `wchar_t[6]` → `$ArrayType$$$BY05G` (Size:12).
+See "Array TypeDef names" below for how `<dims>` and `<bounds>` encode
+multi-dimensional arrays, and "MSVC number encoding" for the
+digit/hex-nibble scheme used by both.
 
 ## Wide string literals use $ArrayType with G element type
 
@@ -496,12 +417,12 @@ not just P/Invoke scenarios.
 ## Name Mangling Reference
 
 This section documents the MSVC C++ decorated name format used for
-C functions compiled under `/clr:pure /BC`. This information is needed
+C functions compiled under `/clr /BC`. This information is needed
 to generate COFF symbols that are link-compatible with MSVC objects.
 
 ### Function decorated names
 
-Format: `?<name>@@$$J0YM<return><params>@Z`
+Format: `?<name>@@$$J0YA<return><params>@Z`
 
 | Component | Meaning |
 |-----------|---------|
@@ -510,19 +431,25 @@ Format: `?<name>@@$$J0YM<return><params>@Z`
 | `@@` | Scope terminator (global scope) |
 | `$$J0` | `extern "C"` linkage with C++ decoration |
 | `Y` | Calling convention prefix |
-| `M` | `__clrcall` (managed calling convention, forced by `/clr:pure`) |
+| `A` | `__cdecl` — what `/clr /BC` emits for user functions exposed as IJW entry points (the `UnmanagedExport` flag forces a cdecl ABI). Under `/clr:pure /BC` this is `M` (`__clrcall`) instead. |
 | `<return>` | Return type code |
 | `<params>` | Parameter type codes, or `X` for void (no params) |
 | `@Z` | End of parameter list and name |
 
-The `$$J0` prefix is NOT specific to `/clr:pure` — it is the standard
-MSVC marker for `extern "C"` linkage with C++ name decoration. The C
-frontend always generates `extern "C"` linkage. Under native compilation,
-C functions get undecorated names (like `_main`), but under `/clr` they
-need C++ decorated names for CLR metadata token resolution.
+The `$$J0` prefix only appears under managed compilation (`/clr` or
+`/clr:pure`) — native MSVC leaves `extern "C"` C functions undecorated
+(e.g. `_main` on x86, plain `main` on x64), so `$$J0` is effectively a
+marker that this symbol participates in CLR metadata-token resolution.
+The `0` digit identifies this as the standard `extern "C"` IJW form;
+`$$J216` is the x86 stdcall thunk variant (see the table below).
 
-The `YM` indicates `__clrcall` calling convention (managed). Under native
-compilation, this would be `YA` for `__cdecl` instead.
+Other call-convention codes that appear in MSVC C++ output:
+
+| Code | Meaning |
+|------|---------|
+| `A` | `__cdecl` — `/clr /BC` user functions, native C functions |
+| `M` | `__clrcall` — `/clr:pure /BC` functions, internal CLR shims like `__CxxPureMSILEntry` |
+| `G` | `__stdcall` — used by Win32 P/Invoke imports declared `__stdcall` (e.g. x86 `MessageBoxW`) |
 
 Other `$$` linkage prefixes that appear in the COFF objects:
 
@@ -530,6 +457,7 @@ Other `$$` linkage prefixes that appear in the COFF objects:
 |------|---------|
 | `$$J0` | `extern "C"` with C++ decoration (used by C functions) |
 | `$$F` | `__clrcall` managed function with C++ linkage (used for CRT helpers like `.cctor`) |
+| `$$J216` | `extern "C"` x86 stdcall thunk — `$$J216YG…` is what MSVC emits for x86 P/Invoke imports declared `__stdcall` (e.g. `?MessageBoxW@@$$J216YGHPAX00H@Z`) |
 
 ### Type codes for function signatures
 
@@ -557,13 +485,19 @@ Pointer types:
 
 | Code | C type | MSIL signature |
 |------|--------|---------------|
-| `PA<type>` | `<type>*` | `Ptr <type>` |
-| `PAX` | `void*` | `Ptr Void` |
-| `PAH` | `int*` | `Ptr int32` |
-| `PAD` | `char*` | `Ptr modopt(IsSignUnspecifiedByte) int8` |
-| `PAPA<type>` | `<type>**` | `Ptr Ptr <type>` |
-| `PAU<name>@@` | `struct <name>*` | `Ptr ValueType <name>` |
-| `PEAU<name>@@` | `struct <name>*` (64-bit) | `Ptr ValueType <name>` |
+| `PA<type>` (x86) / `PEA<type>` (x64/arm64) | `<type>*` | `Ptr <type>` |
+| `PAX` / `PEAX` | `void*` | `Ptr Void` |
+| `PAH` / `PEAH` | `int*` | `Ptr int32` |
+| `PAD` / `PEAD` | `char*` | `Ptr modopt(IsSignUnspecifiedByte) int8` |
+| `PAPA<type>` / `PEAPEA<type>` | `<type>**` | `Ptr Ptr <type>` |
+| `PAU<name>@@` / `PEAU<name>@@` | `struct <name>*` | `Ptr ValueType <name>` |
+| `PB<type>` / `PEB<type>` | `<type> const*` | `Ptr modopt(IsConst) <type>` |
+| `PC<type>` / `PEC<type>` | `<type> volatile*` | `Ptr modreq(IsVolatile) <type>` |
+
+The `E` between `P` and the next letter is the MSVC `__ptr64` modifier:
+present on x64/arm64, absent on x86. Scenario emitters typically build
+the mangled symbol with `string e = is32 ? "" : "E";` and interpolate
+`P{e}A<X>` / `P{e}B<X>`.
 
 Struct types:
 
@@ -576,23 +510,24 @@ Function pointer types:
 
 | Code | C type |
 |------|--------|
-| `P6M<ret><params>@Z` | `<ret> (__clrcall*)(<params>)` |
+| `P6A<ret><params>@Z` | `<ret> (__cdecl*)(<params>)` — what `/clr /BC` emits |
+| `P6M<ret><params>@Z` | `<ret> (__clrcall*)(<params>)` — what `/clr:pure /BC` emits |
 
-Examples:
+Examples (assuming `/clr /BC` on x64; on x86 drop the `E` from each `P_A`):
 ```
-?main@@$$J0YMHXZ                        int main(void)
-?arith@@$$J0YMHHH@Z                     int arith(int, int)
-?char_func@@$$J0YMHDCE@Z                int char_func(char, signed char, unsigned char)
-?cast_float@@$$J0YMHHMN@Z               int cast_float(int, float, double)
-?void_func@@$$J0YMXXZ                   void void_func(void)
-?longlong_ret@@$$J0YM_JXZ               long long longlong_ret(void)
-?ptr_param@@$$J0YMHPAH@Z                int ptr_param(int*)
-?voidptr_param@@$$J0YMHPAX@Z            int voidptr_param(void*)
-?dblptr_param@@$$J0YMHPAPAH@Z           int dblptr_param(int**)
-?struct_ptr@@$$J0YMHPAUPoint@@@Z         int struct_ptr(struct Point*)
-?struct_ret@@$$J0YM?AUPoint@@HH@Z        struct Point struct_ret(int, int)
-?funcptr_param@@$$J0YMHP6MHH@Z@Z        int funcptr_param(int (*)(int))
-?apply@@$$J0YMHP6MHHH@ZHH@Z             int apply(int (*)(int,int), int, int)
+?main@@$$J0YAHXZ                          int main(void)
+?arith@@$$J0YAHHH@Z                       int arith(int, int)
+?char_func@@$$J0YAHDCE@Z                  int char_func(char, signed char, unsigned char)
+?cast_float@@$$J0YAHHMN@Z                 int cast_float(int, float, double)
+?void_func@@$$J0YAXXZ                     void void_func(void)
+?longlong_ret@@$$J0YA_JXZ                 long long longlong_ret(void)
+?ptr_param@@$$J0YAHPEAH@Z                 int ptr_param(int*)
+?voidptr_param@@$$J0YAHPEAX@Z             int voidptr_param(void*)
+?dblptr_param@@$$J0YAHPEAPEAH@Z           int dblptr_param(int**)
+?struct_ptr@@$$J0YAHPEAUPoint@@@Z         int struct_ptr(struct Point*)
+?struct_ret@@$$J0YA?AUPoint@@HH@Z         struct Point struct_ret(int, int)
+?funcptr_param@@$$J0YAHP6AHH@Z@Z          int funcptr_param(int (*)(int))
+?apply@@$$J0YAHP6AHHH@ZHH@Z               int apply(int (*)(int,int), int, int)
 ```
 
 ### MSVC number encoding
@@ -674,6 +609,25 @@ Dynamic initializer functions for global variables follow the pattern:
 The `__F` variant (`??__F<var>@@YMXXZ`) is the corresponding `atexit`
 destructor, if one is needed.
 
+
+### Anonymous globals
+
+**The prefixes:**
+
+| Symbol | Meaning |
+|--------|---------|
+| `$SG` | **S**tring **G**lobal — string literals, constant arrays, format strings |
+| `$S` | **S**tatic temp — compiler-generated static data |
+| `$T` | **T**emp — generic compiler-generated temporary |
+| `$E` | **E**ntry — unnamed function entry points |
+
+**The number** is either:
+- the symbol's unique key in the global symbol table (for global symbols)
+- a per-function sequential ID (for function-local symbols)
+
+These keys are assigned sequentially as the backend processes symbols, so the numbers
+are not stable across builds.
+
 ## Backend Implementation Gaps
 
 The following areas need implementation work beyond what the scenarios
@@ -693,29 +647,22 @@ backend needs to:
 - Map chibil's `Obj.Offset` (stack frame offsets) to IL local slot indices
 - Handle struct temporaries as valuetype locals
 
-### 3. Global variable strategy
-Under `/clr:pure /BC`, global initializers are rejected. The backend must
-either:
-- Use `/TP` mode for globals with initializers (generates CRTMA)
-- Generate its own initializer functions + CRTMA entries
-- Restrict to zero-initialized globals only
-
-### 4. Dense vs sparse switch
+### 3. Dense vs sparse switch
 The backend needs a heuristic to choose between IL `switch` instruction
 (for dense cases starting near 0) and a binary compare tree (for sparse
 or large-valued cases). Both patterns are demonstrated in scenarios.
 
-### 5. Struct copy strategy
+### 4. Struct copy strategy
 Struct assignment uses `cpblk` for large structs. The backend should use
 `cpblk` with the struct's TypeDef size. For small structs accessed
 field-by-field, `ldind`/`stind` with offsets works.
 
-### 6. TLS
-Thread-local storage is blocked in `/clr:pure`. The backend should reject
-TLS variables with an error, or map them to `[ThreadStatic]` fields
-(which have different semantics from native TLS).
+### 5. TLS
+Thread-local storage is blocked under both `/clr` and `/clr:pure`. The
+backend should reject TLS variables with an error, or map them to
+`[ThreadStatic]` fields (which have different semantics from native TLS).
 
-### 7. VLA and dynamic stack allocation
+### 6. VLA and dynamic stack allocation
 chibil supports VLAs (`int arr[n]`) which lower to `alloca`. MSVC
 rejects VLA syntax in `/BC` mode, but `_alloca()` compiles to the
 `localloc` IL instruction. The MSIL backend should:
@@ -726,7 +673,7 @@ rejects VLA syntax in `/BC` mode, but `_alloca()` compiles to the
 
 See the `alloca` scenario for the `localloc` pattern.
 
-### 8. Unsupported C features in MSIL
+### 7. Unsupported C features in MSIL
 The following chibil-supported features have NO MSIL equivalent and
 must be handled by the backend:
 
@@ -737,7 +684,7 @@ must be handled by the backend:
 | `&&label` / `goto *ptr` | NodeKind.LabelVal/GotoExpr | GCC extension; lower to switch-dispatch (no label address in IL) |
 | `_Atomic` compound assign | NodeKind.Cas/Exch | Generate `Interlocked.CompareExchange` CAS loop |
 
-### 9. Compile-time-only features
+### 8. Compile-time-only features
 These chibil features resolve entirely at compile time and produce
 NO runtime artifact in MSIL:
 
@@ -747,12 +694,12 @@ NO runtime artifact in MSIL:
 - `typeof(expr)` → GCC extension, resolves to a type at compile time
 - Adjacent string literal concatenation → single merged constant
 
-### 10. Alignment and packing
+### 9. Alignment and packing
 `_Alignas(N)` on struct members maps to `.pack N` in the TypeDef
 ClassLayout metadata. `__attribute__((packed))` maps to `.pack 1`.
 `_Alignof` is a compile-time constant and produces no metadata.
 
-### 11. Inline functions
+### 10. Inline functions
 The `inline` keyword is advisory in CLR — the JIT decides whether to
 inline. For `static inline` functions that are never referenced
 externally, chibil marks them as not `IsLive` and does not emit them.
@@ -774,22 +721,22 @@ The backend does not need to emit any modifier for `restrict`.
 
 ## Architecture differences in IL
 
-Several constructs generate different IL for x86 vs ARM64:
+Several constructs generate different IL across x86, x64, and ARM64:
 
-| Pattern | x86 | ARM64 |
-|---------|-----|-------|
-| Pointer index widening | `ldc.i4.N` | `ldc.i4.N` + `conv.i8` |
-| Switch instruction | Direct `switch` | Bounds-check (`blt.s`/`bgt.s`) before `switch` |
-| Struct TypeDef | No alignment member | `<alignment member>` int32 field added |
-| Local count for switch | 2 locals | 3 locals (extra temp for bounds check) |
-| CRTMA slot size | 4 bytes (Align4Bytes) | 8 bytes (Align8Bytes) |
-| mscorlib hash | `32 CD 81 47...` | `28 DC 37 8B...` |
+| Pattern | x86 | x64 | ARM64 |
+|---------|-----|-----|-------|
+| Pointer index widening | `ldc.i4.N` | `ldc.i4.N` + `conv.i8` | `ldc.i4.N` + `conv.i8` |
+| Switch lowering | Direct `switch` (4-arm jump table) | `brfalse`/`beq` chain (no `switch` instruction) | Bounds-check (`blt.s`/`bgt.s`) + `switch` |
+| Switch locals | 2 locals (result + return temp) | 3 locals (extra scrutinee temp for the compare chain) | 3 locals (extra scrutinee temp for bounds check) |
+| Struct TypeDef | No alignment member | `<alignment member>` int32 field added | `<alignment member>` int32 field added |
+| mscorlib hash | `32 CD 81 47...` | `28 DC 37 8B...` | `28 DC 37 8B...` |
+| Pointer-parameter COFF mangling | `PA<X>` / `PB<X>` | `PEA<X>` / `PEB<X>` | `PEA<X>` / `PEB<X>` |
+| MSVC NEP-thunk section placement | `.text$mn` (per-method COMDAT) | `.nep` | `.text$mn` (per-method COMDAT) |
 
-Note: `conv.i8` is specifically used on ARM64 to widen integer constants
-before using them as pointer offsets (because pointers are 8 bytes on
-ARM64). On x86, pointer-sized arithmetic uses 4-byte integers directly.
-However, `conv.i8` can also appear on x86 in other contexts (e.g., when
-the C code uses `long long` types).
+`conv.i8` appears whenever a 32-bit constant feeds into pointer-sized
+arithmetic on a 64-bit target — i.e. both x64 and ARM64. It also
+appears under all three architectures whenever the C code itself uses
+`long long`/`int64_t` types.
 
 ## Unsigned operations use `.un` IL variants
 
@@ -912,7 +859,7 @@ See the `voidptr` scenario for the full pattern.
 ## Incomplete (forward-declared) structs produce TypeRef and LNK4248
 
 When a struct is forward-declared but never defined in the translation unit,
-MSVC `/clr:pure` emits a **TypeRef** (not a TypeDef) with a null
+MSVC `/clr` (and `/clr:pure`) emits a **TypeRef** (not a TypeDef) with a null
 ResolutionScope. The linker issues warning LNK4248 if no other object file
 provides a matching TypeDef:
 
@@ -929,8 +876,8 @@ Minimal reproducer (generates LNK4248 with both MSVC and chibil):
 
 ```c
 // incomplete.c
-// cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC incomplete.c
-// link /DEBUG /subsystem:console incomplete.obj /entry:main
+// cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC incomplete.c
+// link /DEBUG /subsystem:console incomplete.obj mscoree.lib /entry:main
 //   -> warning LNK4248: unresolved typeref token for 'opaque'
 
 struct opaque;  // forward declaration, never defined
@@ -963,3 +910,89 @@ A real-world example is PureDOOM.h, which declares `struct hostent* hostentry`
 guards. Since `struct hostent` is never defined, the linker warns — but the
 pointer is never dereferenced when networking is disabled, so the warning is
 benign.
+
+## /clr mixed-mode IJW entry-point thunks (`__mep@` / `__m2mep@` / `__unep@`)
+
+This is now the default compilation mode for the scenarios. Each managed
+C function exposed across the managed/native boundary gets a small fan
+of compiler-generated COFF symbols that wire up the transitions:
+
+| Symbol | Stands for | Lives in | Filled by | Purpose |
+|--------|-----------|----------|-----------|---------|
+| `_foo` / `foo` (bare name) | The NEP thunk | `.text$mn` (per-method COMDAT) on x86 and arm64, dedicated `.nep` section on x64 | The compiler emits the thunk body | The actual native entry-point code: a per-arch indirect jump through `__mep@?foo`. On x86 a single 6-byte `FF 25 [imm32]` jump; on arm64 three ADRP / LDR / BR instructions (`09 00 00 90 / 29 01 40 F9 / 20 01 1F D6`, with `PAGEBASE_REL21` + `PAGEOFFSET_12L` relocs against `__mep@?foo`). On x64 MSVC emits a 16-byte sequence `EB 08 / 0F 0B / FF 25 [→__m2mep@] / FF 25 [→__mep@]` — the leading `jmp +8` short-jumps past the first indirect jump straight into the `__mep@` jump, and the CLR can rewrite the leading byte at load time to fall through to the `__m2mep@` jump when the caller is known to be managed (the double-thunk-avoidance optimization). chibil emits only the single jump form on all three architectures, which is sufficient for correctness. External-linkage symbol — this is what native code calls when it calls `foo` by name, and what `ldsfld __unep@?foo` ultimately yields. |
+| `__mep@?foo` | Managed Entry-Point | `.data` slot, ptr-sized | The CLR loader at module load, driven by a `.rdata$ilfixup` entry with `Type=0x0009`/`0x000A` (`COR_VTABLE_FROM_UNMANAGED_RETAIN_APPDOMAIN | *BIT`) | The vtable-fixup slot. Compiler initializes the bytes with the MethodDef CLR token via a TOKEN reloc; at load time the CLR replaces them with the address of a from-unmanaged stub that performs the managed transition. The NEP thunk above does the actual indirect jump through this slot. |
+| `__m2mep@?foo` | Managed-to-Managed Entry-Point | `.data` slot, ptr-sized | The CLR loader, driven by a second `.rdata$ilfixup` entry with `Type=0x0001`/`0x0002` (`COR_VTABLE_*BIT` only) | Performance optimization for managed→managed calls. Avoids the double-thunk penalty of `managed → native NEP thunk → from-unmanaged stub → managed` when the caller is already managed. **MSVC only emits this on x64** (the leading `EB 08` in the NEP thunk above is what gates the optimization); x86 and arm64 references never contain `__m2mep@` symbols. Skipped entirely by chibil — not required for correctness on any architecture. |
+| `__unep@?foo` | Unmanaged Native Entry-Point | `.rdata` slot, ptr-sized | The linker at link time, via an `ADDR64`/`DIR32` reloc to the bare `_foo` / `foo` symbol | A constant function pointer to the NEP thunk. When *managed* code takes the address of a managed C function (e.g. `fp = foo;` or passing `&foo` to a callback), the compiler emits `ldsfld __unep@?foo` instead of `ldftn foo`. The loaded value is a native function pointer that can be invoked through `calli [C] modopt(CallConvCdecl) <ret>(<args>)`. The slot has its own ADDR reloc — it is **not** referenced by any `.rdata$ilfixup` entry. |
+
+**The flows:**
+
+```
+Native caller →  `foo` bare-name → `jmp [__mep@?foo]` → from-unmanaged stub
+                   (NEP thunk in .nep on x64,           (CLR-installed at load)
+                    .text$mn on x86/arm64)                      ↓
+                                                       managed `foo` body
+
+Managed caller (`call foo`)        → direct managed call into `foo`
+                                     (the __m2mep@ slot would optimize the
+                                     reverse direction if we emitted it)
+
+Managed caller wanting a native FP → `ldsfld __unep@?foo`
+                                     (yields address of the NEP thunk above)
+                                     → `calli [C] <sig>` invokes through it
+```
+
+`__clrcall` functions in `/clr:pure` skip all of this — there is no
+managed↔native boundary, so no thunk is needed.
+
+chibil emits a minimal subset of this machinery for `/clr` scenarios
+(see `scenarios/ClrIjw.cs::EmitNepMachinery`). The emitter takes a
+hybrid approach across architectures:
+
+- **Where the NEP thunk lives.** MSVC puts the thunk in `.text$mn` as
+  a per-method COMDAT section on x86 and on arm64, and in a dedicated
+  `.nep` section on x64. chibil always uses a `.nep` section
+  regardless of target architecture. Because `ObjDumper` only iterates
+  method bodies via the metadata's `MethodDefinitions` (resolved
+  through the corresponding `06xxxxxx` CLR-token COFF symbol) and
+  never dumps the COFF symbol table directly, the bare-name NEP
+  thunk — which has no `06xxxxxx` token — is invisible to the
+  comparison no matter which section it lives in. The thunk's section
+  placement therefore doesn't need to match MSVC for tests to pass.
+
+- **What the NEP thunk contains.** chibil always emits the single
+  indirect-jump form: 6 bytes (`FF 25 [imm32]`) on x86/x64, 12 bytes
+  (ADRP/LDR/BR) on arm64. The double-thunk-avoidance variant MSVC
+  emits on x64 (`EB 08 / 0F 0B / FF 25 [→__m2mep] / FF 25 [→__mep]`)
+  is skipped entirely — the optimization is functionally unobservable
+  outside performance, and `ObjDumper` does not compare NEP-thunk
+  bytes.
+
+- **What metadata accompanies it.** Per managed user function: one
+  `__mep@?fn` fixup slot in `.data` with a TOKEN reloc to the
+  function's MethodDef CLR-token symbol, and one `.rdata$ilfixup`
+  entry of type `0x0009` (32-bit) / `0x000A` (64-bit) targeting that
+  slot. For scenarios that take a function's address from managed
+  code (funcptr, funcptr-array, struct-funcptr) chibil also emits an
+  `__unep@?fn` FieldDef with `HasFieldRVA` plus an `ADDR64`/`DIR32`
+  reloc to the bare-name NEP thunk symbol.
+
+- **What's intentionally not emitted.** The `__m2mep@?fn` companion
+  slot, its matching `Type=0x0001`/`0x0002` ilfixup entry, and the
+  leading `EB 08 / 0F 0B` byte sequence in the NEP thunk are MSVC-x64
+  performance extras. `ObjDumper.IsClrThunkSymbol` filters
+  `__m2mep@` (and `__unep@`) FieldDefs from `DumpFieldDefs`, and
+  `IsClrThunkOptimizationSymbol` filters `.rdata$ilfixup` entries
+  whose target is `__m2mep@`/`__unep@`, so reference objects and
+  emitted objects compare equal despite the missing optimization
+  slots. (`__unep@` never actually appears as an ilfixup target in
+  MSVC output — it has its own ADDR reloc — but the filter is
+  defensive.)
+
+- **Storage class.** The bare-name NEP thunk and the `__mep@`
+  fixup-slot symbol must both carry `IMAGE_SYM_CLASS_EXTERNAL` (use
+  `ManagedCoffSymbolTableBuilder.AddExternalDataSymbol`) so that
+  foreign translation units referencing the C name can resolve the
+  function. `IMAGE_SYM_CLASS_STATIC` would link cleanly when only
+  this one object is involved but break the moment another `.obj`
+  has an extern reference to the same C name.
+

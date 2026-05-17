@@ -17,6 +17,11 @@ public class LonglongTest
     {
         byte[] emitted = EmitObj(machine);
         string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
+
+        string emittedDir = Path.Combine(AppContext.BaseDirectory, "emitted", "longlong", refDir);
+        Directory.CreateDirectory(emittedDir);
+        File.WriteAllBytes(Path.Combine(emittedDir, "longlong.obj"), emitted);
+
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "longlong", refDir, "longlong.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -26,6 +31,10 @@ public class LonglongTest
 
     static byte[] EmitObj(Machine machine)
     {
+        bool is32 = machine == Machine.I386;
+        int ptrSize = is32 ? 4 : 8;
+        string symPrefix = is32 ? "_" : "";
+
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
@@ -39,6 +48,11 @@ public class LonglongTest
             md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default, md.GetOrAddBlob(mscorlibHash));
 
+        // ─── TypeRef: CallConvCdecl (modopt on return types under /clr) ───
+        var callConvCdeclRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"),
+            md.GetOrAddString("CallConvCdecl"));
+
         // ─── TypeDef #1: <Module> ─────────────────────────────────────────
         md.AddTypeDefinition(TypeAttributes.Class, default, md.GetOrAddString("<Module>"), default,
             MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
@@ -48,7 +62,7 @@ public class LonglongTest
         var llllSig = new BlobBuilder();
         new BlobEncoder(llllSig).MethodSignature()
             .Parameters(2, out var llllRet, out var llllPar);
-        llllRet.Type().Int64();
+        ClrIjw.WriteCdeclModOpt(llllRet, callConvCdeclRef).Int64();
         llllPar.AddParameter().Type().Int64();
         llllPar.AddParameter().Type().Int64();
         var llllSigBlob = md.GetOrAddBlob(llllSig);
@@ -57,7 +71,7 @@ public class LonglongTest
         var lliSig = new BlobBuilder();
         new BlobEncoder(lliSig).MethodSignature()
             .Parameters(2, out var lliRet, out var lliPar);
-        lliRet.Type().Int64();
+        ClrIjw.WriteCdeclModOpt(lliRet, callConvCdeclRef).Int64();
         lliPar.AddParameter().Type().Int64();
         lliPar.AddParameter().Type().Int32();
         var lliSigBlob = md.GetOrAddBlob(lliSig);
@@ -66,7 +80,7 @@ public class LonglongTest
         var uluiSig = new BlobBuilder();
         new BlobEncoder(uluiSig).MethodSignature()
             .Parameters(2, out var uluiRet, out var uluiPar);
-        uluiRet.Type().UInt64();
+        ClrIjw.WriteCdeclModOpt(uluiRet, callConvCdeclRef).UInt64();
         uluiPar.AddParameter().Type().UInt64();
         uluiPar.AddParameter().Type().Int32();
         var uluiSigBlob = md.GetOrAddBlob(uluiSig);
@@ -75,7 +89,7 @@ public class LonglongTest
         var illSig = new BlobBuilder();
         new BlobEncoder(illSig).MethodSignature()
             .Parameters(2, out var illRet, out var illPar);
-        illRet.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(illRet, callConvCdeclRef);
         illPar.AddParameter().Type().Int64();
         illPar.AddParameter().Type().Int64();
 
@@ -83,21 +97,21 @@ public class LonglongTest
         var liSig = new BlobBuilder();
         new BlobEncoder(liSig).MethodSignature()
             .Parameters(1, out var liRet, out var liPar);
-        liRet.Type().Int64();
+        ClrIjw.WriteCdeclModOpt(liRet, callConvCdeclRef).Int64();
         liPar.AddParameter().Type().Int32();
 
         // int32(int64)
         var ilSig = new BlobBuilder();
         new BlobEncoder(ilSig).MethodSignature()
             .Parameters(1, out var ilRet, out var ilPar);
-        ilRet.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(ilRet, callConvCdeclRef);
         ilPar.AddParameter().Type().Int64();
 
         // int32()
         var mainSig = new BlobBuilder();
         new BlobEncoder(mainSig).MethodSignature()
             .Parameters(0, out var mainRet, out var mainPar);
-        mainRet.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(mainRet, callConvCdeclRef);
 
         // ─── MethodDef #1: ll_add ─────────────────────────────────────────
         var llAddMethod = md.AddMethodDefinition(
@@ -234,15 +248,21 @@ public class LonglongTest
 
         // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
+        var dataStreamBuilder = new BlobBuilder();
+        var dataRelocBuilder = new BlobBuilder();
+        var nepStreamBuilder = new BlobBuilder();
+        var nepRelocBuilder = new BlobBuilder();
+        var ilFixupStreamBuilder = new BlobBuilder();
+        var ilFixupRelocBuilder = new BlobBuilder();
 
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
         codeviewSymbols.AddObjNameAndCompile3("longlong.obj",
             language: CodeViewLanguage.C, machine: cvMachine,
-            feMajor: 19, feMinor: 50, feBuild: 35728,
-            beMajor: 19, beMinor: 50, beBuild: 35728,
+            feMajor: 19, feMinor: 50, feBuild: 35730,
+            beMajor: 19, beMinor: 50, beBuild: 35730,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
@@ -272,12 +292,12 @@ public class LonglongTest
                 debugName: debugName);
         }
 
-        EmitSimpleBinOp(llAddMethod, "?ll_add@@$$J0YM_J_J0@Z", ILOpCode.Add, llAddLocalsSigHandle, "ll_add", 10);
-        EmitSimpleBinOp(llMulMethod, "?ll_mul@@$$J0YM_J_J0@Z", ILOpCode.Mul, llMulLocalsSigHandle, "ll_mul", 11);
-        EmitSimpleBinOp(llDivMethod, "?ll_div@@$$J0YM_J_J0@Z", ILOpCode.Div, llDivLocalsSigHandle, "ll_div", 12);
-        EmitSimpleBinOp(llShlMethod, "?ll_shl@@$$J0YM_J_JH@Z", ILOpCode.Shl, llShlLocalsSigHandle, "ll_shl", 13);
-        EmitSimpleBinOp(llShrMethod, "?ll_shr@@$$J0YM_J_JH@Z", ILOpCode.Shr, llShrLocalsSigHandle, "ll_shr", 14);
-        EmitSimpleBinOp(ullShrMethod, "?ull_shr@@$$J0YM_K_KH@Z", ILOpCode.Shr_un, ullShrLocalsSigHandle, "ull_shr", 15);
+        EmitSimpleBinOp(llAddMethod, "?ll_add@@$$J0YA_J_J0@Z", ILOpCode.Add, llAddLocalsSigHandle, "ll_add", 10);
+        EmitSimpleBinOp(llMulMethod, "?ll_mul@@$$J0YA_J_J0@Z", ILOpCode.Mul, llMulLocalsSigHandle, "ll_mul", 11);
+        EmitSimpleBinOp(llDivMethod, "?ll_div@@$$J0YA_J_J0@Z", ILOpCode.Div, llDivLocalsSigHandle, "ll_div", 12);
+        EmitSimpleBinOp(llShlMethod, "?ll_shl@@$$J0YA_J_JH@Z", ILOpCode.Shl, llShlLocalsSigHandle, "ll_shl", 13);
+        EmitSimpleBinOp(llShrMethod, "?ll_shr@@$$J0YA_J_JH@Z", ILOpCode.Shr, llShrLocalsSigHandle, "ll_shr", 14);
+        EmitSimpleBinOp(ullShrMethod, "?ull_shr@@$$J0YA_K_KH@Z", ILOpCode.Shr_un, ullShrLocalsSigHandle, "ull_shr", 15);
 
         // ─── Emit IL for ll_compare ───────────────────────────────────────
         {
@@ -301,7 +321,7 @@ public class LonglongTest
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
-            bodyEncoder.AddMethodBody(llCompareMethod, "?ll_compare@@$$J0YMH_J0@Z", enc,
+            bodyEncoder.AddMethodBody(llCompareMethod, "?ll_compare@@$$J0YAH_J0@Z", enc,
                 maxStack: 2, localVariablesSignature: llCompareLocalsSigHandle, attributes: 0,
                 debugName: "ll_compare");
         }
@@ -319,7 +339,7 @@ public class LonglongTest
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
-            bodyEncoder.AddMethodBody(intToLlMethod, "?int_to_ll@@$$J0YM_JH@Z", enc,
+            bodyEncoder.AddMethodBody(intToLlMethod, "?int_to_ll@@$$J0YA_JH@Z", enc,
                 maxStack: 1, localVariablesSignature: intToLlLocalsSigHandle, attributes: 0,
                 debugName: "int_to_ll");
         }
@@ -337,7 +357,7 @@ public class LonglongTest
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
-            bodyEncoder.AddMethodBody(llToIntMethod, "?ll_to_int@@$$J0YMH_J@Z", enc,
+            bodyEncoder.AddMethodBody(llToIntMethod, "?ll_to_int@@$$J0YAH_J@Z", enc,
                 maxStack: 1, localVariablesSignature: llToIntLocalsSigHandle, attributes: 0,
                 debugName: "ll_to_int");
         }
@@ -378,14 +398,59 @@ public class LonglongTest
                 new CodeViewManSlot(2, MetadataTokens.GetToken(mainLocalsSigHandle), "a"),
             };
 
-            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YAHXZ", enc,
                 maxStack: 2, localVariablesSignature: mainLocalsSigHandle, attributes: 0,
                 debugName: "main", localSlots: mainLocalSlots);
         }
 
+        // ─── IJW machinery for exported methods ───────────────────────────
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(llAddMethod), "ll_add", "?ll_add@@$$J0YA_J_J0@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(llMulMethod), "ll_mul", "?ll_mul@@$$J0YA_J_J0@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(llDivMethod), "ll_div", "?ll_div@@$$J0YA_J_J0@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(llShlMethod), "ll_shl", "?ll_shl@@$$J0YA_J_JH@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(llShrMethod), "ll_shr", "?ll_shr@@$$J0YA_J_JH@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(ullShrMethod), "ull_shr", "?ull_shr@@$$J0YA_K_KH@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(llCompareMethod), "ll_compare", "?ll_compare@@$$J0YAH_J0@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(intToLlMethod), "int_to_ll", "?int_to_ll@@$$J0YA_JH@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(llToIntMethod), "ll_to_int", "?ll_to_int@@$$J0YAH_J@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder);
+            ilStreamBuilder, ilRelocBuilder,
+            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
+            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
+            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
         return output.ToArray();

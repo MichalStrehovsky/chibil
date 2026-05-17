@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC structcopy.c
-// LINK: link structcopy.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC structcopy.c
+// LINK: link structcopy.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 //
 // Tests struct assignment which generates the cpblk IL instruction.
 // Also shows struct-valued locals with stloc/ldloc for value types,

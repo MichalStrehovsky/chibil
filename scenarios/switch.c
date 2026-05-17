@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC switch.c
-// LINK: link switch.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC switch.c
+// LINK: link switch.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 int classify(int x)
 {

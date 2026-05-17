@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC ptrsub.c
-// LINK: link ptrsub.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC ptrsub.c
+// LINK: link ptrsub.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 //
 // Tests pointer subtraction and pointer comparison.
 // Pointer subtraction uses:  sub + shr (by log2(sizeof(element)))

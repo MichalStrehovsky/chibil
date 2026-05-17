@@ -17,6 +17,11 @@ public class StructCopyTest
     {
         byte[] emitted = EmitObj(machine);
         string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
+
+        string emittedDir = Path.Combine(AppContext.BaseDirectory, "emitted", "structcopy", refDir);
+        Directory.CreateDirectory(emittedDir);
+        File.WriteAllBytes(Path.Combine(emittedDir, "structcopy.obj"), emitted);
+
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "structcopy", refDir, "structcopy.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -26,6 +31,11 @@ public class StructCopyTest
 
     static byte[] EmitObj(Machine machine)
     {
+        bool is32 = machine == Machine.I386;
+        int ptrSize = is32 ? 4 : 8;
+        string symPrefix = is32 ? "_" : "";
+        string e = is32 ? "" : "E";  // MSVC __ptr64 modifier in 64-bit mangled names
+
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
@@ -41,6 +51,11 @@ public class StructCopyTest
             md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default,
             md.GetOrAddBlob(mscorlibHash));
+
+        // ─── TypeRef: CallConvCdecl (modopt on return types under /clr) ───
+        var callConvCdeclRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"),
+            md.GetOrAddString("CallConvCdecl"));
 
         // ─── TypeRefs ─────────────────────────────────────────────────────
         var valueTypeRef = md.AddTypeReference(mscorlibRef,
@@ -121,7 +136,7 @@ public class StructCopyTest
         var copySmallSig = new BlobBuilder();
         var copySmallSigEnc = new BlobEncoder(copySmallSig).MethodSignature();
         copySmallSigEnc.Parameters(2, out var csRetEnc, out var csParEnc);
-        csRetEnc.Void();
+        ClrIjw.EncodeCdeclVoidReturn(csRetEnc, callConvCdeclRef);
         csParEnc.AddParameter().Type().Pointer().Type(smallTypeDef, isValueType: true);
         csParEnc.AddParameter().Type().Pointer().Type(smallTypeDef, isValueType: true);
 
@@ -141,7 +156,7 @@ public class StructCopyTest
         var copyBigSig = new BlobBuilder();
         var copyBigSigEnc = new BlobEncoder(copyBigSig).MethodSignature();
         copyBigSigEnc.Parameters(2, out var cbRetEnc, out var cbParEnc);
-        cbRetEnc.Void();
+        ClrIjw.EncodeCdeclVoidReturn(cbRetEnc, callConvCdeclRef);
         cbParEnc.AddParameter().Type().Pointer().Type(bigTypeDef, isValueType: true);
         cbParEnc.AddParameter().Type().Pointer().Type(bigTypeDef, isValueType: true);
 
@@ -161,7 +176,7 @@ public class StructCopyTest
         var makeSmallSig = new BlobBuilder();
         var makeSmallSigEnc = new BlobEncoder(makeSmallSig).MethodSignature();
         makeSmallSigEnc.Parameters(2, out var msRetEnc, out var msParEnc);
-        msRetEnc.Type().Type(smallTypeDef, isValueType: true);
+        ClrIjw.WriteCdeclModOpt(msRetEnc, callConvCdeclRef).Type(smallTypeDef, isValueType: true);
         msParEnc.AddParameter().Type().Int32();
         msParEnc.AddParameter().Type().Int32();
 
@@ -188,7 +203,7 @@ public class StructCopyTest
         var assignLocalSig = new BlobBuilder();
         new BlobEncoder(assignLocalSig).MethodSignature()
             .Parameters(0, out var alRetEnc, out var alParEnc);
-        alRetEnc.Void();
+        ClrIjw.EncodeCdeclVoidReturn(alRetEnc, callConvCdeclRef);
 
         var assignLocalMethod = md.AddMethodDefinition(
             MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
@@ -210,7 +225,7 @@ public class StructCopyTest
         var mainSig = new BlobBuilder();
         new BlobEncoder(mainSig).MethodSignature()
             .Parameters(0, out var mainRetEnc, out var mainParEnc);
-        mainRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(mainRetEnc, callConvCdeclRef);
 
         var mainMethod = md.AddMethodDefinition(
             MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
@@ -236,10 +251,16 @@ public class StructCopyTest
 
         // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
 
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
+        var dataStreamBuilder = new BlobBuilder();
+        var dataRelocBuilder = new BlobBuilder();
+        var nepStreamBuilder = new BlobBuilder();
+        var nepRelocBuilder = new BlobBuilder();
+        var ilFixupStreamBuilder = new BlobBuilder();
+        var ilFixupRelocBuilder = new BlobBuilder();
 
         // ─── CodeView debug info ──────────────────────────────────────────
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
@@ -247,8 +268,8 @@ public class StructCopyTest
         codeviewSymbols.AddObjNameAndCompile3(objPath,
             language: CodeViewLanguage.C,
             machine: cvMachine,
-            feMajor: 19, feMinor: 50, feBuild: 35728,
-            beMajor: 19, beMinor: 50, beBuild: 35728,
+            feMajor: 19, feMinor: 50, feBuild: 35730,
+            beMajor: 19, beMinor: 50, beBuild: 35730,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
@@ -277,7 +298,7 @@ public class StructCopyTest
             enc.OpCode(ILOpCode.Cpblk);            // cpblk
             enc.OpCode(ILOpCode.Ret);              // ret
 
-            bodyEncoder.AddMethodBody(copySmallMethod, "?copy_small@@$$J0YMXPAUSmall@@0@Z", enc,
+            bodyEncoder.AddMethodBody(copySmallMethod, $"?copy_small@@$$J0YAXP{e}AUSmall@@0@Z", enc,
                 maxStack: 3, localVariablesSignature: default, attributes: 0,
                 debugName: "copy_small");
         }
@@ -300,7 +321,7 @@ public class StructCopyTest
             enc.OpCode(ILOpCode.Cpblk);            // cpblk
             enc.OpCode(ILOpCode.Ret);              // ret
 
-            bodyEncoder.AddMethodBody(copyBigMethod, "?copy_big@@$$J0YMXPAUBig@@0@Z", enc,
+            bodyEncoder.AddMethodBody(copyBigMethod, $"?copy_big@@$$J0YAXP{e}AUBig@@0@Z", enc,
                 maxStack: 3, localVariablesSignature: default, attributes: 0,
                 debugName: "copy_big");
         }
@@ -332,7 +353,7 @@ public class StructCopyTest
                 new CodeViewManSlot(1, MetadataTokens.GetToken(makeSmallLocalsSigHandle), "s"),
             };
 
-            bodyEncoder.AddMethodBody(makeSmallMethod, "?make_small@@$$J0YM?AUSmall@@HH@Z", enc,
+            bodyEncoder.AddMethodBody(makeSmallMethod, "?make_small@@$$J0YA?AUSmall@@HH@Z", enc,
                 maxStack: 2, localVariablesSignature: makeSmallLocalsSigHandle, attributes: 0,
                 debugName: "make_small", localSlots: makeSmallLocalSlots);
         }
@@ -364,7 +385,7 @@ public class StructCopyTest
                 new CodeViewManSlot(0, MetadataTokens.GetToken(assignLocalLocalsSigHandle), "a"),
             };
 
-            bodyEncoder.AddMethodBody(assignLocalMethod, "?assign_local@@$$J0YMXXZ", enc,
+            bodyEncoder.AddMethodBody(assignLocalMethod, "?assign_local@@$$J0YAXXZ", enc,
                 maxStack: 2, localVariablesSignature: assignLocalLocalsSigHandle, attributes: 0,
                 debugName: "assign_local", localSlots: assignLocalLocalSlots);
         }
@@ -404,14 +425,39 @@ public class StructCopyTest
                 new CodeViewManSlot(1, MetadataTokens.GetToken(mainLocalsSigHandle), "s2"),
             };
 
-            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YAHXZ", enc,
                 maxStack: 2, localVariablesSignature: mainLocalsSigHandle, attributes: 0,
                 debugName: "main", localSlots: mainLocalSlots);
         }
 
+        // ─── IJW machinery for exported methods ───────────────────────────
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(copySmallMethod), "copy_small", $"?copy_small@@$$J0YAXP{e}AUSmall@@0@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(copyBigMethod), "copy_big", $"?copy_big@@$$J0YAXP{e}AUBig@@0@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(makeSmallMethod), "make_small", "?make_small@@$$J0YA?AUSmall@@HH@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(assignLocalMethod), "assign_local", "?assign_local@@$$J0YAXXZ");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder);
+            ilStreamBuilder, ilRelocBuilder,
+            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
+            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
+            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
 
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);

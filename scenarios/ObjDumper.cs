@@ -205,6 +205,14 @@ class CoffFile
 
     public ReadOnlySpan<byte> GetSectionData(CoffSectionHeader section)
     {
+        // .bss-style uninitialized sections have IMAGE_SCN_CNT_UNINITIALIZED_DATA
+        // set and no file content (PointerToRawData = 0); the loader
+        // zero-fills the SizeOfRawData bytes at load time. Reading from
+        // file offset 0 would return COFF header bytes — return zeros
+        // instead to give callers the loaded-image view of the section.
+        const uint IMAGE_SCN_CNT_UNINITIALIZED_DATA = 0x00000080;
+        if ((section.Characteristics & IMAGE_SCN_CNT_UNINITIALIZED_DATA) != 0)
+            return new byte[section.SizeOfRawData];
         return FileData.AsSpan((int)section.PointerToRawData, (int)section.SizeOfRawData);
     }
 
@@ -411,7 +419,19 @@ class CoffFile
             if (!int.TryParse(sym.Name, System.Globalization.NumberStyles.HexNumber, null, out int token)) continue;
             if ((token >> 24) != 0x06) continue; // only method tokens
 
-            // Find the preceding real symbol
+            // The 06 CLR token symbol normally carries the (section, offset) of
+            // the method body directly — this is true for chibil's emitter (see
+            // AddFunctionClrToken) and for MSVC /clr mixed-mode output. MSVC
+            // /clr:pure reference objects, however, leave Sect=0 on the 06 token
+            // and rely on the function symbol that immediately precedes it. Try
+            // the direct path first, then fall back to the preceding-symbol
+            // heuristic.
+            if (sym.SectionNumber > 0)
+            {
+                result[token] = (sym.SectionNumber, sym.Value);
+                continue;
+            }
+
             int realIdx = i - 1;
             while (realIdx >= 0 && Symbols[realIdx].Name == "<aux>") realIdx--;
             if (realIdx < 0) continue;
@@ -447,8 +467,12 @@ class MethodDebugInfo
 static class ObjDumper
 {
     /// <summary>
-    /// Normalizes ?A0x&lt;hash&gt; prefixes in names to ?A0x* since the hash depends
-    /// on compilation context (source file path) which differs between environments.
+    /// Normalizes compilation-context-dependent name suffixes so dumps compare equal
+    /// across environments and architectures:
+    ///   ?A0x&lt;hex&gt;.   → ?A0x*.    (anonymous namespace hash depends on source path)
+    ///   $SG&lt;digits&gt;  → $SG*      (MSVC anonymous string-literal COFF counter is
+    ///                                  per-arch, e.g. $SG7982 on x64 vs $SG8554 on arm64
+    ///                                  for the same source file)
     /// </summary>
     static string NormalizeName(string name)
     {
@@ -462,9 +486,23 @@ static class ObjDumper
                 // Verify the part between ?A0x and . is hex
                 string hashPart = name.Substring(idx + 4, dotIdx - idx - 4);
                 if (hashPart.Length > 0 && hashPart.All(c => "0123456789abcdef".Contains(c)))
-                    return name.Substring(0, idx) + "?A0x*" + name.Substring(dotIdx);
+                    name = name.Substring(0, idx) + "?A0x*" + name.Substring(dotIdx);
             }
         }
+
+        // Replace $SG<digits> with $SG*. Match anywhere in the string (handles both
+        // bare `$SG1234` and the x86-decorated `_$SG1234` form).
+        int sgIdx = name.IndexOf("$SG", StringComparison.Ordinal);
+        if (sgIdx >= 0)
+        {
+            int digitStart = sgIdx + 3;
+            int digitEnd = digitStart;
+            while (digitEnd < name.Length && name[digitEnd] >= '0' && name[digitEnd] <= '9')
+                digitEnd++;
+            if (digitEnd > digitStart)
+                name = name.Substring(0, sgIdx) + "$SG*" + name.Substring(digitEnd);
+        }
+
         return name;
     }
 
@@ -472,6 +510,8 @@ static class ObjDumper
     {
         var sb = new StringBuilder();
         var coff = CoffFile.Parse(objData);
+
+        DumpObjectFeatures(sb, coff);
 
         var cormetaSection = coff.FindSection(".cormeta");
         if (cormetaSection == null)
@@ -495,6 +535,36 @@ static class ObjDumper
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Extracts the <c>@feat.00</c> COFF symbol and reports whether it
+    /// classifies the object as <c>PureMsil</c> (pure-MSIL, <c>/clr:pure</c>)
+    /// or <c>None</c> (mixed-mode <c>/clr</c>, native, or unspecified).
+    /// MSVC encodes a pile of other flags in <c>@feat.00</c> (SafeSEH,
+    /// CompilerVersion-style bits, etc.); we only surface the
+    /// <c>PureMsil</c> bit (<c>0x0002</c>) because that's the one that
+    /// must match between our emitted <c>.obj</c> and the MSVC reference
+    /// — getting it wrong corrupts the linker's understanding of which
+    /// CLR loader path the object needs. The other bits differ
+    /// per-architecture and per-compiler-release and aren't part of the
+    /// chibil emitter's surface.
+    /// </summary>
+    static void DumpObjectFeatures(StringBuilder sb, CoffFile coff)
+    {
+        sb.AppendLine("=== ObjectFeatures ===");
+        string features = "None";
+        foreach (var sym in coff.Symbols)
+        {
+            if (sym.Name == "@feat.00")
+            {
+                if ((sym.Value & 0x0002) != 0)
+                    features = "PureMsil";
+                break;
+            }
+        }
+        sb.AppendLine($"  {features}");
+        sb.AppendLine();
+    }
+
     // ─── TypeDefs ─────────────────────────────────────────────────────────
 
     static bool IsBoilerplateType(string ns, string name)
@@ -509,6 +579,35 @@ static class ObjDumper
     static bool IsBoilerplateMethod(string methodName)
     {
         return false;
+    }
+
+    /// <summary>
+    /// MSVC /clr (mixed-mode) emits per-function thunk symbols and the field/relocation
+    /// machinery that wires them up: <c>__m2mep@</c> (managed-to-managed entry point
+    /// function-pointer field — x64-only double-thunk-avoidance optimization),
+    /// <c>__mep@</c> (the native entry-point fixup slot — the load-time-resolved
+    /// function pointer the .nep thunk indirects through), and <c>__unep@</c>
+    /// (unmanaged-native-entry-point declaration field, populated by the loader).
+    /// </summary>
+    static bool IsClrThunkSymbol(string name)
+    {
+        return name.StartsWith("__m2mep@", StringComparison.Ordinal)
+            || name.StartsWith("__mep@", StringComparison.Ordinal)
+            || name.StartsWith("__unep@", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The subset of IJW thunk symbols that are MSVC-only structural extras: the
+    /// x64 double-thunk-avoidance slot (<c>__m2mep@</c>) and the loader-populated
+    /// unmanaged-entry-point declaration field (<c>__unep@</c>). The fundamental
+    /// fixup slot (<c>__mep@</c>) is emitted symmetrically by both MSVC and our
+    /// emitter on every architecture, so ILFixup entries that target it should be
+    /// compared rather than filtered.
+    /// </summary>
+    static bool IsClrThunkOptimizationSymbol(string name)
+    {
+        return name.StartsWith("__m2mep@", StringComparison.Ordinal)
+            || name.StartsWith("__unep@", StringComparison.Ordinal);
     }
 
     static HashSet<TypeDefinitionHandle> GetBoilerplateTypes(MetadataReader reader)
@@ -582,6 +681,11 @@ static class ObjDumper
             if (!declaringType.IsNil && boilerplate.Contains(declaringType)) continue;
 
             string fieldName = reader.GetString(fieldDef.Name);
+
+            // Skip /clr mixed-mode thunk fields (__m2mep@, __unep@); the linker doesn't
+            // require them for cross-obj IL call resolution.
+            if (IsClrThunkSymbol(fieldName)) continue;
+
             string typeName = declaringType.IsNil ? "" : reader.GetString(reader.GetTypeDefinition(declaringType).Name);
             string fullName = string.IsNullOrEmpty(typeName) ? fieldName : $"{typeName}::{fieldName}";
 
@@ -686,9 +790,18 @@ static class ObjDumper
             var relocs = coff.BuildNonTokenRelocationMap(section);
             for (int offset = 0; offset + 8 <= data.Length; offset += 8)
             {
+                bool hasReloc = relocs.TryGetValue(offset, out var reloc);
+
+                // Skip ILFixup entries that bind MSVC's IJW optimization-only thunk
+                // slots (__m2mep@, __unep@) — those are the x64 double-thunk-avoidance
+                // extras and the loader-populated declaration fields, neither of which
+                // our emitter produces. Entries that bind the fundamental __mep@ fixup
+                // slot are kept and compared symmetrically.
+                if (hasReloc && IsClrThunkOptimizationSymbol(reloc.Name)) continue;
+
                 ushort count = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset + 4));
                 ushort type = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset + 6));
-                string target = relocs.TryGetValue(offset, out var reloc)
+                string target = hasReloc
                     ? $"{NormalizeName(reloc.Name)} ({FormatRelocationType(coff.Header.Machine, reloc.Type)})"
                     : $"RVA=0x{BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset)):X8}";
                 sb.AppendLine($"  Target={target}, Count={count}, Type=0x{type:X4}");
@@ -1447,6 +1560,25 @@ static class ObjDumper
         int table = token >> 24;
         int row = token & 0x00FFFFFF;
         if (row == 0) return $"0x{token:X8}";
+
+        // Self-MemberRefs (Parent = MethodDef, an MSVC /clr IJW pattern) are
+        // rendered with the same `Method:` prefix and name as the MethodDef
+        // itself — chibil emits the direct MethodDef token in IL while MSVC
+        // routes the call through the self-MemberRef, and the two should
+        // compare equal in scenario dumps.
+        if (table == 0x0A)
+        {
+            try
+            {
+                var mr = reader.GetMemberReference(MetadataTokens.MemberReferenceHandle(row));
+                if (mr.Parent.Kind == HandleKind.MethodDefinition)
+                {
+                    int parentToken = MetadataTokens.GetToken(mr.Parent);
+                    return ResolveTokenForDisplay(reader, parentToken);
+                }
+            }
+            catch { }
+        }
 
         string prefix = table switch
         {

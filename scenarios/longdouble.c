@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC longdouble.c
-// LINK: link longdouble.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC longdouble.c
+// LINK: link longdouble.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 long double ld_add(long double a, long double b)
 {

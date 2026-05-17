@@ -17,6 +17,11 @@ public class LogicTest
     {
         byte[] emitted = EmitObj(machine);
         string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
+
+        string emittedDir = Path.Combine(AppContext.BaseDirectory, "emitted", "logic", refDir);
+        Directory.CreateDirectory(emittedDir);
+        File.WriteAllBytes(Path.Combine(emittedDir, "logic.obj"), emitted);
+
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "logic", refDir, "logic.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -26,6 +31,10 @@ public class LogicTest
 
     static byte[] EmitObj(Machine machine)
     {
+        bool is32 = machine == Machine.I386;
+        int ptrSize = is32 ? 4 : 8;
+        string symPrefix = is32 ? "_" : "";
+
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
@@ -38,14 +47,18 @@ public class LogicTest
             md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default, md.GetOrAddBlob(mscorlibHash));
 
+        var callConvCdeclRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"),
+            md.GetOrAddString("CallConvCdecl"));
+
         md.AddTypeDefinition(TypeAttributes.Class, default, md.GetOrAddString("<Module>"), default,
             MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
 
-        // ─── MethodDef #1: logic(int, int) -> int ─────────────────────────
+        // ─── MethodDef #1: logic(int, int) -> cmod_opt(CallConvCdecl) int ──
         var logicSig = new BlobBuilder();
         new BlobEncoder(logicSig).MethodSignature()
             .Parameters(2, out var lRetEnc, out var lParEnc);
-        lRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(lRetEnc, callConvCdeclRef);
         lParEnc.AddParameter().Type().Int32();
         lParEnc.AddParameter().Type().Int32();
 
@@ -64,11 +77,11 @@ public class LogicTest
         for (int i = 0; i < 6; i++) logicLocalsEnc.AddVariable().Type().Int32();
         var logicLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(logicLocalsSig));
 
-        // ─── MethodDef #2: main() -> int ──────────────────────────────────
+        // ─── MethodDef #2: main() -> cmod_opt(CallConvCdecl) int ───────────
         var mainSig = new BlobBuilder();
         new BlobEncoder(mainSig).MethodSignature()
             .Parameters(0, out var mRetEnc, out var mParEnc);
-        mRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(mRetEnc, callConvCdeclRef);
 
         var mainMethod = md.AddMethodDefinition(
             MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
@@ -83,15 +96,21 @@ public class LogicTest
         md.AddModule(0, md.GetOrAddString("logic.obj"), md.GetOrAddGuid(Guid.NewGuid()), default, default);
 
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
+        var dataStreamBuilder = new BlobBuilder();
+        var dataRelocBuilder = new BlobBuilder();
+        var nepStreamBuilder = new BlobBuilder();
+        var nepRelocBuilder = new BlobBuilder();
+        var ilFixupStreamBuilder = new BlobBuilder();
+        var ilFixupRelocBuilder = new BlobBuilder();
 
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
         codeviewSymbols.AddObjNameAndCompile3("logic.obj",
             language: CodeViewLanguage.C, machine: cvMachine,
-            feMajor: 19, feMinor: 50, feBuild: 35728,
-            beMajor: 19, beMinor: 50, beBuild: 35728,
+            feMajor: 19, feMinor: 50, feBuild: 35730,
+            beMajor: 19, beMinor: 50, beBuild: 35730,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
@@ -176,7 +195,7 @@ public class LogicTest
                 new CodeViewManSlot(3, MetadataTokens.GetToken(logicLocalsSigHandle), "lnot"),
             };
 
-            bodyEncoder.AddMethodBody(logicMethod, "?logic@@$$J0YMHHH@Z", enc,
+            bodyEncoder.AddMethodBody(logicMethod, "?logic@@$$J0YAHHH@Z", enc,
                 maxStack: 2, localVariablesSignature: logicLocalsSigHandle, attributes: 0,
                 debugName: "logic", localSlots: localSlots);
         }
@@ -199,13 +218,25 @@ public class LogicTest
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
-            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YAHXZ", enc,
                 maxStack: 2, localVariablesSignature: mainLocalsSigHandle, attributes: 0,
                 debugName: "main");
         }
 
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(logicMethod), "logic", "?logic@@$$J0YAHHH@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+
         var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder);
+            ilStreamBuilder, ilRelocBuilder,
+            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
+            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
+            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
         return output.ToArray();

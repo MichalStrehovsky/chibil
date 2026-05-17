@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC pinvoke-forwardref.c
-// LINK: link pinvoke-forwardref.obj /incremental:no /debug /entry:main /subsystem:console user32.lib
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC pinvoke-forwardref.c
+// LINK: link pinvoke-forwardref.obj mscoree.lib user32.lib /incremental:no /debug /entry:main /subsystem:console
 
 struct Mine;
 

@@ -17,6 +17,11 @@ public class CastTest
     {
         byte[] emitted = EmitObj(machine);
         string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
+
+        string emittedDir = Path.Combine(AppContext.BaseDirectory, "emitted", "cast", refDir);
+        Directory.CreateDirectory(emittedDir);
+        File.WriteAllBytes(Path.Combine(emittedDir, "cast.obj"), emitted);
+
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "cast", refDir, "cast.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -26,6 +31,10 @@ public class CastTest
 
     static byte[] EmitObj(Machine machine)
     {
+        bool is32 = machine == Machine.I386;
+        int ptrSize = is32 ? 4 : 8;
+        string symPrefix = is32 ? "_" : "";
+
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
@@ -39,6 +48,10 @@ public class CastTest
             md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default, md.GetOrAddBlob(mscorlibHash));
 
+        var callConvCdeclRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"),
+            md.GetOrAddString("CallConvCdecl"));
+
         // ─── TypeRef: IsSignUnspecifiedByte ───────────────────────────────
         var isSignUnspecifiedByteRef = md.AddTypeReference(mscorlibRef,
             md.GetOrAddString("System.Runtime.CompilerServices"), md.GetOrAddString("IsSignUnspecifiedByte"));
@@ -51,7 +64,7 @@ public class CastTest
         var cwSig = new BlobBuilder();
         new BlobEncoder(cwSig).MethodSignature()
             .Parameters(2, out var cwRetEnc, out var cwParEnc);
-        cwRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(cwRetEnc, callConvCdeclRef);
         // Param 1: modopt(IsSignUnspecifiedByte) int8 (C 'char')
         var cwP1 = cwParEnc.AddParameter().Type();
         cwP1.Builder.WriteByte((byte)SignatureTypeCode.OptionalModifier);
@@ -80,7 +93,7 @@ public class CastTest
         var cnSig = new BlobBuilder();
         new BlobEncoder(cnSig).MethodSignature()
             .Parameters(1, out var cnRetEnc, out var cnParEnc);
-        cnRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(cnRetEnc, callConvCdeclRef);
         cnParEnc.AddParameter().Type().Int32();
 
         var castNarrowMethod = md.AddMethodDefinition(
@@ -106,7 +119,7 @@ public class CastTest
         var cuSig = new BlobBuilder();
         new BlobEncoder(cuSig).MethodSignature()
             .Parameters(1, out var cuRetEnc, out var cuParEnc);
-        cuRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(cuRetEnc, callConvCdeclRef);
         cuParEnc.AddParameter().Type().UInt32();
 
         var castUnsignedMethod = md.AddMethodDefinition(
@@ -128,7 +141,7 @@ public class CastTest
         var cfSig = new BlobBuilder();
         new BlobEncoder(cfSig).MethodSignature()
             .Parameters(3, out var cfRetEnc, out var cfParEnc);
-        cfRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(cfRetEnc, callConvCdeclRef);
         cfParEnc.AddParameter().Type().Int32();
         cfParEnc.AddParameter().Type().Single();
         cfParEnc.AddParameter().Type().Double();
@@ -158,7 +171,7 @@ public class CastTest
         var cbSig = new BlobBuilder();
         new BlobEncoder(cbSig).MethodSignature()
             .Parameters(1, out var cbRetEnc, out var cbParEnc);
-        cbRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(cbRetEnc, callConvCdeclRef);
         cbParEnc.AddParameter().Type().Int32();
 
         var castBoolMethod = md.AddMethodDefinition(
@@ -179,7 +192,7 @@ public class CastTest
         var mainSig = new BlobBuilder();
         new BlobEncoder(mainSig).MethodSignature()
             .Parameters(0, out var mRetEnc, out var mParEnc);
-        mRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(mRetEnc, callConvCdeclRef);
 
         var mainMethod = md.AddMethodDefinition(
             MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
@@ -197,16 +210,22 @@ public class CastTest
 
         // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
+        var dataStreamBuilder = new BlobBuilder();
+        var dataRelocBuilder = new BlobBuilder();
+        var nepStreamBuilder = new BlobBuilder();
+        var nepRelocBuilder = new BlobBuilder();
+        var ilFixupStreamBuilder = new BlobBuilder();
+        var ilFixupRelocBuilder = new BlobBuilder();
 
         // ─── CodeView debug info ──────────────────────────────────────────
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
         codeviewSymbols.AddObjNameAndCompile3("cast.obj",
             language: CodeViewLanguage.C, machine: cvMachine,
-            feMajor: 19, feMinor: 50, feBuild: 35728,
-            beMajor: 19, beMinor: 50, beBuild: 35728,
+            feMajor: 19, feMinor: 50, feBuild: 35730,
+            beMajor: 19, beMinor: 50, beBuild: 35730,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
@@ -249,7 +268,7 @@ public class CastTest
                 new CodeViewManSlot(2, MetadataTokens.GetToken(cwLocalsSigHandle), "i"),
             };
 
-            bodyEncoder.AddMethodBody(castWidenMethod, "?cast_widen@@$$J0YMHDF@Z", enc,
+            bodyEncoder.AddMethodBody(castWidenMethod, "?cast_widen@@$$J0YAHDF@Z", enc,
                 maxStack: 2, localVariablesSignature: cwLocalsSigHandle, attributes: 0,
                 debugName: "cast_widen", localSlots: localSlots);
         }
@@ -283,7 +302,7 @@ public class CastTest
                 new CodeViewManSlot(1, MetadataTokens.GetToken(cnLocalsSigHandle), "s"),
             };
 
-            bodyEncoder.AddMethodBody(castNarrowMethod, "?cast_narrow@@$$J0YMHH@Z", enc,
+            bodyEncoder.AddMethodBody(castNarrowMethod, "?cast_narrow@@$$J0YAHH@Z", enc,
                 maxStack: 2, localVariablesSignature: cnLocalsSigHandle, attributes: 0,
                 debugName: "cast_narrow", localSlots: localSlots);
         }
@@ -319,7 +338,7 @@ public class CastTest
                 new CodeViewManSlot(2, MetadataTokens.GetToken(cuLocalsSigHandle), "s"),
             };
 
-            bodyEncoder.AddMethodBody(castUnsignedMethod, "?cast_unsigned@@$$J0YMHI@Z", enc,
+            bodyEncoder.AddMethodBody(castUnsignedMethod, "?cast_unsigned@@$$J0YAHI@Z", enc,
                 maxStack: 2, localVariablesSignature: cuLocalsSigHandle, attributes: 0,
                 debugName: "cast_unsigned", localSlots: localSlots);
         }
@@ -394,7 +413,7 @@ public class CastTest
                 new CodeViewManSlot(3, MetadataTokens.GetToken(cfLocalsSigHandle), "fromd"),
             };
 
-            bodyEncoder.AddMethodBody(castFloatMethod, "?cast_float@@$$J0YMHHMN@Z", enc,
+            bodyEncoder.AddMethodBody(castFloatMethod, "?cast_float@@$$J0YAHHMN@Z", enc,
                 maxStack: 2, localVariablesSignature: cfLocalsSigHandle, attributes: 0,
                 debugName: "cast_float", localSlots: localSlots);
         }
@@ -430,7 +449,7 @@ public class CastTest
                 new CodeViewManSlot(1, MetadataTokens.GetToken(cbLocalsSigHandle), "b"),
             };
 
-            bodyEncoder.AddMethodBody(castBoolMethod, "?cast_bool@@$$J0YMHH@Z", enc,
+            bodyEncoder.AddMethodBody(castBoolMethod, "?cast_bool@@$$J0YAHH@Z", enc,
                 maxStack: 1, localVariablesSignature: cbLocalsSigHandle, attributes: 0,
                 debugName: "cast_bool", localSlots: localSlots);
         }
@@ -472,14 +491,43 @@ public class CastTest
             enc.OpCode(ILOpCode.Ldloc_0);           // IL_003D
             enc.OpCode(ILOpCode.Ret);               // IL_003E
 
-            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YAHXZ", enc,
                 maxStack: 4, localVariablesSignature: mainLocalsSigHandle, attributes: 0,
                 debugName: "main");
         }
 
+        // IJW machinery for cast functions and main
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(castWidenMethod), "cast_widen", "?cast_widen@@$$J0YAHDF@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(castNarrowMethod), "cast_narrow", "?cast_narrow@@$$J0YAHH@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(castUnsignedMethod), "cast_unsigned", "?cast_unsigned@@$$J0YAHI@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(castFloatMethod), "cast_float", "?cast_float@@$$J0YAHHMN@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(castBoolMethod), "cast_bool", "?cast_bool@@$$J0YAHH@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder);
+            ilStreamBuilder, ilRelocBuilder,
+            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
+            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
+            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
         return output.ToArray();
