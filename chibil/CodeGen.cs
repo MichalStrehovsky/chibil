@@ -332,8 +332,17 @@ public class CodeGen
                 sig.WriteByte((byte)SignatureTypeCode.Double);
                 break;
             case TypeKind.Ptr:
-                sig.WriteByte((byte)SignatureTypeCode.Pointer);
-                EncodeType(sig, ty.Base);
+                if (ty.Base.Kind == TypeKind.Func)
+                {
+                    // Pointer to function → FNPTR directly (no extra Ptr wrapper)
+                    sig.WriteByte((byte)SignatureTypeCode.FunctionPointer);
+                    EncodeFnPtrSignature(sig, ty.Base);
+                }
+                else
+                {
+                    sig.WriteByte((byte)SignatureTypeCode.Pointer);
+                    EncodeType(sig, ty.Base);
+                }
                 break;
             case TypeKind.Array:
                 if (ty.ArrayLen < 0)
@@ -404,11 +413,15 @@ public class CodeGen
     /// <summary>Encode an inline function pointer signature for FNPTR in method/local signatures.</summary>
     private void EncodeFnPtrSignature(BlobBuilder sig, CType funcTy)
     {
-        // Calling convention byte
-        if (funcTy.CallConv == CallConv.Clrcall)
-            sig.WriteByte((byte)SignatureCallingConvention.Default);
-        else
-            sig.WriteByte((byte)SignatureCallingConvention.Unmanaged | (byte)SignatureCallingConvention.Default);
+        // Calling convention byte per ECMA-335:
+        // MSVC /clr uses CDecl (0x01) for cdecl, StdCall (0x02) for __stdcall,
+        // and Default (0x00) for __clrcall function pointers.
+        sig.WriteByte(funcTy.CallConv switch
+        {
+            CallConv.Clrcall => (byte)SignatureCallingConvention.Default,
+            CallConv.Stdcall => (byte)SignatureCallingConvention.StdCall,
+            _ => (byte)SignatureCallingConvention.CDecl,
+        });
 
         // Count parameters
         int paramCount = 0;
@@ -2053,20 +2066,19 @@ public class CodeGen
 
             // Build standalone signature for calli
             var calliSig = new BlobBuilder();
-            if (funcTy.CallConv == CallConv.Clrcall)
-                calliSig.WriteByte((byte)SignatureCallingConvention.Default);
-            else
-                calliSig.WriteByte((byte)SignatureCallingConvention.Unmanaged | (byte)SignatureCallingConvention.Default);
+            calliSig.WriteByte(funcTy.CallConv switch
+            {
+                CallConv.Clrcall => (byte)SignatureCallingConvention.Default,
+                CallConv.Stdcall => (byte)SignatureCallingConvention.StdCall,
+                _ => (byte)SignatureCallingConvention.CDecl,
+            });
 
             int paramCount = 0;
             for (CType p = funcTy.Params; p != null; p = p.Next) paramCount++;
             calliSig.WriteCompressedInteger(paramCount);
 
-            // Return type
-            if (funcTy.ReturnTy.Kind == TypeKind.Void)
-                calliSig.WriteByte((byte)SignatureTypeCode.Void);
-            else
-                EncodeType(calliSig, funcTy.ReturnTy);
+            // Return type (with modopt for calling convention)
+            EncodeReturnType(calliSig, funcTy);
 
             // Params
             for (CType p = funcTy.Params; p != null; p = p.Next)

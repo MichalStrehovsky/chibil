@@ -63,4 +63,22 @@ public class LinkageTests : ChibiTestBase
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
+
+    [Fact]
+    public void FuncPtrInvocation()
+    {
+        // Exercises the calli standalone signature encoding across TUs —
+        // apply() is defined in one TU, add() in another, main calls apply
+        // which invokes add through a function pointer.
+        Compile("""
+            int add(int a, int b) { return a + b; }
+            """)
+        .Compile("""
+            int add(int, int);
+            int apply(int (*fn)(int, int), int x, int y) { return fn(x, y); }
+            int main(void) { return apply(add, 30, 12); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
 }

@@ -299,7 +299,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
+    [Fact]
     public void Backref_FuncPtrSharesOuterTable()
     {
         // int* as first param gets slot 0; inside the func ptr param,
@@ -316,7 +316,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
+    [Fact]
     public void Backref_StructPtrInsideFuncPtr()
     {
         // struct Point* as first param gets slot 0; inside func ptr,
@@ -638,7 +638,7 @@ public class ManglingInteropTests : ChibiTestBase
     //  6. Function pointer parameters
     // ═══════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
+    [Fact]
     public void FuncPtr_Simple()
     {
         // int (*fn)(int) as parameter — mangled names match but MSIL metadata differs
@@ -651,7 +651,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
+    [Fact]
     public void FuncPtr_WithExtraParams()
     {
         // int (*fn)(int, int) + int + int — mangled names match but MSIL metadata differs
@@ -664,7 +664,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
+    [Fact]
     public void FuncPtr_Repeated()
     {
         // Two identical function pointer params → backref
@@ -677,7 +677,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
+    [Fact]
     public void FuncPtr_VoidReturn()
     {
         // void (*fn)(int) — function pointer with void return
@@ -691,7 +691,7 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
-    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
+    [Fact]
     public void FuncPtr_NoParams()
     {
         // int (*fn)(void) — function pointer with void params
@@ -1333,7 +1333,7 @@ public class ManglingInteropTests : ChibiTestBase
     //  21. Mixed calling conventions in function pointers
     // ═══════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "BUG: function pointer parameter MSIL signature metadata inconsistent with MSVC")]
+    [Fact]
     public void FuncPtr_ClrcallInCdecl()
     {
         // __clrcall function pointer inside a cdecl function
