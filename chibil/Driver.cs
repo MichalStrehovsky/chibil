@@ -26,8 +26,9 @@ public class Driver
 
     public void Run(string[] args)
     {
-        var tokenizer = new Tokenizer(Options);
-        _preprocessor = new Preprocessor(tokenizer, Options);
+        var types = new TypeSystem(Options.DataModel);
+        var tokenizer = new Tokenizer(Options, types);
+        _preprocessor = new Preprocessor(tokenizer, Options, types);
         _preprocessor.InitMacros();
         ParseArgs(args);
 
@@ -62,7 +63,7 @@ public class Driver
 
             string output;
             if (_optO != null) output = _optO;
-            else if (_optS) output = ReplaceExtn(input, ".s");
+            else if (_optS) output = ReplaceExtn(input, ".obj");
             else output = ReplaceExtn(input, ".obj");
 
             FileType type = GetFileType(input);
@@ -73,21 +74,22 @@ public class Driver
             }
             if (type == FileType.Asm)
             {
-                if (!_optS) Assemble(input, output);
+                // Assembly not supported in MSIL mode
                 continue;
             }
             if (type == FileType.C)
             {
                 if (_optE || _optM) { RunCc1(args, input, null); continue; }
-                if (_optS) { RunCc1(args, input, output); continue; }
-                if (_optC)
+                if (_optS || _optC)
                 {
-                    string tmp = CreateTmpfile();
-                    RunCc1(args, input, tmp); Assemble(tmp, output); continue;
+                    // -S or -c: compile to .obj directly
+                    RunCc1(args, input, output); continue;
                 }
-                string tmp1 = CreateTmpfile(), tmp2 = CreateTmpfile();
-                RunCc1(args, input, tmp1); Assemble(tmp1, tmp2);
-                ldArgs.Add(tmp2);
+                // Compile to .obj and queue for linking
+                string tmpObj = CreateTmpfile() + ".obj";
+                Tmpfiles.Add(tmpObj);
+                RunCc1(args, input, tmpObj);
+                ldArgs.Add(tmpObj);
             }
         }
 
@@ -228,9 +230,9 @@ public class Driver
     private FileType GetFileType(string filename)
     {
         if (_optX != FileType.None) return _optX;
-        if (filename.EndsWith(".a")) return FileType.Ar;
-        if (filename.EndsWith(".so")) return FileType.Dso;
-        if (filename.EndsWith(".obj")) return FileType.Obj;
+        if (filename.EndsWith(".a") || filename.EndsWith(".lib")) return FileType.Ar;
+        if (filename.EndsWith(".so") || filename.EndsWith(".dll")) return FileType.Dso;
+        if (filename.EndsWith(".o") || filename.EndsWith(".obj")) return FileType.Obj;
         if (filename.EndsWith(".c")) return FileType.C;
         if (filename.EndsWith(".s")) return FileType.Asm;
         Util.Error($"unknown file extension: {filename}");
@@ -251,7 +253,7 @@ public class Driver
 
     private string CreateTmpfile()
     {
-        string path = Path.GetTempFileName();
+        string path = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         Tmpfiles.Add(path);
         return path;
     }
@@ -328,13 +330,14 @@ public class Driver
 
     private void Assemble(string input, string output)
     {
-        // No separate assembly step needed for MSIL — the .obj is produced directly by cc1
-        File.Copy(input, output, true);
+        RunSubprocess(new[] { "as", "-c", input, "-o", output });
     }
 
     private void RunLinker(List<string> inputs, string output)
     {
-        var arr = new List<string> { "link.exe", "/DEBUG", "/subsystem:console", $"/out:{output}" };
+        var arr = new List<string> { "link.exe", "/DEBUG", "/subsystem:console" };
+        arr.Add($"/out:{output}");
+        arr.Add("mscoree.lib");
         arr.AddRange(LdExtraArgs);
         arr.AddRange(inputs);
         RunSubprocess(arr.ToArray());
@@ -394,7 +397,8 @@ public class Driver
         Token tok = null;
 
         // Create the parser early so the preprocessor can use const_expr for #if
-        var parser = new Parser(tokenizer, Options);
+        var types = new TypeSystem(Options.DataModel);
+        var parser = new Parser(tokenizer, Options, types);
         preprocessor.SetParser(parser);
 
         // Process -include option
@@ -424,11 +428,17 @@ public class Driver
 
         Obj prog = parser.Parse(tok);
 
-        var codegen = new CodeGen(Options, tokenizer);
-        byte[] objBytes = codegen.Generate(prog, _outputFile ?? "output.obj");
+        string objName = Path.GetFileName(_outputFile ?? "a.obj");
+        string sourceFile = Path.GetFullPath(Options.BaseFile);
+
+        var codegen = new CodeGen(Options, tokenizer, types);
+        byte[] objBytes = codegen.Generate(prog, objName, sourceFile);
 
         if (_outputFile == null || _outputFile == "-")
-            Console.OpenStandardOutput().Write(objBytes, 0, objBytes.Length);
+        {
+            using var stdout = Console.OpenStandardOutput();
+            stdout.Write(objBytes, 0, objBytes.Length);
+        }
         else
             File.WriteAllBytes(_outputFile, objBytes);
     }

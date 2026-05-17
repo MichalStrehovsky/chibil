@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC nested-struct.c
-// LINK: link nested-struct.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC nested-struct.c
+// LINK: link nested-struct.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 struct Outer {
     struct Inner {

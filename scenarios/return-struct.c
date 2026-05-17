@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC return-struct.c
-// LINK: link return-struct.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC return-struct.c
+// LINK: link return-struct.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 typedef struct _Point { int x; int y; } Point;
 

@@ -17,6 +17,11 @@ public class ArithTest
     {
         byte[] emitted = EmitObj(machine);
         string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
+
+        string emittedDir = Path.Combine(AppContext.BaseDirectory, "emitted", "arith", refDir);
+        Directory.CreateDirectory(emittedDir);
+        File.WriteAllBytes(Path.Combine(emittedDir, "arith.obj"), emitted);
+
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "arith", refDir, "arith.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -26,6 +31,10 @@ public class ArithTest
 
     static byte[] EmitObj(Machine machine)
     {
+        bool is32 = machine == Machine.I386;
+        int ptrSize = is32 ? 4 : 8;
+        string symPrefix = is32 ? "_" : "";
+
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
@@ -42,6 +51,11 @@ public class ArithTest
             default,
             md.GetOrAddBlob(mscorlibHash));
 
+        // ─── TypeRef: CallConvCdecl (modopt on return types under /clr) ───
+        var callConvCdeclRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"),
+            md.GetOrAddString("CallConvCdecl"));
+
         // ─── TypeDef #1: <Module> ─────────────────────────────────────────
         md.AddTypeDefinition(
             TypeAttributes.Class,
@@ -51,16 +65,16 @@ public class ArithTest
             MetadataTokens.FieldDefinitionHandle(1),
             MetadataTokens.MethodDefinitionHandle(1));
 
-        // ─── MethodDef #1: arith(int, int) -> int ─────────────────────────
+        // ─── MethodDef #1: arith(int, int) -> cmod_opt(CallConvCdecl) int ─
         var arithSig = new BlobBuilder();
         new BlobEncoder(arithSig).MethodSignature()
             .Parameters(2, out var arithRetEnc, out var arithParEnc);
-        arithRetEnc.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(arithRetEnc, callConvCdeclRef);
         arithParEnc.AddParameter().Type().Int32();
         arithParEnc.AddParameter().Type().Int32();
 
         var arithMethod = md.AddMethodDefinition(
-            MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
+            MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008 /* UnmanagedExport */,
             MethodImplAttributes.IL | MethodImplAttributes.Managed,
             md.GetOrAddString("arith"),
             md.GetOrAddBlob(arithSig),
@@ -77,14 +91,14 @@ public class ArithTest
             arithLocalsEnc.AddVariable().Type().Int32();
         var arithLocalsSigHandle = md.AddStandaloneSignature(md.GetOrAddBlob(arithLocalsSig));
 
-        // ─── MethodDef #2: main() -> int ──────────────────────────────────
+        // ─── MethodDef #2: main() -> cmod_opt(CallConvCdecl) int ──────────
         var mainSig = new BlobBuilder();
         new BlobEncoder(mainSig).MethodSignature()
-            .Parameters(0, out var mainRetEnc, out var mainParEnc);
-        mainRetEnc.Type().Int32();
+            .Parameters(0, out var mainRetEnc, out var _);
+        ClrIjw.EncodeCdeclI4Return(mainRetEnc, callConvCdeclRef);
 
         var mainMethod = md.AddMethodDefinition(
-            MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008,
+            MethodAttributes.Assembly | MethodAttributes.Static | (MethodAttributes)0x0008 /* UnmanagedExport */,
             MethodImplAttributes.IL | MethodImplAttributes.Managed,
             md.GetOrAddString("main"),
             md.GetOrAddBlob(mainSig),
@@ -105,19 +119,24 @@ public class ArithTest
 
         // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
 
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
+        var dataStreamBuilder = new BlobBuilder();
+        var dataRelocBuilder = new BlobBuilder();
+        var nepStreamBuilder = new BlobBuilder();
+        var nepRelocBuilder = new BlobBuilder();
+        var ilFixupStreamBuilder = new BlobBuilder();
+        var ilFixupRelocBuilder = new BlobBuilder();
 
         // ─── CodeView debug info ──────────────────────────────────────────
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
-        string objPath = "arith.obj";
-        codeviewSymbols.AddObjNameAndCompile3(objPath,
+        codeviewSymbols.AddObjNameAndCompile3("arith.obj",
             language: CodeViewLanguage.C,
             machine: cvMachine,
-            feMajor: 19, feMinor: 50, feBuild: 35728,
-            beMajor: 19, beMinor: 50, beBuild: 35728,
+            feMajor: 19, feMinor: 50, feBuild: 35730,
+            beMajor: 19, beMinor: 50, beBuild: 35730,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
@@ -135,57 +154,57 @@ public class ArithTest
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
             enc.MarkLineNumber(cvFile, 6);
-            enc.OpCode(ILOpCode.Ldarg_0);         // IL_0000
-            enc.OpCode(ILOpCode.Ldarg_1);         // IL_0001
-            enc.OpCode(ILOpCode.Add);             // IL_0002
-            enc.StoreLocal(6);                    // IL_0003: stloc.s V_6
+            enc.OpCode(ILOpCode.Ldarg_0);
+            enc.OpCode(ILOpCode.Ldarg_1);
+            enc.OpCode(ILOpCode.Add);
+            enc.StoreLocal(6);
 
             enc.MarkLineNumber(cvFile, 7);
-            enc.OpCode(ILOpCode.Ldarg_0);         // IL_0005
-            enc.OpCode(ILOpCode.Ldarg_1);         // IL_0006
-            enc.OpCode(ILOpCode.Sub);             // IL_0007
-            enc.StoreLocal(5);                    // IL_0008: stloc.s V_5
+            enc.OpCode(ILOpCode.Ldarg_0);
+            enc.OpCode(ILOpCode.Ldarg_1);
+            enc.OpCode(ILOpCode.Sub);
+            enc.StoreLocal(5);
 
             enc.MarkLineNumber(cvFile, 8);
-            enc.OpCode(ILOpCode.Ldarg_0);         // IL_000A
-            enc.OpCode(ILOpCode.Ldarg_1);         // IL_000B
-            enc.OpCode(ILOpCode.Mul);             // IL_000C
-            enc.StoreLocal(4);                    // IL_000D: stloc.s V_4
+            enc.OpCode(ILOpCode.Ldarg_0);
+            enc.OpCode(ILOpCode.Ldarg_1);
+            enc.OpCode(ILOpCode.Mul);
+            enc.StoreLocal(4);
 
             enc.MarkLineNumber(cvFile, 9);
-            enc.OpCode(ILOpCode.Ldarg_0);         // IL_000F
-            enc.OpCode(ILOpCode.Ldarg_1);         // IL_0010
-            enc.OpCode(ILOpCode.Div);             // IL_0011
-            enc.StoreLocal(3);                    // IL_0012: stloc.3
+            enc.OpCode(ILOpCode.Ldarg_0);
+            enc.OpCode(ILOpCode.Ldarg_1);
+            enc.OpCode(ILOpCode.Div);
+            enc.StoreLocal(3);
 
             enc.MarkLineNumber(cvFile, 10);
-            enc.OpCode(ILOpCode.Ldarg_0);         // IL_0013
-            enc.OpCode(ILOpCode.Ldarg_1);         // IL_0014
-            enc.OpCode(ILOpCode.Rem);             // IL_0015
-            enc.StoreLocal(2);                    // IL_0016: stloc.2
+            enc.OpCode(ILOpCode.Ldarg_0);
+            enc.OpCode(ILOpCode.Ldarg_1);
+            enc.OpCode(ILOpCode.Rem);
+            enc.StoreLocal(2);
 
             enc.MarkLineNumber(cvFile, 11);
-            enc.OpCode(ILOpCode.Ldarg_0);         // IL_0017
-            enc.OpCode(ILOpCode.Neg);             // IL_0018
-            enc.StoreLocal(1);                    // IL_0019: stloc.1
+            enc.OpCode(ILOpCode.Ldarg_0);
+            enc.OpCode(ILOpCode.Neg);
+            enc.StoreLocal(1);
 
             enc.MarkLineNumber(cvFile, 12);
-            enc.LoadLocal(6);                     // IL_001A: ldloc.s V_6
-            enc.LoadLocal(5);                     // IL_001C: ldloc.s V_5
-            enc.OpCode(ILOpCode.Add);             // IL_001E
-            enc.LoadLocal(4);                     // IL_001F: ldloc.s V_4
-            enc.OpCode(ILOpCode.Add);             // IL_0021
-            enc.OpCode(ILOpCode.Ldloc_3);         // IL_0022
-            enc.OpCode(ILOpCode.Add);             // IL_0023
-            enc.OpCode(ILOpCode.Ldloc_2);         // IL_0024
-            enc.OpCode(ILOpCode.Add);             // IL_0025
-            enc.OpCode(ILOpCode.Ldloc_1);         // IL_0026
-            enc.OpCode(ILOpCode.Add);             // IL_0027
-            enc.OpCode(ILOpCode.Stloc_0);         // IL_0028
+            enc.LoadLocal(6);
+            enc.LoadLocal(5);
+            enc.OpCode(ILOpCode.Add);
+            enc.LoadLocal(4);
+            enc.OpCode(ILOpCode.Add);
+            enc.OpCode(ILOpCode.Ldloc_3);
+            enc.OpCode(ILOpCode.Add);
+            enc.OpCode(ILOpCode.Ldloc_2);
+            enc.OpCode(ILOpCode.Add);
+            enc.OpCode(ILOpCode.Ldloc_1);
+            enc.OpCode(ILOpCode.Add);
+            enc.OpCode(ILOpCode.Stloc_0);
 
             enc.MarkLineNumber(cvFile, 13);
-            enc.OpCode(ILOpCode.Ldloc_0);         // IL_0029
-            enc.OpCode(ILOpCode.Ret);             // IL_002A
+            enc.OpCode(ILOpCode.Ldloc_0);
+            enc.OpCode(ILOpCode.Ret);
 
             var arithLocalSlots = new[] {
                 new CodeViewManSlot(5, MetadataTokens.GetToken(arithLocalsSigHandle), "diff"),
@@ -196,7 +215,7 @@ public class ArithTest
                 new CodeViewManSlot(2, MetadataTokens.GetToken(arithLocalsSigHandle), "rem"),
             };
 
-            bodyEncoder.AddMethodBody(arithMethod, "?arith@@$$J0YMHHH@Z", enc,
+            bodyEncoder.AddMethodBody(arithMethod, "?arith@@$$J0YAHHH@Z", enc,
                 maxStack: 2, localVariablesSignature: arithLocalsSigHandle, attributes: 0,
                 debugName: "arith", localSlots: arithLocalSlots);
         }
@@ -208,25 +227,38 @@ public class ArithTest
                 new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
 
             enc.MarkLineNumber(cvFile, 17);
-            enc.OpCode(ILOpCode.Ldc_i4_0);        // IL_0000
-            enc.OpCode(ILOpCode.Stloc_0);         // IL_0001
-            enc.LoadConstantI4(10);                // IL_0002: ldc.i4.s 10
-            enc.OpCode(ILOpCode.Ldc_i4_3);        // IL_0004
-            enc.Call(arithMethod);                 // IL_0005: call arith
+            enc.OpCode(ILOpCode.Ldc_i4_0);
+            enc.OpCode(ILOpCode.Stloc_0);
+            enc.LoadConstantI4(10);
+            enc.OpCode(ILOpCode.Ldc_i4_3);
+            enc.Call(arithMethod);
 
-            enc.OpCode(ILOpCode.Stloc_0);         // IL_000A
+            enc.OpCode(ILOpCode.Stloc_0);
             enc.MarkLineNumber(cvFile, 18);
-            enc.OpCode(ILOpCode.Ldloc_0);         // IL_000B
-            enc.OpCode(ILOpCode.Ret);             // IL_000C
+            enc.OpCode(ILOpCode.Ldloc_0);
+            enc.OpCode(ILOpCode.Ret);
 
-            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YAHXZ", enc,
                 maxStack: 2, localVariablesSignature: mainLocalsSigHandle, attributes: 0,
                 debugName: "main");
         }
 
+        // ─── IJW machinery for arith and main ────────────────────────────
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(arithMethod), "arith", "?arith@@$$J0YAHHH@Z");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder);
+            ilStreamBuilder, ilRelocBuilder,
+            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
+            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
+            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
 
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);

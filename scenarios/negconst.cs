@@ -17,6 +17,11 @@ public class NegconstTest
     {
         byte[] emitted = EmitObj(machine);
         string refDir = machine == Machine.I386 ? "x86" : machine == Machine.Arm64 ? "arm64" : "x64";
+
+        string emittedDir = Path.Combine(AppContext.BaseDirectory, "emitted", "negconst", refDir);
+        Directory.CreateDirectory(emittedDir);
+        File.WriteAllBytes(Path.Combine(emittedDir, "negconst.obj"), emitted);
+
         byte[] reference = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "reference", "negconst", refDir, "negconst.obj"));
         string emittedDump = ObjDumper.DumpForComparison(emitted);
@@ -26,6 +31,10 @@ public class NegconstTest
 
     static byte[] EmitObj(Machine machine)
     {
+        bool is32 = machine == Machine.I386;
+        int ptrSize = is32 ? 4 : 8;
+        string symPrefix = is32 ? "_" : "";
+
         byte[] mscorlibHash = machine == Machine.I386
             ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
             : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
@@ -39,6 +48,11 @@ public class NegconstTest
             md.GetOrAddBlob(new byte[] { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 }),
             default, md.GetOrAddBlob(mscorlibHash));
 
+        // ─── TypeRef: CallConvCdecl (modopt on return types under /clr) ───
+        var callConvCdeclRef = md.AddTypeReference(mscorlibRef,
+            md.GetOrAddString("System.Runtime.CompilerServices"),
+            md.GetOrAddString("CallConvCdecl"));
+
         // ─── TypeDef #1: <Module> ─────────────────────────────────────────
         md.AddTypeDefinition(TypeAttributes.Class, default, md.GetOrAddString("<Module>"), default,
             MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
@@ -48,20 +62,20 @@ public class NegconstTest
         var intVoidSig = new BlobBuilder();
         new BlobEncoder(intVoidSig).MethodSignature()
             .Parameters(0, out var ivRet, out var ivPar);
-        ivRet.Type().Int32();
+        ClrIjw.EncodeCdeclI4Return(ivRet, callConvCdeclRef);
         var intVoidSigBlob = md.GetOrAddBlob(intVoidSig);
 
         // uint32()
         var uintVoidSig = new BlobBuilder();
         new BlobEncoder(uintVoidSig).MethodSignature()
             .Parameters(0, out var uvRet, out var uvPar);
-        uvRet.Type().UInt32();
+        ClrIjw.WriteCdeclModOpt(uvRet, callConvCdeclRef).UInt32();
 
         // int64()
         var longVoidSig = new BlobBuilder();
         new BlobEncoder(longVoidSig).MethodSignature()
             .Parameters(0, out var lvRet, out var lvPar);
-        lvRet.Type().Int64();
+        ClrIjw.WriteCdeclModOpt(lvRet, callConvCdeclRef).Int64();
 
         // Locals: (int32)
         var intLocalsSig = new BlobBuilder();
@@ -169,15 +183,21 @@ public class NegconstTest
 
         // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
-        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.PureMsil);
+        var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
         var ilStreamBuilder = new BlobBuilder();
         var ilRelocBuilder = new BlobBuilder();
+        var dataStreamBuilder = new BlobBuilder();
+        var dataRelocBuilder = new BlobBuilder();
+        var nepStreamBuilder = new BlobBuilder();
+        var nepRelocBuilder = new BlobBuilder();
+        var ilFixupStreamBuilder = new BlobBuilder();
+        var ilFixupRelocBuilder = new BlobBuilder();
 
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
         codeviewSymbols.AddObjNameAndCompile3("negconst.obj",
             language: CodeViewLanguage.C, machine: cvMachine,
-            feMajor: 19, feMinor: 50, feBuild: 35728,
-            beMajor: 19, beMinor: 50, beBuild: 35728,
+            feMajor: 19, feMinor: 50, feBuild: 35730,
+            beMajor: 19, beMinor: 50, beBuild: 35730,
             "Microsoft (R) Optimizing Compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
@@ -198,7 +218,7 @@ public class NegconstTest
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
-            bodyEncoder.AddMethodBody(negOneMethod, "?neg_one@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(negOneMethod, "?neg_one@@$$J0YAHXZ", enc,
                 maxStack: 1, localVariablesSignature: negOneLocalsSigHandle, attributes: 0,
                 debugName: "neg_one");
         }
@@ -213,7 +233,7 @@ public class NegconstTest
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
-            bodyEncoder.AddMethodBody(intMinMethod, "?int_min@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(intMinMethod, "?int_min@@$$J0YAHXZ", enc,
                 maxStack: 1, localVariablesSignature: intMinLocalsSigHandle, attributes: 0,
                 debugName: "int_min");
         }
@@ -228,7 +248,7 @@ public class NegconstTest
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
-            bodyEncoder.AddMethodBody(uintMaxMethod, "?uint_max@@$$J0YMIXZ", enc,
+            bodyEncoder.AddMethodBody(uintMaxMethod, "?uint_max@@$$J0YAIXZ", enc,
                 maxStack: 1, localVariablesSignature: uintMaxLocalsSigHandle, attributes: 0,
                 debugName: "uint_max");
         }
@@ -243,7 +263,7 @@ public class NegconstTest
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
-            bodyEncoder.AddMethodBody(llMaxMethod, "?ll_max@@$$J0YM_JXZ", enc,
+            bodyEncoder.AddMethodBody(llMaxMethod, "?ll_max@@$$J0YA_JXZ", enc,
                 maxStack: 1, localVariablesSignature: llMaxLocalsSigHandle, attributes: 0,
                 debugName: "ll_max");
         }
@@ -258,7 +278,7 @@ public class NegconstTest
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
-            bodyEncoder.AddMethodBody(llMinMethod, "?ll_min@@$$J0YM_JXZ", enc,
+            bodyEncoder.AddMethodBody(llMinMethod, "?ll_min@@$$J0YA_JXZ", enc,
                 maxStack: 1, localVariablesSignature: llMinLocalsSigHandle, attributes: 0,
                 debugName: "ll_min");
         }
@@ -273,7 +293,7 @@ public class NegconstTest
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
-            bodyEncoder.AddMethodBody(smallNegMethod, "?small_neg@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(smallNegMethod, "?small_neg@@$$J0YAHXZ", enc,
                 maxStack: 1, localVariablesSignature: smallNegLocalsSigHandle, attributes: 0,
                 debugName: "small_neg");
         }
@@ -288,7 +308,7 @@ public class NegconstTest
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
-            bodyEncoder.AddMethodBody(zeroMethod, "?zero@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(zeroMethod, "?zero@@$$J0YAHXZ", enc,
                 maxStack: 1, localVariablesSignature: zeroLocalsSigHandle, attributes: 0,
                 debugName: "zero");
         }
@@ -303,7 +323,7 @@ public class NegconstTest
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
-            bodyEncoder.AddMethodBody(smallPosMethod, "?small_pos@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(smallPosMethod, "?small_pos@@$$J0YAHXZ", enc,
                 maxStack: 1, localVariablesSignature: smallPosLocalsSigHandle, attributes: 0,
                 debugName: "small_pos");
         }
@@ -318,7 +338,7 @@ public class NegconstTest
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
-            bodyEncoder.AddMethodBody(mediumPosMethod, "?medium_pos@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(mediumPosMethod, "?medium_pos@@$$J0YAHXZ", enc,
                 maxStack: 1, localVariablesSignature: mediumPosLocalsSigHandle, attributes: 0,
                 debugName: "medium_pos");
         }
@@ -333,7 +353,7 @@ public class NegconstTest
             enc.OpCode(ILOpCode.Stloc_0);
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
-            bodyEncoder.AddMethodBody(largePosMethod, "?large_pos@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(largePosMethod, "?large_pos@@$$J0YAHXZ", enc,
                 maxStack: 1, localVariablesSignature: largePosLocalsSigHandle, attributes: 0,
                 debugName: "large_pos");
         }
@@ -367,14 +387,63 @@ public class NegconstTest
             enc.OpCode(ILOpCode.Ldloc_0);
             enc.OpCode(ILOpCode.Ret);
 
-            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YMHXZ", enc,
+            bodyEncoder.AddMethodBody(mainMethod, "?main@@$$J0YAHXZ", enc,
                 maxStack: 2, localVariablesSignature: mainLocalsSigHandle, attributes: 0,
                 debugName: "main");
         }
 
+        // ─── IJW machinery for exported methods ───────────────────────────
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(negOneMethod), "neg_one", "?neg_one@@$$J0YAHXZ");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(intMinMethod), "int_min", "?int_min@@$$J0YAHXZ");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(uintMaxMethod), "uint_max", "?uint_max@@$$J0YAIXZ");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(llMaxMethod), "ll_max", "?ll_max@@$$J0YA_JXZ");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(llMinMethod), "ll_min", "?ll_min@@$$J0YA_JXZ");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(smallNegMethod), "small_neg", "?small_neg@@$$J0YAHXZ");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(zeroMethod), "zero", "?zero@@$$J0YAHXZ");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(smallPosMethod), "small_pos", "?small_pos@@$$J0YAHXZ");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(mediumPosMethod), "medium_pos", "?medium_pos@@$$J0YAHXZ");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(largePosMethod), "large_pos", "?large_pos@@$$J0YAHXZ");
+        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
+            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
+            ilFixupStreamBuilder, ilFixupRelocBuilder,
+            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder);
+            ilStreamBuilder, ilRelocBuilder,
+            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
+            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
+            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
         return output.ToArray();

@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC widestr.c
-// LINK: link widestr.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC widestr.c
+// LINK: link widestr.obj mscoree.lib /incremental:no /debug /entry:main /subsystem:console
 
 int main()
 {

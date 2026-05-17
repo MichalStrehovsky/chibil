@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC control.c
-// LINK: link control.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC control.c
+// LINK: link control.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 int sum_loop(int n)
 {

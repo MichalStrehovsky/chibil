@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC logic.c
-// LINK: link logic.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC logic.c
+// LINK: link logic.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 int logic(int a, int b)
 {

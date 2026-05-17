@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC incdec.c
-// LINK: link incdec.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC incdec.c
+// LINK: link incdec.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 //
 // Tests pre/post increment and compound assignment operators.
 // Key IL pattern: starg.s instruction to write back to a parameter.

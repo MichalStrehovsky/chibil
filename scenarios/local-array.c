@@ -1,5 +1,5 @@
-// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr:pure /BC local-array.c
-// LINK: link local-array.obj /incremental:no /debug /entry:main /subsystem:console
+// COMPILE: cl /c /Z7 /Zl /d1clrNoPureCRT /clr /BC local-array.c
+// LINK: link local-array.obj /incremental:no /debug /entry:main /subsystem:console mscoree.lib
 
 int array_sum(int* arr, int len)
 {
