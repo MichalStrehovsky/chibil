@@ -20,7 +20,7 @@ Line numbers and locals work as expected. You can step through the C code in a .
 
 There isn't one.
 
-There is a minimal stub of a C runtime library in [minicrt.cc](scenarios/minicrt.cc). This provides a runnable `main` that takes `string[]` of arguments and dispatches to the C-standard `main` with `argc` and `argv`. It also provides an initializer runner to support initialized globals since we need a workaround (https://github.com/MichalStrehovsky/chibil/issues/1).
+There is a minimal stub of a C runtime library in [minicrt.cc](scenarios/minicrt.cc). This provides a runnable `main` that takes `string[]` of arguments and dispatches to the C-standard `main` with `argc` and `argv`.
 
 ## Consuming C code from .NET code
 
