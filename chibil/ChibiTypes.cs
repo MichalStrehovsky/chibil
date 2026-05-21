@@ -319,6 +319,13 @@ public class VarAttr
     public bool IsInline;
     public bool IsTls;
     public int Align;
+    /// <summary>
+    /// Calling convention from declspec position (GCC/MinGW compat).
+    /// GCC accepts __stdcall/__cdecl as __attribute__ equivalents in
+    /// declspec position; MSVC rejects this but MinGW headers use it.
+    /// Null = no cc specified; Declarator-position cc overrides this.
+    /// </summary>
+    public CallConv? PendingCallConv;
 }
 
 // ═══════════════════════════════════════════════════════════════════
