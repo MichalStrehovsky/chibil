@@ -370,6 +370,11 @@ public class CodeGen
             case TypeKind.Struct:
             case TypeKind.Union:
             {
+                CType canonical = ty;
+                while (canonical.Origin != null) canonical = canonical.Origin;
+                if (canonical.IsNestedMember)
+                    throw new InvalidOperationException(
+                        $"Nested member type '{GetStructName(canonical)}' in signature.\n{Environment.StackTrace}");
                 int typeId = GetTypeId(ty);
                 if (_structTypeDefs.TryGetValue(typeId, out var structTd))
                 {
@@ -919,6 +924,8 @@ public class CodeGen
             case TypeKind.Union:
                 if (canonical.Members != null) // Only complete types
                 {
+                    // Skip nested member types — they're flattened into the parent
+                    if (canonical.IsNestedMember) break;
                     int id = GetTypeId(canonical);
                     if (!_structTypeDefs.ContainsKey(id))
                     {
@@ -928,9 +935,11 @@ public class CodeGen
                         string name = GetStructName(canonical);
                         _pendingTypeDefs.Add((id, canonical, name));
 
-                        // Recurse into member types
-                        for (Member m = canonical.Members; m != null; m = m.Next)
-                            PreAllocateFromType(m.Ty);
+                        // Do NOT recurse into member types — nested structs/unions are
+                        // flattened into the parent as opaque byte ranges, matching MSVC
+                        // /clr /BC behavior. TypeDefs are only created for types that
+                        // appear directly in function signatures, local/global variable
+                        // types, and pointer targets.
                     }
                 }
                 break;
@@ -961,7 +970,18 @@ public class CodeGen
     private void PreAllocateFromNode(Node node, HashSet<Node> visited)
     {
         if (node == null || !visited.Add(node)) return;
-        if (node.Ty != null) PreAllocateFromType(node.Ty);
+        if (node.Ty != null)
+        {
+            // Don't create TypeDefs for struct/union types that appear only as
+            // member-access intermediaries. MSVC flattens nested struct members
+            // into the parent — no TypeDef for `struct Inner` in `o.inner.a`.
+            // The type will still get a TypeDef if it's used independently in a
+            // function signature, local variable, or global variable.
+            bool isMemberAccess = node.Kind == NodeKind.Member &&
+                (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union);
+            if (!isMemberAccess)
+                PreAllocateFromType(node.Ty);
+        }
         if (node.FuncTy != null) PreAllocateFromType(node.FuncTy);
         PreAllocateFromNode(node.Lhs, visited);
         PreAllocateFromNode(node.Rhs, visited);
@@ -1591,9 +1611,19 @@ public class CodeGen
                 if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union)
                 {
                     GenExpr(node);
-                    int scratch = GetOrAddScratchLocal(node.Ty);
-                    _enc.StoreLocal(scratch); Pop();
-                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)scratch); Push();
+                    var fHandle = GetStructTypeHandle(node.Ty);
+                    if (fHandle.IsNil)
+                    {
+                        // Nested/flattened struct — GenExpr already returned an address.
+                        // Spill to void* scratch, then return address.
+                        int scratch = GetOrAddScratchLocal(_types.PointerTo(_types.TyVoid));
+                        _enc.StoreLocal(scratch); Pop();
+                        _enc.LoadLocal(scratch); Push();
+                        return;
+                    }
+                    int fScratch = GetOrAddScratchLocal(node.Ty);
+                    _enc.StoreLocal(fScratch); Pop();
+                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)fScratch); Push();
                     return;
                 }
                 break;
@@ -1603,10 +1633,20 @@ public class CodeGen
                 if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union)
                 {
                     GenExpr(node);
-                    // Spill to scratch local
-                    int scratch = GetOrAddScratchLocal(node.Ty);
-                    _enc.StoreLocal(scratch); Pop();
-                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)scratch); Push();
+                    var acHandle = GetStructTypeHandle(node.Ty);
+                    if (acHandle.IsNil)
+                    {
+                        // Nested/flattened struct — GenExpr returned an address.
+                        // Spill to void* scratch, then return that address.
+                        int scratch = GetOrAddScratchLocal(_types.PointerTo(_types.TyVoid));
+                        _enc.StoreLocal(scratch); Pop();
+                        _enc.LoadLocal(scratch); Push();
+                        return;
+                    }
+                    // Normal struct — spill value to scratch, return address of scratch.
+                    int acScratch = GetOrAddScratchLocal(node.Ty);
+                    _enc.StoreLocal(acScratch); Pop();
+                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)acScratch); Push();
                     return;
                 }
                 break;
@@ -1636,9 +1676,17 @@ public class CodeGen
                 return;
             case TypeKind.Struct:
             case TypeKind.Union:
-                _enc.OpCode(ILOpCode.Ldobj); _enc.Token(GetStructTypeHandle(ty));
-                // Stack effect: pop ptr, push struct (net 0)
+            {
+                var handle = GetStructTypeHandle(ty);
+                if (handle.IsNil)
+                {
+                    // No TypeDef (nested/flattened struct) — address stays on stack.
+                    // Caller accesses individual members via offset arithmetic.
+                    return;
+                }
+                _enc.OpCode(ILOpCode.Ldobj); _enc.Token(handle);
                 return;
+            }
             case TypeKind.Float:
                 _enc.OpCode(ILOpCode.Ldind_r4); return;
             case TypeKind.Double:
@@ -1655,7 +1703,6 @@ public class CodeGen
             _enc.OpCode(ty.IsUnsigned ? ILOpCode.Ldind_u4 : ILOpCode.Ldind_i4);
         else
             _enc.OpCode(ILOpCode.Ldind_i8);
-        // Stack effect: pop ptr, push value (net 0)
     }
 
     private void Store(CType ty)
@@ -1664,9 +1711,21 @@ public class CodeGen
         {
             case TypeKind.Struct:
             case TypeKind.Union:
-                _enc.OpCode(ILOpCode.Stobj); _enc.Token(GetStructTypeHandle(ty));
-                Pop(2); // pops address + value
+            {
+                var handle = GetStructTypeHandle(ty);
+                if (handle.IsNil)
+                {
+                    // No TypeDef (nested/flattened struct) — use cpblk with unaligned prefix
+                    // Stack: dest_addr, src_addr → unaligned. cpblk(dest, src, size)
+                    EmitConstI4(ty.Size);
+                    _enc.OpCode(ILOpCode.Unaligned); _enc.CodeBuilder.WriteByte(4);
+                    _enc.OpCode(ILOpCode.Cpblk); Pop(3);
+                    return;
+                }
+                _enc.OpCode(ILOpCode.Stobj); _enc.Token(handle);
+                Pop(2);
                 return;
+            }
             case TypeKind.Float:
                 _enc.OpCode(ILOpCode.Stind_r4); Pop(2); return;
             case TypeKind.Double:
@@ -1911,12 +1970,21 @@ public class CodeGen
                 }
                 GenAddr(node.Lhs);
                 GenExpr(node.Rhs);
-                // dup + stloc scratch, store, ldloc scratch
-                int assignScratch = GetOrAddScratchLocal(node.Ty);
-                _enc.OpCode(ILOpCode.Dup); Push();
-                _enc.StoreLocal(assignScratch); Pop();
-                Store(node.Ty);
-                _enc.LoadLocal(assignScratch); Push();
+                {
+                    // For nested/flattened structs (no TypeDef), GenExpr returns an address.
+                    // Use native-int scratch to save the address, then cpblk via Store.
+                    CType scratchTy = node.Ty;
+                    if ((node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) &&
+                        GetStructTypeHandle(node.Ty).IsNil)
+                    {
+                        scratchTy = _types.PointerTo(_types.TyVoid); // native int
+                    }
+                    int assignScratch = GetOrAddScratchLocal(scratchTy);
+                    _enc.OpCode(ILOpCode.Dup); Push();
+                    _enc.StoreLocal(assignScratch); Pop();
+                    Store(node.Ty);
+                    _enc.LoadLocal(assignScratch); Push();
+                }
                 return;
 
             case NodeKind.StmtExpr:
