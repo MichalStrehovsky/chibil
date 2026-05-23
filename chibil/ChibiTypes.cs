@@ -128,6 +128,7 @@ public class CType
     public Member Members;
     public bool IsFlexible;
     public bool IsPacked;
+    public bool IsNestedMember; // struct/union used only as a member of another struct — no TypeDef
 
     // Function type
     public CType ReturnTy;

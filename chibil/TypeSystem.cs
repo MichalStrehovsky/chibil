@@ -120,6 +120,7 @@ public class TypeSystem
             Members = ty.Members,
             IsFlexible = ty.IsFlexible,
             IsPacked = ty.IsPacked,
+            IsNestedMember = ty.IsNestedMember,
             ReturnTy = ty.ReturnTy,
             Params = ty.Params,
             IsVariadic = ty.IsVariadic,

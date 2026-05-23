@@ -562,6 +562,10 @@ public class Parser
             bool first = true;
             if ((basety.Kind == TypeKind.Struct || basety.Kind == TypeKind.Union) && Util.Consume(ref tok, tok, ";"))
             {
+                // Anonymous struct/union member (no tag name) — mark as nested
+                CType c = basety;
+                while (c.Origin != null) c = c.Origin;
+                if (c.TagName == null) c.IsNestedMember = true;
                 var mem = new Member { Ty = basety, Idx = idx++, Align = attr.Align != 0 ? attr.Align : basety.Align };
                 cur = cur.Next = mem; continue;
             }
@@ -571,6 +575,21 @@ public class Parser
                 first = false;
                 var mem = new Member();
                 mem.Ty = Declarator(ref tok, tok, basety, attr.PendingCallConv);
+                // Mark anonymous struct/union member types (no tag name) as nested.
+                // Named struct types keep their TypeDef since they can be referenced
+                // independently (e.g., struct Inner* ptr).
+                // Look through arrays and pointers to find the base struct/union.
+                {
+                    CType baseOfMember = mem.Ty;
+                    while (baseOfMember.Kind == TypeKind.Array || baseOfMember.Kind == TypeKind.Ptr)
+                        baseOfMember = baseOfMember.Base;
+                    if (baseOfMember.Kind == TypeKind.Struct || baseOfMember.Kind == TypeKind.Union)
+                    {
+                        CType c = baseOfMember;
+                        while (c.Origin != null) c = c.Origin;
+                        if (c.TagName == null) c.IsNestedMember = true;
+                    }
+                }
                 mem.Name = mem.Ty.Name; mem.Idx = idx++;
                 mem.Align = attr.Align != 0 ? attr.Align : mem.Ty.Align;
                 if (Util.Consume(ref tok, tok, ":")) { mem.IsBitfield = true; mem.BitWidth = (int)ConstExpr(ref tok, tok); }
