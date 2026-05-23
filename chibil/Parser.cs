@@ -1106,7 +1106,6 @@ public class Parser
         rest = Util.Skip(tok, ")");
         var node = NewUnary(NodeKind.FunCall, fn, tok);
         node.FuncTy = ty; node.Ty = ty.ReturnTy; node.Args = head.Next;
-        if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) node.RetBuffer = NewLvar("", node.Ty);
         return node;
     }
 
@@ -1818,8 +1817,6 @@ public class Parser
         if (Util.Consume(ref tok, tok, ";")) return tok;
         _currentFn = fn; _locals = null; EnterScope();
         CreateParamLvars(ty.Params);
-        CType rty = ty.ReturnTy;
-        if ((rty.Kind == TypeKind.Struct || rty.Kind == TypeKind.Union) && rty.Size > 16) NewLvar("", _types.PointerTo(rty));
         fn.Params = _locals;
         if (ty.IsVariadic && ty.Params != null)
             Util.ErrorTok(ty.Name, "variadic function definitions are not supported in MSIL mode");
