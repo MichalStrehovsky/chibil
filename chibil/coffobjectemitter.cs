@@ -18,55 +18,6 @@ using System.Reflection;
 
 namespace System.Reflection.PortableExecutable
 {
-    /// <summary>
-    /// Builds a .CRTMA$XCC section containing function pointers (as CLR token relocations)
-    /// for module initializer functions. At link time, these are merged into the CRTMA table
-    /// that the CRT module constructor iterates to call initialization functions.
-    /// </summary>
-    public class InitializerListSectionBuilder
-    {
-        private readonly CoffHeaderBuilder _coffHeaderBuilder;
-        private readonly ManagedCoffSymbolTableBuilder _symbolTableBuilder;
-        private readonly List<EntityHandle> _initializers = new List<EntityHandle>();
-
-        // Each slot is pointer-sized: 4 bytes on x86, 8 bytes on 64-bit targets.
-        private int SlotSize => _coffHeaderBuilder.Machine == Machine.I386 ? 4 : 8;
-
-        public InitializerListSectionBuilder(CoffHeaderBuilder coffHeaderBuilder, ManagedCoffSymbolTableBuilder symbolTableBuilder)
-        {
-            _coffHeaderBuilder = coffHeaderBuilder;
-            _symbolTableBuilder = symbolTableBuilder;
-        }
-
-        public void AddInitializer(EntityHandle methodHandle)
-        {
-            _initializers.Add(methodHandle);
-        }
-
-        public bool HasInitializers => _initializers.Count > 0;
-
-        internal void Serialize(BlobBuilder builder)
-        {
-            foreach (var handle in _initializers)
-            {
-                for (int i = 0; i < SlotSize; i++)
-                    builder.WriteByte(0);
-            }
-        }
-
-        internal void SerializeRelocations(BlobBuilder builder)
-        {
-            for (int i = 0; i < _initializers.Count; i++)
-            {
-                int token = MetadataTokens.GetToken(_initializers[i]);
-                var tokenSymbol = _symbolTableBuilder.GetOrAddUndefinedClrTokenSymbol(
-                    token.ToString("X8"));
-                new CoffRelocationEncoder(_coffHeaderBuilder, builder)
-                    .AddTokenRelocation(i * SlotSize, tokenSymbol);
-            }
-        }
-    }
-
     public class CodeViewLineNumberBuilder
     {
         private readonly List<LineNumberEntry> _entries = new List<LineNumberEntry>();
@@ -2108,7 +2059,7 @@ namespace System.Reflection.PortableExecutable
     /// Identifies a logical section whose actual 1-based COFF section number
     /// is not known until ManagedCoffBuilder lays out its sections.
     /// </summary>
-    public enum LogicalSection { Text, Data, Bss, RData, Crtma, IlFixup, Nep }
+    public enum LogicalSection { Text, Data, Bss, RData, IlFixup, Nep }
 
     public enum CoffSymbolType : short
     {
@@ -2426,7 +2377,6 @@ namespace System.Reflection.PortableExecutable
         private const string DataSectionName = ".data";
         private const string BssSectionName = ".bss";
         private const string RDataSectionName = ".rdata";
-        private const string CrtmaSectionName = ".CRTMA$XCC";
         private const string IlFixupSectionName = ".rdata$ilfixup";
         private const string NepSectionName = ".nep";
         private const string CodeViewSymbolsSectionName = ".debug$S";
@@ -2439,7 +2389,6 @@ namespace System.Reflection.PortableExecutable
         private readonly BlobBuilder _dataRelocs;
         private readonly int _bssSize;
         private readonly BlobBuilder _rdataStream;
-        private readonly InitializerListSectionBuilder _initializerList;
         private readonly BlobBuilder _ilFixupStream;
         private readonly BlobBuilder _ilFixupRelocs;
         private readonly BlobBuilder _nepStream;
@@ -2456,7 +2405,6 @@ namespace System.Reflection.PortableExecutable
             BlobBuilder dataRelocs = null,
             int bssSize = 0,
             BlobBuilder rdataStream = null,
-            InitializerListSectionBuilder initializerList = null,
             BlobBuilder ilFixupStream = null,
             BlobBuilder ilFixupRelocs = null,
             BlobBuilder nepStream = null,
@@ -2487,7 +2435,6 @@ namespace System.Reflection.PortableExecutable
             _dataRelocs = dataRelocs;
             _bssSize = bssSize;
             _rdataStream = rdataStream;
-            _initializerList = initializerList;
             _ilFixupStream = ilFixupStream;
             _ilFixupRelocs = ilFixupRelocs;
             _nepStream = nepStream;
@@ -2504,7 +2451,6 @@ namespace System.Reflection.PortableExecutable
                     LogicalSection.Data => DataSectionNumber,
                     LogicalSection.Bss => BssSectionNumber,
                     LogicalSection.RData => RDataSectionNumber,
-                    LogicalSection.Crtma => CrtmaSectionNumber,
                     LogicalSection.IlFixup => IlFixupSectionNumber,
                     LogicalSection.Nep => NepSectionNumber,
                     _ => throw new InvalidOperationException($"Unknown logical section: {section}")
@@ -2549,11 +2495,6 @@ namespace System.Reflection.PortableExecutable
         private int RDataSectionNumber => GetSectionNumber(RDataSectionName);
 
         /// <summary>
-        /// Returns the 1-based section number for the .CRTMA$XCC section, or -1 if not present.
-        /// </summary>
-        private int CrtmaSectionNumber => GetSectionNumber(CrtmaSectionName);
-
-        /// <summary>
         /// Returns the 1-based section number for the .rdata$ilfixup section, or -1 if not present.
         /// </summary>
         private int IlFixupSectionNumber => GetSectionNumber(IlFixupSectionName);
@@ -2586,11 +2527,6 @@ namespace System.Reflection.PortableExecutable
             {
                 builder.Add(new Section(CodeViewSymbolsSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemDiscardable | SectionCharacteristics.Align1Bytes | SectionCharacteristics.MemRead));
             }
-            if (_initializerList != null && _initializerList.HasInitializers)
-            {
-                var crtmaAlign = Header.Machine == Machine.I386 ? SectionCharacteristics.Align4Bytes : SectionCharacteristics.Align8Bytes;
-                builder.Add(new Section(CrtmaSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | crtmaAlign));
-            }
             if (_ilFixupStream != null && _ilFixupStream.Count > 0)
             {
                 builder.Add(new Section(IlFixupSectionName, SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes));
@@ -2611,7 +2547,6 @@ namespace System.Reflection.PortableExecutable
                 DataSectionName => _dataStream,
                 CorMetaSectionName => SerializeCorMetaSection(location),
                 CodeViewSymbolsSectionName => SerializeCodeViewSymbols(location),
-                CrtmaSectionName => SerializeCrtmaSection(),
                 IlFixupSectionName => _ilFixupStream,
                 NepSectionName => _nepStream,
                 _ => throw new ArgumentException(),
@@ -2626,12 +2561,6 @@ namespace System.Reflection.PortableExecutable
             else if (name == DataSectionName)
             {
                 return _dataRelocs;
-            }
-            else if (name == CrtmaSectionName)
-            {
-                var b = new BlobBuilder();
-                _initializerList.SerializeRelocations(b);
-                return b;
             }
             else if (name == IlFixupSectionName)
             {
@@ -2670,11 +2599,5 @@ namespace System.Reflection.PortableExecutable
             return builder;
         }
 
-        private BlobBuilder SerializeCrtmaSection()
-        {
-            var builder = new BlobBuilder();
-            _initializerList.Serialize(builder);
-            return builder;
-        }
     }
 }
