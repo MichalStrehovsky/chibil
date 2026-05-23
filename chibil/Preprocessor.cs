@@ -1044,6 +1044,7 @@ public class Preprocessor
         DefineMacro("__SIZEOF_PTRDIFF_T__", $"{dm.PointerSize}");
         DefineMacro("__SIZEOF_SHORT__", "2");
         DefineMacro("__SIZEOF_SIZE_T__", $"{dm.PointerSize}");
+        DefineMacro("__SIZEOF_WCHAR_T__", $"{dm.WcharSize}");
         DefineMacro("__SIZE_TYPE__", isLP64 ? "unsigned long" : "unsigned long long");
         DefineMacro("__PTRDIFF_TYPE__", isLP64 ? "long" : "long long");
         DefineMacro("__STDC_HOSTED__", "1");
