@@ -145,11 +145,27 @@ public class Parser
                 "typedef", "enum", "static", "extern", "_Alignas", "signed", "unsigned",
                 "const", "volatile", "auto", "register", "restrict", "__restrict",
                 "__restrict__", "_Noreturn", "float", "double", "typeof", "inline",
-                "_Thread_local", "__thread", "_Atomic" };
+                "_Thread_local", "__thread", "_Atomic", "__declspec", "__forceinline",
+                "__cdecl", "__clrcall", "__stdcall",
+                "__int8", "__int16", "__int32", "__int64" };
             foreach (string k in kw) _typenameMap[k] = true;
         }
         string text = Util.GetTokenText(tok);
         return _typenameMap.ContainsKey(text) || FindTypedef(tok) != null;
+    }
+
+    private static Token SkipBalancedParens(Token tok)
+    {
+        tok = Util.Skip(tok, "(");
+        int depth = 1;
+        while (depth > 0)
+        {
+            if (tok.Kind == TokenKind.Eof) Util.ErrorTok(tok, "unclosed '('");
+            if (Util.Equal(tok, "(")) depth++;
+            else if (Util.Equal(tok, ")")) depth--;
+            tok = tok.Next;
+        }
+        return tok;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -206,13 +222,14 @@ public class Parser
         while (IsTypename(tok))
         {
             if (Util.Equal(tok, "typedef") || Util.Equal(tok, "static") || Util.Equal(tok, "extern") ||
-                Util.Equal(tok, "inline") || Util.Equal(tok, "_Thread_local") || Util.Equal(tok, "__thread"))
+                Util.Equal(tok, "inline") || Util.Equal(tok, "__forceinline") ||
+                Util.Equal(tok, "_Thread_local") || Util.Equal(tok, "__thread"))
             {
                 if (attr == null) Util.ErrorTok(tok, "storage class specifier is not allowed in this context");
                 if (Util.Equal(tok, "typedef")) attr.IsTypedef = true;
                 else if (Util.Equal(tok, "static")) attr.IsStatic = true;
                 else if (Util.Equal(tok, "extern")) attr.IsExtern = true;
-                else if (Util.Equal(tok, "inline")) attr.IsInline = true;
+                else if (Util.Equal(tok, "inline") || Util.Equal(tok, "__forceinline")) attr.IsInline = true;
                 else { attr.IsTls = true; Util.ErrorTok(tok, "thread-local storage is not supported in MSIL mode"); }
                 if (attr.IsTypedef && ((attr.IsStatic?1:0) + (attr.IsExtern?1:0) + (attr.IsInline?1:0) + (attr.IsTls?1:0) > 1))
                     Util.ErrorTok(tok, "typedef may not be used together with static, extern, inline, __thread or _Thread_local");
@@ -224,6 +241,23 @@ public class Parser
                 Util.Consume(ref tok, tok, "restrict") || Util.Consume(ref tok, tok, "__restrict") ||
                 Util.Consume(ref tok, tok, "__restrict__") || Util.Consume(ref tok, tok, "_Noreturn"))
                 continue;
+            if (Util.Equal(tok, "__declspec"))
+            {
+                tok = SkipBalancedParens(tok.Next);
+                continue;
+            }
+            // GCC/MinGW compat: calling convention keywords in declspec position.
+            // GCC treats __stdcall as __attribute__((stdcall)) which can appear
+            // before the return type. MSVC rejects this, but MinGW SDK headers
+            // (e.g., WINAPI macros) produce this pattern. Store as pending cc
+            // on VarAttr; Declarator applies it to the function type.
+            if (Util.Equal(tok, "__cdecl") || Util.Equal(tok, "__clrcall") || Util.Equal(tok, "__stdcall"))
+            {
+                TryParseCallConv(ref tok, out CallConv cc);
+                if (attr != null)
+                    attr.PendingCallConv = cc;
+                continue;
+            }
             if (Util.Equal(tok, "_Atomic"))
             {
                 tok = tok.Next;
@@ -260,6 +294,10 @@ public class Parser
             else if (Util.Equal(tok, "long")) counter += LONG;
             else if (Util.Equal(tok, "float")) counter += FLOAT;
             else if (Util.Equal(tok, "double")) counter += DOUBLE;
+            else if (Util.Equal(tok, "__int8")) counter += CHAR;
+            else if (Util.Equal(tok, "__int16")) counter += SHORT;
+            else if (Util.Equal(tok, "__int32")) counter += INT;
+            else if (Util.Equal(tok, "__int64")) counter += LONG + LONG;
             else if (Util.Equal(tok, "signed")) counter |= SIGNED;
             else if (Util.Equal(tok, "unsigned")) counter |= UNSIGNED;
             else Util.Unreachable();
@@ -313,8 +351,9 @@ public class Parser
         {
             if (cur != head) tok = Util.Skip(tok, ",");
             if (Util.Equal(tok, "...")) { isVariadic = true; tok = tok.Next; Util.Skip(tok, ")"); break; }
-            CType ty2 = Declspec(ref tok, tok, null);
-            ty2 = Declarator(ref tok, tok, ty2);
+            VarAttr paramAttr = new();
+            CType ty2 = Declspec(ref tok, tok, paramAttr);
+            ty2 = Declarator(ref tok, tok, ty2, paramAttr.PendingCallConv);
             Token name = ty2.Name;
             if (ty2.Kind == TypeKind.Array) { ty2 = _types.PointerTo(ty2.Base); ty2.Name = name; }
             else if (ty2.Kind == TypeKind.Func) { ty2 = _types.PointerTo(ty2); ty2.Name = name; }
@@ -362,36 +401,47 @@ public class Parser
         rest = tok; return ty;
     }
 
-    private CallConv ParseCallConv(ref Token tok)
+    private bool TryParseCallConv(ref Token tok, out CallConv callConv)
     {
-        if (Util.Equal(tok, "__cdecl")) { tok = tok.Next; return CallConv.Cdecl; }
-        if (Util.Equal(tok, "__clrcall")) { tok = tok.Next; return CallConv.Clrcall; }
+        if (Util.Equal(tok, "__cdecl")) { tok = tok.Next; callConv = CallConv.Cdecl; return true; }
+        if (Util.Equal(tok, "__clrcall")) { tok = tok.Next; callConv = CallConv.Clrcall; return true; }
         if (Util.Equal(tok, "__stdcall"))
         {
             tok = tok.Next;
             // On x64, __stdcall is silently treated as __cdecl (all CCs converge to MS-x64 ABI).
             // Normalize early so downstream code doesn't need special cases.
-            return _options.DataModel.PointerSize == 4 ? CallConv.Stdcall : CallConv.Cdecl;
+            callConv = _options.DataModel.PointerSize == 4 ? CallConv.Stdcall : CallConv.Cdecl;
+            return true;
         }
-        return CallConv.Cdecl;
+        callConv = CallConv.Cdecl;
+        return false;
     }
 
-    private CType Declarator(ref Token rest, Token tok, CType ty)
+    private CType Declarator(ref Token rest, Token tok, CType ty, CallConv? pendingCallConv = null)
     {
-        CallConv callConv = ParseCallConv(ref tok);
+        // Declarator-position cc overrides pending; if absent, fall back to pending
+        bool hasExplicitCc = TryParseCallConv(ref tok, out CallConv callConv);
+        if (!hasExplicitCc && pendingCallConv.HasValue)
+            callConv = pendingCallConv.Value;
         if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
         ty = Pointers(ref tok, tok, ty);
         // Calling convention can also appear after pointers (e.g., void* __stdcall fn())
-        CallConv cc2 = ParseCallConv(ref tok);
-        if (cc2 != CallConv.Cdecl) callConv = cc2;
+        if (TryParseCallConv(ref tok, out CallConv cc2))
+        {
+            callConv = cc2;
+            hasExplicitCc = true;
+        }
         if (Util.Equal(tok, "("))
         {
             Token start = tok;
             CType dummy = new();
-            Declarator(ref tok, start.Next, dummy);
+            Declarator(ref tok, start.Next, dummy); // dummy recursion — no pending cc
             tok = Util.Skip(tok, ")");
             ty = TypeSuffix(ref rest, tok, ty);
-            return Declarator(ref tok, start.Next, ty);
+            // Apply pending cc at this TypeSuffix site (for nested declarators like __stdcall int (*pf)(int))
+            if (ty.Kind == TypeKind.Func && ty.CallConv == CallConv.Cdecl && pendingCallConv.HasValue)
+                ty.CallConv = pendingCallConv.Value;
+            return Declarator(ref tok, start.Next, ty, pendingCallConv);
         }
         Token name = null, namePos = tok;
         if (tok.Kind == TokenKind.Ident) { name = tok; tok = tok.Next; }
@@ -401,13 +451,15 @@ public class Parser
         return ty;
     }
 
-    private CType AbstractDeclarator(ref Token rest, Token tok, CType ty)
+    private CType AbstractDeclarator(ref Token rest, Token tok, CType ty, CallConv? pendingCallConv = null)
     {
-        CallConv callConv = ParseCallConv(ref tok);
+        bool hasExplicitCc = TryParseCallConv(ref tok, out CallConv callConv);
+        if (!hasExplicitCc && pendingCallConv.HasValue)
+            callConv = pendingCallConv.Value;
         if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
         ty = Pointers(ref tok, tok, ty);
-        CallConv cc2 = ParseCallConv(ref tok);
-        if (cc2 != CallConv.Cdecl) callConv = cc2;
+        if (TryParseCallConv(ref tok, out CallConv cc2))
+            callConv = cc2;
         if (Util.Equal(tok, "("))
         {
             Token start = tok;
@@ -415,7 +467,9 @@ public class Parser
             AbstractDeclarator(ref tok, start.Next, dummy);
             tok = Util.Skip(tok, ")");
             ty = TypeSuffix(ref rest, tok, ty);
-            return AbstractDeclarator(ref tok, start.Next, ty);
+            if (ty.Kind == TypeKind.Func && ty.CallConv == CallConv.Cdecl && pendingCallConv.HasValue)
+                ty.CallConv = pendingCallConv.Value;
+            return AbstractDeclarator(ref tok, start.Next, ty, pendingCallConv);
         }
         ty = TypeSuffix(ref rest, tok, ty);
         if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
@@ -516,7 +570,7 @@ public class Parser
                 if (!first) tok = Util.Skip(tok, ",");
                 first = false;
                 var mem = new Member();
-                mem.Ty = Declarator(ref tok, tok, basety);
+                mem.Ty = Declarator(ref tok, tok, basety, attr.PendingCallConv);
                 mem.Name = mem.Ty.Name; mem.Idx = idx++;
                 mem.Align = attr.Align != 0 ? attr.Align : mem.Ty.Align;
                 if (Util.Consume(ref tok, tok, ":")) { mem.IsBitfield = true; mem.BitWidth = (int)ConstExpr(ref tok, tok); }
@@ -1247,7 +1301,7 @@ public class Parser
             {
                 VarAttr attr = new();
                 CType basety = Declspec(ref tok, tok, attr);
-                if (attr.IsTypedef) { tok = ParseTypedef(tok, basety); continue; }
+                if (attr.IsTypedef) { tok = ParseTypedef(tok, basety, attr.PendingCallConv); continue; }
                 if (IsFunction(tok)) { tok = Function(tok, basety, attr); continue; }
                 if (attr.IsExtern) { tok = GlobalVariable(tok, basety, attr); continue; }
                 cur = cur.Next = Declaration(ref tok, tok, basety, attr);
@@ -1295,7 +1349,7 @@ public class Parser
         while (!Util.Equal(tok, ";"))
         {
             if (i++ > 0) tok = Util.Skip(tok, ",");
-            CType ty = Declarator(ref tok, tok, basety);
+            CType ty = Declarator(ref tok, tok, basety, attr?.PendingCallConv);
             if (ty.Kind == TypeKind.Void) Util.ErrorTok(tok, "variable declared void");
             if (ty.Name == null) Util.ErrorTok(ty.NamePos, "variable name omitted");
             if (attr != null && attr.IsStatic)
@@ -1649,13 +1703,13 @@ public class Parser
     //  Top-level declarations
     // ═══════════════════════════════════════════════════════════════
 
-    private Token ParseTypedef(Token tok, CType basety)
+    private Token ParseTypedef(Token tok, CType basety, CallConv? pendingCallConv = null)
     {
         bool first = true;
         while (!Util.Consume(ref tok, tok, ";"))
         {
             if (!first) tok = Util.Skip(tok, ","); first = false;
-            CType ty = Declarator(ref tok, tok, basety);
+            CType ty = Declarator(ref tok, tok, basety, pendingCallConv);
             if (ty.Name == null) Util.ErrorTok(ty.NamePos, "typedef name omitted");
             // For anonymous enum/struct/union, use the typedef name as the tag
             if (ty.TagName == null && (ty.Kind == TypeKind.Enum || ty.Kind == TypeKind.Struct || ty.Kind == TypeKind.Union))
@@ -1713,7 +1767,7 @@ public class Parser
 
     private Token Function(Token tok, CType basety, VarAttr attr)
     {
-        CType ty = Declarator(ref tok, tok, basety);
+        CType ty = Declarator(ref tok, tok, basety, attr.PendingCallConv);
         if (ty.Name == null) Util.ErrorTok(ty.NamePos, "function name omitted");
         string nameStr = GetIdent(ty.Name);
         Obj fn = FindFunc(nameStr);
@@ -1788,7 +1842,7 @@ public class Parser
         while (!Util.Consume(ref tok, tok, ";"))
         {
             if (!first) tok = Util.Skip(tok, ","); first = false;
-            CType ty = Declarator(ref tok, tok, basety);
+            CType ty = Declarator(ref tok, tok, basety, attr.PendingCallConv);
             if (ty.Name == null) Util.ErrorTok(ty.NamePos, "variable name omitted");
             Obj v = NewGvar(GetIdent(ty.Name), ty);
             v.IsDefinition = !attr.IsExtern; v.IsStatic = attr.IsStatic;
@@ -1834,7 +1888,7 @@ public class Parser
         {
             VarAttr attr = new();
             CType basety = Declspec(ref tok, tok, attr);
-            if (attr.IsTypedef) { tok = ParseTypedef(tok, basety); continue; }
+            if (attr.IsTypedef) { tok = ParseTypedef(tok, basety, attr.PendingCallConv); continue; }
             if (IsFunction(tok)) { tok = Function(tok, basety, attr); continue; }
             tok = GlobalVariable(tok, basety, attr);
         }

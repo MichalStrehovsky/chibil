@@ -4,6 +4,26 @@ namespace Chibil.Tests;
 
 public class MsvcInteropTests : ChibiTestBase
 {
+    [Fact]
+    public void MsvcDeclarationSpecifiers()
+    {
+        Compile("""
+            typedef __int8 i8;
+            typedef unsigned __int16 u16;
+            typedef signed __int32 i32;
+            typedef unsigned __int64 u64;
+            __declspec(dllimport) int imported;
+            __forceinline int add_one(int value) { return value + 1; }
+            int __stdcall stdcall_after_return_type(int value);
+            __stdcall int stdcall_before_return_type(int value);
+
+            i8 a;
+            u16 b;
+            i32 c;
+            u64 d;
+            """);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("__clrcall ")]
