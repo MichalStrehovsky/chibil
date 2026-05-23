@@ -256,8 +256,6 @@ public class Node
     // Function call
     public CType FuncTy;
     public Node Args;
-    public bool PassByStack;
-    public Obj RetBuffer;
 
     // Goto or labeled statement, or labels-as-values
     public string Label;
