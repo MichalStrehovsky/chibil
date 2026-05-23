@@ -374,7 +374,7 @@ public class CodeGen
                 while (canonical.Origin != null) canonical = canonical.Origin;
                 if (canonical.IsNestedMember)
                     throw new InvalidOperationException(
-                        $"Nested member type '{GetStructName(canonical)}' in signature.\n{Environment.StackTrace}");
+                        $"Internal error: nested member type '{GetStructName(canonical)}' reached signature encoding");
                 int typeId = GetTypeId(ty);
                 if (_structTypeDefs.TryGetValue(typeId, out var structTd))
                 {
@@ -1539,6 +1539,11 @@ public class CodeGen
                 return slot;
             }
         }
+        return AddFreshScratchLocal(ty);
+    }
+
+    private int AddFreshScratchLocal(CType ty)
+    {
         int newSlot = _scratchLocalBase + _scratchLocals.Count;
         _scratchLocals.Add((ty, newSlot));
         return newSlot;
@@ -1969,17 +1974,24 @@ public class CodeGen
                     return;
                 }
                 GenAddr(node.Lhs);
-                GenExpr(node.Rhs);
+                if ((node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) &&
+                    GetStructTypeHandle(node.Ty).IsNil)
                 {
-                    // For nested/flattened structs (no TypeDef), GenExpr returns an address.
-                    // Use native-int scratch to save the address, then cpblk via Store.
-                    CType scratchTy = node.Ty;
-                    if ((node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) &&
-                        GetStructTypeHandle(node.Ty).IsNil)
-                    {
-                        scratchTy = _types.PointerTo(_types.TyVoid); // native int
-                    }
-                    int assignScratch = GetOrAddScratchLocal(scratchTy);
+                    // Nested/flattened struct: GenExpr(rhs) returns an address.
+                    // Save dest address before generating rhs so the assignment
+                    // expression result refers to the destination, not the source.
+                    // Use a fresh scratch to avoid clobber by inner chain assignments.
+                    var destScratch = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
+                    _enc.OpCode(ILOpCode.Dup); Push();
+                    _enc.StoreLocal(destScratch); Pop();
+                    GenExpr(node.Rhs);
+                    Store(node.Ty);
+                    _enc.LoadLocal(destScratch); Push();
+                }
+                else
+                {
+                    GenExpr(node.Rhs);
+                    int assignScratch = GetOrAddScratchLocal(node.Ty);
                     _enc.OpCode(ILOpCode.Dup); Push();
                     _enc.StoreLocal(assignScratch); Pop();
                     Store(node.Ty);
