@@ -726,10 +726,13 @@ public class Tokenizer
                 continue;
             }
 
-            // Wide string literal
+            // Wide string literal (wchar_t size depends on data model)
             if (StartsWith(buf, p, "L\""))
             {
-                cur = cur.Next = ReadUtf32StringLiteral(buf, p, p + 1, _types.TyInt);
+                if (_options.DataModel.WcharSize == 2)
+                    cur = cur.Next = ReadUtf16StringLiteral(buf, p, p + 1);
+                else
+                    cur = cur.Next = ReadUtf32StringLiteral(buf, p, p + 1, _types.TyInt);
                 p += cur.Len;
                 continue;
             }
@@ -763,7 +766,8 @@ public class Tokenizer
             // Wide character literal
             if (StartsWith(buf, p, "L'"))
             {
-                cur = cur.Next = ReadCharLiteral(buf, p, p + 1, _types.TyInt);
+                cur = cur.Next = ReadCharLiteral(buf, p, p + 1,
+                    _options.DataModel.WcharSize == 2 ? _types.TyUshort : _types.TyInt);
                 p += cur.Len;
                 continue;
             }

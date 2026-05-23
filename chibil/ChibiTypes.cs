@@ -389,15 +389,16 @@ public class CondIncl
 //  DataModel
 // ═══════════════════════════════════════════════════════════════════
 
-public class DataModel(int longSize, int ldoubleSize, int ldoubleAlign, int pointerSize)
+public class DataModel(int longSize, int ldoubleSize, int ldoubleAlign, int pointerSize, int wcharSize)
 {
     public int LongSize => longSize;
     public int LDoubleSize => ldoubleSize;
     public int LDoubleAlign => ldoubleAlign;
     public int PointerSize => pointerSize;
+    public int WcharSize => wcharSize;
 
-    public static readonly DataModel LP64  = new(longSize: 8, ldoubleSize: 16, ldoubleAlign: 16, pointerSize: 8);
-    public static readonly DataModel LLP64 = new(longSize: 4, ldoubleSize: 8,  ldoubleAlign: 8,  pointerSize: 8);
+    public static readonly DataModel LP64  = new(longSize: 8, ldoubleSize: 16, ldoubleAlign: 16, pointerSize: 8, wcharSize: 4);
+    public static readonly DataModel LLP64 = new(longSize: 4, ldoubleSize: 8,  ldoubleAlign: 8,  pointerSize: 8, wcharSize: 2);
 }
 
 // ═══════════════════════════════════════════════════════════════════
