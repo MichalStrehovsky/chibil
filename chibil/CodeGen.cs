@@ -1720,10 +1720,11 @@ public class CodeGen
                 var handle = GetStructTypeHandle(ty);
                 if (handle.IsNil)
                 {
-                    // No TypeDef (nested/flattened struct) — use cpblk with unaligned prefix
+                    // No TypeDef (nested/flattened struct) — use cpblk with the safest
+                    // unaligned prefix because member addresses may be only byte-aligned.
                     // Stack: dest_addr, src_addr → unaligned. cpblk(dest, src, size)
                     EmitConstI4(ty.Size);
-                    _enc.OpCode(ILOpCode.Unaligned); _enc.CodeBuilder.WriteByte(4);
+                    _enc.OpCode(ILOpCode.Unaligned); _enc.CodeBuilder.WriteByte(1);
                     _enc.OpCode(ILOpCode.Cpblk); Pop(3);
                     return;
                 }
