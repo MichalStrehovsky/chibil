@@ -98,7 +98,7 @@ public sealed class MsvcNameMangler
         // Now mangle the return type (which has its modopts already consumed).
         // The sigReader is positioned at the return-type's type code, but we
         // haven't read it yet (ReadModOptChain stops at the first non-modopt code).
-        MangleTypeFromBlob(sb, ref sigReader, retMods, isReturn: true, registerArgBackref: false);
+        MangleTypeFromBlob(sb, ref sigReader, retMods, isReturn: true);
 
         if (paramCount == 0)
         {
@@ -137,7 +137,7 @@ public sealed class MsvcNameMangler
         var tmp = new StringBuilder();
         var canonReader = sigReader; // struct copy
         var mods = ReadModOptChain(ref canonReader);
-        MangleTypeFromBlob(tmp, ref canonReader, mods, isReturn: false, registerArgBackref: false);
+        MangleTypeFromBlob(tmp, ref canonReader, mods, isReturn: false);
         string canonical = tmp.ToString();
 
         _nameBackRefs = savedName;
@@ -155,7 +155,7 @@ public sealed class MsvcNameMangler
         // Live pass
         var liveReader = sigReader; // struct copy positioned at startOffset already
         var liveMods = ReadModOptChain(ref liveReader);
-        MangleTypeFromBlob(sb, ref liveReader, liveMods, isReturn: false, registerArgBackref: false);
+        MangleTypeFromBlob(sb, ref liveReader, liveMods, isReturn: false);
         sigReader.Offset = liveReader.Offset;
 
         if (canonical.Length > 1 && _argBackRefs.Count < 10)
@@ -164,8 +164,7 @@ public sealed class MsvcNameMangler
 
     // ─── Core type mangling ──────────────────────────────────────────────────
 
-    private void MangleTypeFromBlob(StringBuilder sb, ref BlobReader sigReader, ModOptInfo mods,
-        bool isReturn, bool registerArgBackref)
+    private void MangleTypeFromBlob(StringBuilder sb, ref BlobReader sigReader, ModOptInfo mods, bool isReturn)
     {
         SignatureTypeCode tc = sigReader.ReadSignatureTypeCode();
         MangleTypeCore(sb, ref sigReader, tc, mods, isReturn);

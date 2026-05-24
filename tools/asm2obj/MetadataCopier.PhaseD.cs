@@ -49,7 +49,7 @@ public sealed partial class MetadataCopier
             if (!seenNames.Add(decoratedName))
             {
                 string baseName = decoratedName;
-                int suffix = 1;
+                int suffix = 0;
                 do
                 {
                     suffix++;

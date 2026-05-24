@@ -454,8 +454,20 @@ public sealed partial class MetadataCopier
             var inputH = MetadataTokens.GenericParameterConstraintHandle(r);
             var gpc = _reader.GetGenericParameterConstraint(inputH);
             var ownerOut = (GenericParameterHandle)TokenMap.MapEntity(gpc.Parameter);
-            if (ownerOut.IsNil) continue;
-            _outputMd.AddGenericParameterConstraint(ownerOut, TokenMap.MapEntity(gpc.Type));
+            if (ownerOut.IsNil)
+            {
+                // Constraint dropped because its owner was dropped — clear
+                // the predicted 1:1 entry so later remaps (e.g. CustomAttribute
+                // parents via HasCustomAttribute, which allows
+                // GenericParamConstraint) don't refer to a stale row number.
+                TokenMap.SetGenericParamConstraint(inputH, 0);
+                continue;
+            }
+            var outH = _outputMd.AddGenericParameterConstraint(ownerOut, TokenMap.MapEntity(gpc.Type));
+            // Re-set the TokenMap with the actually-issued row, in case any
+            // earlier constraint was dropped and the running counter diverged
+            // from the predicted 1:1 mapping.
+            TokenMap.SetGenericParamConstraint(inputH, MetadataTokens.GetRowNumber(outH));
         }
     }
 

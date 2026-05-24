@@ -114,7 +114,10 @@ public sealed partial class MetadataCopier
     {
         // Primitive types align to their size, capped at the pointer width.
         // For value types we honour the ClassLayout PackingSize when present,
-        // else align to min(size, ptrSize).
+        // else fall back to min(size, ptrSize) — the same default used for
+        // primitives. Returning 1 unconditionally would misalign multi-byte
+        // HasFieldRVA data for structs without explicit pack and could shift
+        // layout vs. the input PE.
         var sigReader = _reader.GetBlobReader(fd.Signature);
         sigReader.ReadSignatureHeader();
     again:
@@ -136,7 +139,6 @@ public sealed partial class MetadataCopier
                 int pack = layout.IsDefault ? 0 : layout.PackingSize;
                 if (pack > 0) return pack;
             }
-            return 1;
         }
         return Math.Min(size, _ptrSize);
     }
