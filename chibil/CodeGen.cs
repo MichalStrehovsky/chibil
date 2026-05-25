@@ -2672,7 +2672,7 @@ public class CodeGen
 
         enc.OpCode(ILOpCode.Ret);
 
-        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
+        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}C0@Z";
         _bodyEncoder.AddMethodBody(_cxxPureMsilEntry, mangledName, enc,
             maxStack: Math.Max(mainParamCount, 1), localVariablesSignature: default, attributes: MethodBodyAttributes.InitLocals,
             debugName: "__CxxPureMSILEntry");
@@ -2710,7 +2710,7 @@ public class CodeGen
         // NEP for __CxxPureMSILEntry
         if (_hasMain)
         {
-            string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
+            string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}C0@Z";
             EmitNepForMethod(
                 MetadataTokens.GetToken(_cxxPureMsilEntry), "__CxxPureMSILEntry", mangledName);
         }

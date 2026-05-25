@@ -14,18 +14,24 @@ unsafe static class Entry
         // So use Environment.GetCommandLineArgs().
         string[] args = Environment.GetCommandLineArgs();
 
-        IntPtr[] argv = new IntPtr[args.Length];
+        // Allocate one extra slot for the trailing NULL pointer that
+        // C's argv contract requires (argv[argc] == NULL).
+        IntPtr[] argv = new IntPtr[args.Length + 1];
 
-        for (int i = 0; i < args.Length; i++)
-            argv[i] = Marshal.StringToHGlobalAnsi(args[i]);
+        try
+        {
+            for (int i = 0; i < args.Length; i++)
+                argv[i] = Marshal.StringToHGlobalAnsi(args[i]);
+            argv[args.Length] = IntPtr.Zero;
 
-        int exit;
-        fixed (IntPtr* pArgv = argv)
-            exit = __CxxPureMSILEntry(argv.Length, (sbyte**)pArgv, null);
-
-        foreach (var a in argv)
-            Marshal.FreeHGlobal(a);
-
-        return exit;
+            fixed (IntPtr* pArgv = argv)
+                return __CxxPureMSILEntry(args.Length, (sbyte**)pArgv, null);
+        }
+        finally
+        {
+            foreach (var a in argv)
+                if (a != IntPtr.Zero)
+                    Marshal.FreeHGlobal(a);
+        }
     }
 }
