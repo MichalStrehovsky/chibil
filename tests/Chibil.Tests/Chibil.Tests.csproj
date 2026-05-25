@@ -17,6 +17,23 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\chibil\Chibil.csproj" />
+    <ProjectReference Include="..\..\tools\asm2obj\Asm2Obj.csproj" />
+    <!--
+      The CRT shim assembly is built as a side artifact and embedded into
+      the test assembly as a managed resource named "crt.dll".
+      CompilationBuilder.AddCrt() extracts it at test time, runs asm2obj
+      on it, and adds the resulting .obj to the link.
+    -->
+    <ProjectReference Include="..\..\crt\crt.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <OutputItemType>EmbeddedResource</OutputItemType>
+      <LogicalName>crt.dll</LogicalName>
+      <!--
+        crt.csproj targets net481; we don't reference its assembly, we
+        just embed its build output. Skip the TFM-compatibility check.
+      -->
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
   </ItemGroup>
 
 </Project>

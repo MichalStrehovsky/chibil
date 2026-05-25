@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Reflection.PortableExecutable;
+using Asm2Obj;
 using Chibil;
 using Xunit;
 
@@ -20,6 +22,45 @@ public sealed class CompilationBuilder : IDisposable
     {
         _tempDir = Path.Combine(Path.GetTempPath(), $"chibil-test-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
+    }
+
+    /// <summary>
+    /// Extract the embedded <c>crt.dll</c> resource from this test assembly,
+    /// run asm2obj on it to produce a managed COFF <c>crt.obj</c>, and add
+    /// the obj to this builder. The CRT shim defines the
+    /// <c>mainCRTStartup</c> entry point and the <c>__CxxPureMSILEntry</c>
+    /// extern that chibil-generated main objects expect.
+    /// </summary>
+    public CompilationBuilder AddCrt()
+    {
+        var crtAsmPath = Path.Combine(_tempDir, "crt.dll");
+        var crtObjPath = Path.Combine(_tempDir, "crt.obj");
+
+        var asm = typeof(CompilationBuilder).Assembly;
+        using (var stream = asm.GetManifestResourceStream("crt.dll"))
+        {
+            if (stream == null)
+                throw new InvalidOperationException(
+                    "Embedded resource 'crt.dll' not found in test assembly. " +
+                    "Check the ProjectReference to crt.csproj in Chibil.Tests.csproj.");
+            using var file = File.Create(crtAsmPath);
+            stream.CopyTo(file);
+        }
+
+        // Match the target architecture of the surrounding vcvars environment.
+        // vcvarsall.bat sets the Platform variable to x86 / x64 / arm64.
+        string platform = Environment.GetEnvironmentVariable("Platform") ?? "x64";
+        Machine machine = platform switch
+        {
+            "x86" => Machine.I386,
+            "arm64" => Machine.Arm64,
+            _ => Machine.Amd64,
+        };
+
+        byte[] objBytes = AsmToObjConverter.Convert(crtAsmPath, machine, "crt.obj");
+        File.WriteAllBytes(crtObjPath, objBytes);
+        _objFiles.Add(crtObjPath);
+        return this;
     }
 
     /// <summary>
