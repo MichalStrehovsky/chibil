@@ -1119,7 +1119,7 @@ public class CodeGen
         _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("envp"), 3);
         _nextParamRow += 3;
 
-        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
+        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}C0@Z";
         _symtab.PreRegisterFunctionClrToken(mangledName, _cxxPureMsilEntry);
     }
 
