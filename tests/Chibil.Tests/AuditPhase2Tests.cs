@@ -26,17 +26,19 @@ public class AuditPhase2Tests : ChibiTestBase
         .RunAndCheck(exitCode: 40);
     }
 
-    [Fact(Skip = "Requires minicrt.obj for __CxxPureMSILEntry linkage")]
+    [Fact]
     public void CxxPureMSILEntryEnvp()
     {
         // BUG-15: main(argc, argv, envp) — envp must be passed from __CxxPureMSILEntry
         // Hard to test directly since we don't control envp in our harness.
-        // Instead, just verify 3-param main compiles and links.
+        // Instead, just verify 3-param main compiles and links via crt.obj's
+        // mainCRTStartup, which is the default linker entry point.
         Compile("""
             int main(int argc, char **argv, char **envp) {
                 return argc;
             }
             """)
+        .AddCrt()
         .Link(["/subsystem:console"])
         .RunAndCheck(exitCode: 1);
     }

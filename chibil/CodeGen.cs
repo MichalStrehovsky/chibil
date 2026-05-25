@@ -1091,18 +1091,18 @@ public class CodeGen
         // Param 1: int argc
         sig.WriteByte((byte)SignatureTypeCode.Int32);
 
-        // Param 2: char** argv — Ptr Ptr modopt(IsSignUnspecifiedByte) I1
+        // Param 2: char** argv — Ptr Ptr SByte. Plain `char` is signed on MSVC,
+        // so the underlying type is SByte. We do NOT attach the
+        // IsSignUnspecifiedByte modopt here: it's a MemberRef-level marker for
+        // cross-obj signature matching, and chibil's __CxxPureMSILEntry is
+        // resolved within the same obj that defines it.
         sig.WriteByte((byte)SignatureTypeCode.Pointer);
         sig.WriteByte((byte)SignatureTypeCode.Pointer);
-        sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-        sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
         sig.WriteByte((byte)SignatureTypeCode.SByte);
 
-        // Param 3: char** envp — same encoding, but use '0' backreference in mangling
+        // Param 3: char** envp — same encoding, '0' backreference in mangling.
         sig.WriteByte((byte)SignatureTypeCode.Pointer);
         sig.WriteByte((byte)SignatureTypeCode.Pointer);
-        sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-        sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
         sig.WriteByte((byte)SignatureTypeCode.SByte);
 
         _cxxPureMsilEntry = _md.AddMethodDefinition(
@@ -1119,7 +1119,6 @@ public class CodeGen
         _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("envp"), 3);
         _nextParamRow += 3;
 
-        string e = Is32 ? "" : "E";
         string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
         _symtab.PreRegisterFunctionClrToken(mangledName, _cxxPureMsilEntry);
     }
