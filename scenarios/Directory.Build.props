@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <Compile Include="..\chibil\coffobjectemitter.cs" />
+    <Compile Include="..\chibil\ClrIjw.cs" />
   </ItemGroup>
 
 </Project>
