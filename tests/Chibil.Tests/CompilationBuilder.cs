@@ -13,8 +13,8 @@ namespace Chibil.Tests;
 /// </summary>
 public sealed class CompilationBuilder : IDisposable
 {
-    private readonly string _tempDir;
-    private readonly List<string> _objFiles = new();
+    internal readonly string _tempDir;
+    internal readonly List<string> _objFiles = new();
     private int _fileCounter;
     private bool _disposed;
 
