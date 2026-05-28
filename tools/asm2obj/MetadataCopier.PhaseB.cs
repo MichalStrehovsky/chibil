@@ -54,6 +54,14 @@ public sealed partial class MetadataCopier
             TokenMap.SetTypeRef(MetadataTokens.TypeReferenceHandle(r), _outTypeRefRow);
         }
 
+        // ─── Synthesized TypeRefs for required signature modifiers ──────────
+        // Each recognized modifier kind needs a TypeRef to its
+        // System.Runtime.CompilerServices.* target in the output. Reuse an
+        // existing input TypeRef when present so we don't bloat the output;
+        // synthesize new rows for missing ones, allocated after the copied
+        // block so the 1:1 prediction for input TypeRefs stays correct.
+        PredictSignatureModifierTypeRefs();
+
         // ─── ForwardRef extern methods ──────────────────────────────────────
         // Each ForwardRef method becomes a MemberRef parented on the output
         // <Module> TypeDef. No synthesized TypeRef is needed — chibil and
@@ -218,6 +226,73 @@ public sealed partial class MetadataCopier
             TokenMap.SetProperty(MetadataTokens.PropertyDefinitionHandle(r), r);
         for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.Event); r++)
             TokenMap.SetEvent(MetadataTokens.EventDefinitionHandle(r), r);
+    }
+
+    // Per-modifier-kind output TypeRef row, populated in Phase B's
+    // PredictSignatureModifierTypeRefs (mapping a kind to either an
+    // existing TypeRef in the input, or a synthesized row to be emitted
+    // after the TypeRef copy block in Phase C).
+    private readonly Dictionary<ModifierKind, int> _modifierTypeRefOutputRow = new();
+
+    // Synthesized TypeRefs to emit after the regular TypeRef copy. Each
+    // entry is the kind to emit at the next available row.
+    private readonly List<ModifierKind> _synthesizedModifierTypeRefs = new();
+
+    private void PredictSignatureModifierTypeRefs()
+    {
+        if (_requiredModifierKinds.Count == 0) return;
+
+        // Index input TypeRefs by (namespace, name) → input row, restricted
+        // to TypeRefs that resolve through the mscorlib AssemblyRef (so we
+        // don't accidentally bind a modifier to a same-named TypeRef in a
+        // different assembly).
+        var inputCorlibTypeRefs = new Dictionary<(string ns, string name), int>();
+        int corlibInputRow = FindMscorlibInputAssemblyRefRow();
+        if (corlibInputRow > 0)
+        {
+            for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.TypeRef); r++)
+            {
+                var tr = _reader.GetTypeReference(MetadataTokens.TypeReferenceHandle(r));
+                if (tr.ResolutionScope.Kind != HandleKind.AssemblyReference) continue;
+                if (MetadataTokens.GetRowNumber(tr.ResolutionScope) != corlibInputRow) continue;
+                var key = (_reader.GetString(tr.Namespace), _reader.GetString(tr.Name));
+                if (!inputCorlibTypeRefs.ContainsKey(key))
+                    inputCorlibTypeRefs[key] = r;
+            }
+        }
+
+        foreach (var kind in _requiredModifierKinds)
+        {
+            var key = kind.BclTypeRef();
+            if (inputCorlibTypeRefs.TryGetValue(key, out int inputRow))
+            {
+                // Reuse the existing input TypeRef row's predicted output row
+                // (1:1 from the copy block above).
+                _modifierTypeRefOutputRow[kind] = inputRow;
+            }
+            else
+            {
+                _outTypeRefRow++;
+                _modifierTypeRefOutputRow[kind] = _outTypeRefRow;
+                _synthesizedModifierTypeRefs.Add(kind);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Looks up the input AssemblyRef row whose name is "mscorlib".
+    /// Returns 0 when none is found (e.g. an input with no external types).
+    /// Phase A's ValidateCoreLibReferences guarantees a non-mscorlib core lib
+    /// has already been rejected.
+    /// </summary>
+    private int FindMscorlibInputAssemblyRefRow()
+    {
+        for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.AssemblyRef); r++)
+        {
+            var ar = _reader.GetAssemblyReference(MetadataTokens.AssemblyReferenceHandle(r));
+            if (_reader.GetString(ar.Name) == "mscorlib") return r;
+        }
+        return 0;
     }
 
     private bool OwnerSurvives(EntityHandle owner)

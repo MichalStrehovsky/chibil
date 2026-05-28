@@ -1,12 +1,16 @@
 ﻿using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using Asm2Obj;
 
 [CompilerGlobalScope]
 unsafe static class Entry
 {
     [MethodImpl(MethodImplOptions.ForwardRef)]
-    extern static int __CxxPureMSILEntry(int argc, sbyte** argv, sbyte** envp);
+    extern static int __CxxPureMSILEntry(
+        int argc,
+        [IsSignUnspecifiedByte] sbyte** argv,
+        [IsSignUnspecifiedByte] sbyte** envp);
 
     static int mainCRTStartup()
     {

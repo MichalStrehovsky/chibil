@@ -69,7 +69,6 @@ Each surviving function gets a COFF symbol name:
    Calling-convention letter is derived from any modopt on the return type:
    - `modopt(CallConvCdecl)` → `A` (cdecl)
    - `modopt(CallConvStdcall)` → `G` (stdcall)
-   - `modopt(CallConvClrcall)` → `M` (clrcall)
    - default (no callconv modopt) → `M` (clrcall) — this is the natural
      calling convention for managed-to-managed code written in C#.
 

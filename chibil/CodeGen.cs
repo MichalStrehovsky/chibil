@@ -1091,18 +1091,21 @@ public class CodeGen
         // Param 1: int argc
         sig.WriteByte((byte)SignatureTypeCode.Int32);
 
-        // Param 2: char** argv — Ptr Ptr SByte. Plain `char` is signed on MSVC,
-        // so the underlying type is SByte. We do NOT attach the
-        // IsSignUnspecifiedByte modopt here: it's a MemberRef-level marker for
-        // cross-obj signature matching, and chibil's __CxxPureMSILEntry is
-        // resolved within the same obj that defines it.
+        // Param 2: char** argv — Ptr Ptr modopt(IsSignUnspecifiedByte) SByte.
+        // The IsSignUnspecifiedByte modopt marks plain `char` whose signedness
+        // is implementation-defined; MSVC and asm2obj both emit it on `char**`
+        // params and link.exe compares signature bytes including this marker.
         sig.WriteByte((byte)SignatureTypeCode.Pointer);
         sig.WriteByte((byte)SignatureTypeCode.Pointer);
+        sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
         sig.WriteByte((byte)SignatureTypeCode.SByte);
 
         // Param 3: char** envp — same encoding, '0' backreference in mangling.
         sig.WriteByte((byte)SignatureTypeCode.Pointer);
         sig.WriteByte((byte)SignatureTypeCode.Pointer);
+        sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
         sig.WriteByte((byte)SignatureTypeCode.SByte);
 
         _cxxPureMsilEntry = _md.AddMethodDefinition(
@@ -1119,7 +1122,7 @@ public class CodeGen
         _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("envp"), 3);
         _nextParamRow += 3;
 
-        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}C0@Z";
+        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
         _symtab.PreRegisterFunctionClrToken(mangledName, _cxxPureMsilEntry);
     }
 
@@ -2672,7 +2675,7 @@ public class CodeGen
 
         enc.OpCode(ILOpCode.Ret);
 
-        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}C0@Z";
+        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
         _bodyEncoder.AddMethodBody(_cxxPureMsilEntry, mangledName, enc,
             maxStack: Math.Max(mainParamCount, 1), localVariablesSignature: default, attributes: MethodBodyAttributes.InitLocals,
             debugName: "__CxxPureMSILEntry");
@@ -2710,7 +2713,7 @@ public class CodeGen
         // NEP for __CxxPureMSILEntry
         if (_hasMain)
         {
-            string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}C0@Z";
+            string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
             EmitNepForMethod(
                 MetadataTokens.GetToken(_cxxPureMsilEntry), "__CxxPureMSILEntry", mangledName);
         }

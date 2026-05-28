@@ -53,6 +53,16 @@ public sealed partial class MetadataCopier
     private MethodInfo[] _methodInfo;
     private bool[] _customAttrSkip; // true → don't copy this CustomAttribute row
 
+    // Per-input-MethodDef-row modifier-injection plan, populated in
+    // Phase A from Asm2Obj.* attributes on parameters / return type.
+    // Null entries mean "no asm2obj attributes on this method".
+    private MethodSignatureInjections[] _methodInjections;
+
+    // Set of recognized modifier kinds that need a TypeRef in the output
+    // (their target System.Runtime.CompilerServices.* TypeRef). Populated
+    // in Phase A, consumed by Phase B to allocate output rows.
+    private readonly HashSet<ModifierKind> _requiredModifierKinds = new();
+
     // Output TypeDef #1 is always <Module>.
     private const int OutputModuleTypeDefRow = 1;
 
@@ -83,6 +93,7 @@ public sealed partial class MetadataCopier
     public void ClassifyAndPlan()
     {
         ClassifyTypesAndMethods();
+        ScanSignatureAttributes();
         PredictRows();
     }
 
