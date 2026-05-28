@@ -165,9 +165,10 @@ public interface ISignatureModifierInjector
     /// Emit any modifiers at the current cursor position into
     /// <paramref name="modsEnc"/>. Implementations should emit in their
     /// own preferred canonical order; the rewriter calls this exactly
-    /// once per signature slot, before any input modifier bytes are
-    /// drained at that slot (so the byte order ends up:
-    /// injected modifiers first, input modifiers after).
+    /// once per signature slot. Depending on the rewrite path, injected
+    /// modifiers may be emitted either before or after input modifiers
+    /// already present at that slot, so callers must not rely on any
+    /// relative ordering between injected and input modifiers.
     /// </summary>
     void EmitInjected(System.Reflection.Metadata.Ecma335.CustomModifiersEncoder modsEnc);
 }
