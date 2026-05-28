@@ -16,6 +16,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="Asm2ObjAssembly\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\chibil\Chibil.csproj" />
     <ProjectReference Include="..\..\tools\asm2obj\Asm2Obj.csproj" />
     <!--
@@ -32,6 +36,18 @@
         crt.csproj targets net481; we don't reference its assembly, we
         just embed its build output. Skip the TFM-compatibility check.
       -->
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
+    <!--
+      The Asm2ObjAssembly test fixture is built as a side artifact and
+      embedded as "Asm2ObjAssembly.dll". CompilationBuilder.AddAsm2ObjAssembly()
+      extracts it at test time, runs asm2obj on it, and adds the resulting
+      .obj to the link. See Asm2ObjAnnotationsTests for the end-to-end test.
+    -->
+    <ProjectReference Include="Asm2ObjAssembly\Asm2ObjAssembly.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <OutputItemType>EmbeddedResource</OutputItemType>
+      <LogicalName>Asm2ObjAssembly.dll</LogicalName>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
   </ItemGroup>
