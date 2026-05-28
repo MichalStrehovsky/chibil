@@ -12,5 +12,6 @@
   <ItemGroup>
     <Compile Include="..\..\chibil\coffobjectemitter.cs" Link="External\coffobjectemitter.cs" />
     <Compile Include="..\..\chibil\ClrIjw.cs" Link="External\ClrIjw.cs" />
+    <Compile Remove="Annotations\**" />
   </ItemGroup>
 </Project>

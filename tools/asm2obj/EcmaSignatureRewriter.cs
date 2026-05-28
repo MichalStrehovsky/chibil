@@ -19,10 +19,21 @@ public struct EcmaSignatureRewriter
     private BlobReader _blobReader;
     private readonly TokenMap _tokenMap;
 
-    private EcmaSignatureRewriter(BlobReader blobReader, TokenMap tokenMap)
+    // Slot-aware modifier injector consulted on method-signature rewrite paths
+    // that opted-in via the corresponding overload. Null on field / local /
+    // type-spec / member-ref-field / method-spec / property signatures and on
+    // method signatures without an annotation plan. Mutable so that the
+    // FunctionPointer case can save/clear it around the recursive
+    // RewriteMethodSignature call for the FNPTR sub-signature — the injector's
+    // (paramIndex, slot) cursor addresses *this* method's parameters and must
+    // not bleed into a nested FNPTR's own parameter slots.
+    private ISignatureModifierInjector _injector;
+
+    private EcmaSignatureRewriter(BlobReader blobReader, TokenMap tokenMap, ISignatureModifierInjector injector = null)
     {
         _blobReader = blobReader;
         _tokenMap = tokenMap;
+        _injector = injector;
     }
 
     private void RewriteCustomModifier(SignatureTypeCode typeCode, CustomModifiersEncoder encoder)
@@ -58,6 +69,15 @@ public struct EcmaSignatureRewriter
             case SignatureTypeCode.IntPtr: encoder.IntPtr(); break;
             case SignatureTypeCode.UIntPtr: encoder.UIntPtr(); break;
             case SignatureTypeCode.Object: encoder.Object(); break;
+            // Void is only legal here as the inner type of a Pointer
+            // (`void*`, `const void*`, etc.). The enclosing Pointer case
+            // below routes the inner Type through RewriteType so injected
+            // modopts at the pointee slot get emitted before the Void byte.
+            // SignatureTypeEncoder offers no Void() method; write the raw
+            // byte directly on the underlying BlobBuilder.
+            case SignatureTypeCode.Void:
+                encoder.Builder.WriteByte((byte)SignatureTypeCode.Void);
+                break;
             case SignatureTypeCode.TypeHandle:
                 {
                     // S.R.Metadata collapses Class/ValueType into TypeHandle but we
@@ -72,11 +92,15 @@ public struct EcmaSignatureRewriter
                 }
                 break;
             case SignatureTypeCode.SZArray:
+                _injector?.BeginParameterizedType(SignatureTypeCode.SZArray);
                 RewriteType(encoder.SZArray());
+                _injector?.EndParameterizedType(SignatureTypeCode.SZArray);
                 break;
             case SignatureTypeCode.Array:
                 encoder.Array(out var arrayEncoder, out var shapeEncoder);
+                _injector?.BeginParameterizedType(SignatureTypeCode.Array);
                 RewriteType(arrayEncoder);
+                _injector?.EndParameterizedType(SignatureTypeCode.Array);
                 var rank = _blobReader.ReadCompressedInteger();
                 var boundsCount = _blobReader.ReadCompressedInteger();
                 int[] bounds = boundsCount > 0 ? new int[boundsCount] : Array.Empty<int>();
@@ -90,11 +114,22 @@ public struct EcmaSignatureRewriter
                 break;
             case SignatureTypeCode.Pointer:
                 {
+                    // Always take the general "Pointer + recursive Type" path
+                    // (never the VoidPointer() shortcut), so injected modopts
+                    // at the pointee slot (e.g. `const void*` from
+                    // `[IsConst(1)] void*`) end up between the Ptr byte and
+                    // the pointee's type code. The byte sequence is identical
+                    // to VoidPointer() when there are no inner modopts.
                     SignatureTypeCode inner = _blobReader.ReadSignatureTypeCode();
-                    if (inner == SignatureTypeCode.Void)
-                        encoder.VoidPointer();
-                    else
-                        RewriteType(inner, encoder.Pointer());
+                    _injector?.BeginParameterizedType(SignatureTypeCode.Pointer);
+                    var innerEnc = encoder.Pointer();
+                    // Slot-(N+1) injection for the pointee — emitted BEFORE the
+                    // recursive RewriteType call so injected modifiers precede
+                    // any input modifiers at the pointee slot (which the
+                    // recursive call drains via its `case Mod` below).
+                    _injector?.EmitInjected(innerEnc.CustomModifiers());
+                    RewriteType(inner, innerEnc);
+                    _injector?.EndParameterizedType(SignatureTypeCode.Pointer);
                 }
                 break;
             case SignatureTypeCode.GenericTypeParameter:
@@ -131,7 +166,18 @@ public struct EcmaSignatureRewriter
                     MethodSignatureEncoder sigEncoder = encoder.FunctionPointer(header.CallingConvention, 0, arity);
                     int count = _blobReader.ReadCompressedInteger();
                     sigEncoder.Parameters(count, out ReturnTypeEncoder retTypeEncoder, out ParametersEncoder paramEncoder);
+                    // The injector's (paramIndex, slot) cursor addresses the
+                    // outer method's parameters. Detach it for the nested
+                    // FNPTR sub-signature so its BeginParameter(i) calls don't
+                    // alias the outer plan at index i (which would emit stray
+                    // modifiers into the FNPTR sub-blob — and the mangler
+                    // wouldn't see them, since MangleFunctionPointer keeps the
+                    // outer (_currentParam, _currentSlot) cursor — producing a
+                    // signature/symbol divergence that link.exe rejects).
+                    var savedInjector = _injector;
+                    _injector = null;
                     RewriteMethodSignature(count, retTypeEncoder, paramEncoder);
+                    _injector = savedInjector;
                 }
                 break;
             default:
@@ -207,6 +253,20 @@ public struct EcmaSignatureRewriter
         new EcmaSignatureRewriter(signatureReader, tokenMap).RewriteMethodSignature(blobBuilder);
     }
 
+    /// <summary>
+    /// Overload that consults <paramref name="injector"/> at each
+    /// <c>CustomMod*</c> position so the rewritten signature carries any
+    /// asm2obj-injected modifier bytes (matching the symbols emitted by
+    /// <see cref="MsvcNameMangler"/> for the same method). When
+    /// <paramref name="injector"/> is <c>null</c>, this is equivalent to
+    /// the plain overload.
+    /// </summary>
+    public static void RewriteMethodSignature(BlobReader signatureReader, TokenMap tokenMap, BlobBuilder blobBuilder,
+        ISignatureModifierInjector injector)
+    {
+        new EcmaSignatureRewriter(signatureReader, tokenMap, injector).RewriteMethodSignature(blobBuilder);
+    }
+
     private void RewriteMethodSignature(BlobBuilder blobBuilder)
     {
         SignatureHeader header = _blobReader.ReadSignatureHeader();
@@ -230,6 +290,8 @@ public struct EcmaSignatureRewriter
 
     private void RewriteMethodSignature(int count, ReturnTypeEncoder returnTypeEncoder, ParametersEncoder paramsEncoder)
     {
+        // ── Return type (paramIndex 0) ──────────────────────────────────────
+        _injector?.BeginParameter(0);
         bool isByRef = false;
     againReturnType:
         SignatureTypeCode typeCode = _blobReader.ReadSignatureTypeCode();
@@ -244,13 +306,23 @@ public struct EcmaSignatureRewriter
             goto againReturnType;
         }
 
+        // Slot-0 injection for the return type. When the input also has
+        // modifiers at slot 0, the byte order ends up "input first, injected
+        // after" — that's a degenerate case (the C# author asked asm2obj to
+        // inject a modifier that's already in the input blob); the rewriter
+        // doesn't try to interleave canonically since there's no canonical
+        // truth between two competing authors.
+        _injector?.EmitInjected(returnTypeEncoder.CustomModifiers());
+
         if (typeCode == SignatureTypeCode.Void) returnTypeEncoder.Void();
         else if (typeCode == SignatureTypeCode.TypedReference) returnTypeEncoder.TypedReference();
         else RewriteType(typeCode, returnTypeEncoder.Type(isByRef));
+        _injector?.EndParameter();
 
         for (int i = 0; i < count; i++)
         {
             ParameterTypeEncoder paramEncoder = paramsEncoder.AddParameter();
+            _injector?.BeginParameter(i + 1);
             isByRef = false;
 
         againParameter:
@@ -266,8 +338,13 @@ public struct EcmaSignatureRewriter
                 goto againParameter;
             }
 
+            // Slot-0 injection. See return-type comment above re: ordering
+            // when the input also has modifiers at slot 0.
+            _injector?.EmitInjected(paramEncoder.CustomModifiers());
+
             if (typeCode == SignatureTypeCode.TypedReference) paramEncoder.TypedReference();
             else RewriteType(typeCode, paramEncoder.Type(isByRef));
+            _injector?.EndParameter();
         }
     }
 

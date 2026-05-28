@@ -205,7 +205,7 @@ public sealed partial class MetadataCopier
         var mh = MetadataTokens.MethodDefinitionHandle(inputMethodRow);
         try
         {
-            return _mangler.MangleMethod(mh);
+            return _mangler.MangleMethod(mh, _methodInjections[inputMethodRow]);
         }
         catch (NotSupportedException)
         {

@@ -17,7 +17,7 @@ namespace Asm2Obj;
 /// Calling-convention letter:
 ///   A — cdecl  (return type carries modopt(CallConvCdecl))
 ///   G — stdcall(return type carries modopt(CallConvStdcall))
-///   M — clrcall(return type carries modopt(CallConvClrcall) OR no callconv modopt — default)
+///   M — clrcall  (return type has no callconv modopt — this is the default)
 ///
 /// Only C-shaped signatures are auto-manglable. Managed reference types
 /// (String, Object, SZArray of reference types, generic class instances)
@@ -34,6 +34,13 @@ public sealed class MsvcNameMangler
     private List<string> _nameBackRefs;
     private Dictionary<string, int> _argBackRefs;
 
+    // Optional injection plan + current cursor consulted by ReadModOptChain
+    // so the mangler virtually sees the modopts asm2obj is about to inject
+    // into the rewritten output signature.
+    private MethodSignatureInjections _injections;
+    private int _currentParam; // 0 = return, 1.. = params
+    private int _currentSlot;  // 0 = outermost, +1 per Pointer depth
+
     public MsvcNameMangler(MetadataReader reader, Machine machine)
     {
         _reader = reader;
@@ -45,32 +52,44 @@ public sealed class MsvcNameMangler
     /// <summary>
     /// Mangle a MethodDefinition into its MSVC decorated name.
     /// </summary>
-    public string MangleMethod(MethodDefinitionHandle handle)
+    public string MangleMethod(MethodDefinitionHandle handle) => MangleMethod(handle, injections: null);
+
+    /// <summary>
+    /// Mangle a MethodDefinition into its MSVC decorated name, virtually
+    /// applying signature-modifier injections recorded in <paramref name="injections"/>.
+    /// The mangler reads the *input* signature blob and overlays injected
+    /// modifiers at each (param, slot) so the produced name matches the
+    /// post-rewrite output signature.
+    /// </summary>
+    internal string MangleMethod(MethodDefinitionHandle handle, MethodSignatureInjections injections)
     {
         var def = _reader.GetMethodDefinition(handle);
         string name = _reader.GetString(def.Name);
         var sigReader = _reader.GetBlobReader(def.Signature);
-        return MangleMethodCore(name, sigReader);
+        return MangleMethodCore(name, sigReader, injections);
     }
 
     /// <summary>
     /// Mangle a MemberReference (must be a method member ref) into its MSVC
     /// decorated name. Used for ForwardRef extern declarations.
     /// </summary>
-    public string MangleMemberRef(MemberReferenceHandle handle)
+    public string MangleMemberRef(MemberReferenceHandle handle) => MangleMemberRef(handle, injections: null);
+
+    internal string MangleMemberRef(MemberReferenceHandle handle, MethodSignatureInjections injections)
     {
         var mr = _reader.GetMemberReference(handle);
         if (mr.GetKind() != MemberReferenceKind.Method)
             throw new InvalidOperationException("MangleMemberRef requires a method MemberReference.");
         string name = _reader.GetString(mr.Name);
         var sigReader = _reader.GetBlobReader(mr.Signature);
-        return MangleMethodCore(name, sigReader);
+        return MangleMethodCore(name, sigReader, injections);
     }
 
-    private string MangleMethodCore(string methodName, BlobReader sigReader)
+    private string MangleMethodCore(string methodName, BlobReader sigReader, MethodSignatureInjections injections = null)
     {
         _nameBackRefs = new List<string> { methodName };
         _argBackRefs = new Dictionary<string, int>();
+        _injections = injections;
 
         // Read SignatureHeader; we ignore the in-band calling convention because
         // managed methods always have Default (0x00) and the real callconv is
@@ -80,9 +99,10 @@ public sealed class MsvcNameMangler
             sigReader.ReadCompressedInteger(); // discard generic arity
         int paramCount = sigReader.ReadCompressedInteger();
 
-        // Decode return-type modopts first to determine the callconv letter.
-        // We collect modopts but defer emitting the return-type mangling until
-        // after we've written the cc letter.
+        // Decode return-type modopts (including any virtually-injected ones at
+        // slot 0 of the return type) to determine the callconv letter.
+        _currentParam = 0;
+        _currentSlot = 0;
         var retMods = ReadModOptChain(ref sigReader);
         char ccLetter = retMods.CallConv switch
         {
@@ -108,6 +128,8 @@ public sealed class MsvcNameMangler
         {
             for (int i = 0; i < paramCount; i++)
             {
+                _currentParam = i + 1;
+                _currentSlot = 0;
                 MangleArg(sb, ref sigReader);
             }
             sb.Append("@Z");
@@ -222,7 +244,7 @@ public sealed class MsvcNameMangler
                 sb.Append(_is32 ? "I" : "_K");
                 return;
             case SignatureTypeCode.Pointer:
-                ManglePointer(sb, ref sigReader);
+                ManglePointer(sb, ref sigReader, mods);
                 return;
             case SignatureTypeCode.TypeHandle:
                 {
@@ -241,7 +263,7 @@ public sealed class MsvcNameMangler
                 }
                 return;
             case SignatureTypeCode.FunctionPointer:
-                MangleFunctionPointer(sb, ref sigReader);
+                MangleFunctionPointer(sb, ref sigReader, mods);
                 return;
             case SignatureTypeCode.String:
             case SignatureTypeCode.Object:
@@ -259,26 +281,41 @@ public sealed class MsvcNameMangler
         }
     }
 
-    private void ManglePointer(StringBuilder sb, ref BlobReader sigReader)
+    private void ManglePointer(StringBuilder sb, ref BlobReader sigReader, ModOptInfo outerMods)
     {
-        // Read pointee modopts and type code. The pointee qualifier (A/B/C/D)
-        // comes from the pointee's IsConst/IsVolatile modopts. The pointer
-        // self qualifier is always P (chibil also always emits P for ECMA-
-        // sourced pointers since the ECMA signature has no notion of
-        // "pointer-to-pointer is itself const").
+        // Pointer-self qualifier (P/Q/R/S) comes from the outer modopt chain
+        // — the modifiers that sit *before* the Ptr byte in the signature.
+        // This mirrors chibil's MangleType -> ManglePointer (CodeGen.cs:691-741)
+        // which encodes `ty.IsConst` / `ty.IsVolatile` of the pointer itself
+        // into pointer-self letters Q/R/S. Without this, asm2obj would
+        // mis-mangle a chibil-emitted `int * const` as `PEAH` instead of `QEAH`
+        // and link.exe interop would fail.
+        char ptrQual =
+            (outerMods.IsConst && outerMods.IsVolatile) ? 'S' :
+            outerMods.IsConst ? 'Q' :
+            outerMods.IsVolatile ? 'R' : 'P';
+
+        // Descend one signature slot (each PTR introduces a new CustomMod*
+        // slot for the pointee) before reading the pointee's modopt chain.
+        _currentSlot++;
+
+        // Pointee qualifier (A/B/C/D) comes from the modopts after the Ptr
+        // byte — i.e. those modifying the pointee type. Also applies any
+        // virtually-injected modifiers at this deeper slot.
         var pteeMods = ReadModOptChain(ref sigReader);
         char pteeQual =
             (pteeMods.IsConst && pteeMods.IsVolatile) ? 'D' :
             pteeMods.IsConst ? 'B' :
             pteeMods.IsVolatile ? 'C' : 'A';
 
-        sb.Append('P').Append(_e).Append(pteeQual);
+        sb.Append(ptrQual).Append(_e).Append(pteeQual);
 
         SignatureTypeCode tc = sigReader.ReadSignatureTypeCode();
         MangleTypeCore(sb, ref sigReader, tc, pteeMods, isReturn: false);
+        _currentSlot--;
     }
 
-    private void MangleFunctionPointer(StringBuilder sb, ref BlobReader sigReader)
+    private void MangleFunctionPointer(StringBuilder sb, ref BlobReader sigReader, ModOptInfo outerMods)
     {
         SignatureHeader fnHeader = sigReader.ReadSignatureHeader();
         if (fnHeader.IsGeneric)
@@ -294,10 +331,18 @@ public sealed class MsvcNameMangler
             CallConvKind.Clrcall => 'M',
             _ => 'M',
         };
-        // Function-pointer types use `P6<cc>` without the `E` (ptr64) marker
-        // — matches chibil's MangleFuncPtr (chibil/CodeGen.cs:743-757) and the
-        // MSVC reference (scenarios/NOTES.md `P6A<ret><params>@Z`).
-        sb.Append("P6").Append(ccLetter);
+        // Function-pointer types use `<ptrQual>6<cc>` without the `E`
+        // (ptr64) marker — matches chibil's MangleFuncPtr
+        // (chibil/CodeGen.cs:743-757) and the MSVC reference
+        // (scenarios/NOTES.md `P6A<ret><params>@Z`). The pointer-self
+        // qualifier letter comes from the OUTER modopt chain (modopts
+        // before FNPTR) so that `int (__cdecl * const fp)(int)` mangles
+        // with Q6 instead of P6.
+        char ptrQual =
+            (outerMods.IsConst && outerMods.IsVolatile) ? 'S' :
+            outerMods.IsConst ? 'Q' :
+            outerMods.IsVolatile ? 'R' : 'P';
+        sb.Append(ptrQual).Append('6').Append(ccLetter);
 
         // Return type
         SignatureTypeCode retTc = sigReader.ReadSignatureTypeCode();
@@ -385,6 +430,12 @@ public sealed class MsvcNameMangler
     private ModOptInfo ReadModOptChain(ref BlobReader sigReader)
     {
         var info = default(ModOptInfo);
+
+        // Virtually-inject modifiers for the current (paramIndex, slot).
+        // Done first so injected callconv/IsConst/etc. is visible to callers
+        // that consult info.CallConv before reading further.
+        ApplyInjections(_currentParam, _currentSlot, ref info);
+
         while (true)
         {
             int startOffset = sigReader.Offset;
@@ -398,6 +449,28 @@ public sealed class MsvcNameMangler
             }
             EntityHandle modHandle = sigReader.ReadTypeHandle();
             ClassifyModifier(modHandle, ref info);
+        }
+    }
+
+    private void ApplyInjections(int paramIndex, int slot, ref ModOptInfo info)
+    {
+        if (_injections == null) return;
+        if (paramIndex >= _injections.PerParam.Length) return;
+        var list = _injections.PerParam[paramIndex];
+        if (list == null) return;
+        for (int i = 0; i < list.Count; i++)
+        {
+            var inj = list[i];
+            if (inj.Slot != slot) continue;
+            switch (inj.Kind)
+            {
+                case ModifierKind.IsConst:              info.IsConst = true; break;
+                case ModifierKind.IsVolatile:           info.IsVolatile = true; break;
+                case ModifierKind.IsLong:               info.IsLong = true; break;
+                case ModifierKind.IsSignUnspecifiedByte: info.IsSignUnspecifiedByte = true; break;
+                case ModifierKind.CallConvCdecl:        info.CallConv = CallConvKind.Cdecl; break;
+                case ModifierKind.CallConvStdcall:      info.CallConv = CallConvKind.Stdcall; break;
+            }
         }
     }
 

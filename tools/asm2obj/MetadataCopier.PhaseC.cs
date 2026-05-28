@@ -54,6 +54,23 @@ public sealed partial class MetadataCopier
                 _outputMd.GetOrAddString(_reader.GetString(tr.Name)));
             TokenMap.AssertHandle(r, outH);
         }
+
+        // Synthesized TypeRefs for required signature modifiers, in the
+        // order recorded by Phase B's PredictSignatureModifierTypeRefs.
+        if (_synthesizedModifierTypeRefs.Count > 0)
+        {
+            var corlibRef = _coreLibAssemblyRef;
+            foreach (var kind in _synthesizedModifierTypeRefs)
+            {
+                var (ns, name) = kind.BclTypeRef();
+                var outH = _outputMd.AddTypeReference(
+                    corlibRef,
+                    _outputMd.GetOrAddString(ns),
+                    _outputMd.GetOrAddString(name));
+                int expectedRow = _modifierTypeRefOutputRow[kind];
+                TokenMap.AssertHandle(expectedRow, outH);
+            }
+        }
     }
 
     // ─── TypeSpec ───────────────────────────────────────────────────────────
@@ -159,7 +176,11 @@ public sealed partial class MetadataCopier
                 var md = _reader.GetMethodDefinition(inputH);
                 var sigReader = _reader.GetBlobReader(md.Signature);
                 var sigBuilder = new BlobBuilder();
-                EcmaSignatureRewriter.RewriteMethodSignature(sigReader, TokenMap, sigBuilder);
+                var injections = _methodInjections[inputMethodRow];
+                var injector = injections != null
+                    ? new MethodSignatureInjector(injections, _modifierTypeRefOutputRow)
+                    : null;
+                EcmaSignatureRewriter.RewriteMethodSignature(sigReader, TokenMap, sigBuilder, injector);
 
                 int firstParamRow = paramRowSoFar + 1;
 
@@ -214,7 +235,11 @@ public sealed partial class MetadataCopier
             string name = _reader.GetString(md.Name);
             var sigReader = _reader.GetBlobReader(md.Signature);
             var sigBuilder = new BlobBuilder();
-            EcmaSignatureRewriter.RewriteMethodSignature(sigReader, TokenMap, sigBuilder);
+            var injections = _methodInjections[methodRow];
+            var injector = injections != null
+                ? new MethodSignatureInjector(injections, _modifierTypeRefOutputRow)
+                : null;
+            EcmaSignatureRewriter.RewriteMethodSignature(sigReader, TokenMap, sigBuilder, injector);
 
             // Parent the synthesized MemberRef on the output <Module> TypeDef,
             // matching scenarios/pinvoke.cs and how chibil emits extern
@@ -232,7 +257,7 @@ public sealed partial class MetadataCopier
             string explicitName = _methodInfo[methodRow].DecoratedName;
             string decName = explicitName != null
                 ? ApplyX86UnderscoreRule(explicitName)
-                : _mangler.MangleMethod(MetadataTokens.MethodDefinitionHandle(methodRow));
+                : _mangler.MangleMethod(MetadataTokens.MethodDefinitionHandle(methodRow), _methodInjections[methodRow]);
             _forwardRefDecoratedNames.Add(decName);
 
             // Queue the synthesized DecoratedNameAttribute for emission during
