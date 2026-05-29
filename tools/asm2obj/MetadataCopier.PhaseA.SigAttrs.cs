@@ -115,6 +115,15 @@ public sealed partial class MetadataCopier
         if (maybeKind == null) return false;
         kind = maybeKind.Value;
 
+        // __stdcall is collapsed to __cdecl on every non-x86 target — those
+        // platforms use a unified C calling convention. If asm2obj kept
+        // CallConvStdcall on x64/arm64 while a chibil-compiled `extern
+        // __stdcall` peer emits CallConvCdecl for the same target, the
+        // signature blobs and mangled names would diverge and link.exe
+        // would reject the binding.
+        if (kind == ModifierKind.CallConvStdcall && !_is32)
+            kind = ModifierKind.CallConvCdecl;
+
         // Parse the CA blob for an optional int32 ctor argument (IsConst/IsVolatile).
         // Blob layout per ECMA II.23.3: prolog (uint16 0x0001), fixed args,
         // named-arg count (uint16), named args.

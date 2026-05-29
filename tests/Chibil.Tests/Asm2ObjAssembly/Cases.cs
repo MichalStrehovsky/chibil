@@ -100,22 +100,24 @@ unsafe static class Cases
     //
     // These methods have bodies (no MethodImpl(ForwardRef)). asm2obj
     // emits them as MethodDefs in <Module>. The C side declares them
-    // as `extern __clrcall` and calls them via a trampoline. Direction
-    // 2 uses __clrcall (NOT cdecl) because chibil's __cdecl extern
-    // calls trigger /clr IJW NEP-thunk emission (bare-name COFF symbol
-    // + __unep@?fn slot + ADDR reloc) that asm2obj does not yet
-    // produce. __clrcall extern calls are managed-only and resolve
-    // via the metadata token alone — exactly what asm2obj's emitted
-    // MethodDef supports.
+    // as `extern` and calls them via a trampoline. asm2obj
+    // auto-emits the IJW NEP machinery (bare-name COFF symbol +
+    // __mep@?fn slot + .nep thunk + .rdata$ilfixup entry) for any
+    // defined method that carries a native calling-convention modopt
+    // on its return type — including the [return: CallConvCdecl] etc.
+    // attributes below — so chibil's __cdecl extern calls can resolve
+    // the bare-name relocation to the asm2obj-emitted NEP thunk.
     //
     // The trampolines themselves are Direction 1 (extern in C#,
     // defined in C) so mainCRTStartup can reach them.
 
+    [return: CallConvCdecl]
     static int cs_double(int x)
     {
         return x * 2;
     }
 
+    [return: CallConvCdecl]
     static int cs_charptr_strlen([IsConst(1)][IsSignUnspecifiedByte] sbyte* s)
     {
         int len = 0;
@@ -123,10 +125,22 @@ unsafe static class Cases
         return len;
     }
 
-    [return: IsLong]
+    [return: CallConvCdecl, IsLong]
     static int cs_long_negate([IsLong] int x)
     {
         return -x;
+    }
+
+    // __stdcall on the C side. On x86, asm2obj emits modopt(CallConvStdcall)
+    // and chibil emits the same; on x64 / arm64 chibil collapses __stdcall to
+    // __cdecl (those targets use a unified C calling convention) and asm2obj
+    // collapses [CallConvStdcall] the same way, so both sides emit
+    // modopt(CallConvCdecl). Either way the blobs and the mangled names
+    // agree at link time.
+    [return: CallConvStdcall]
+    static int cs_stdcall_triple(int x)
+    {
+        return x * 3;
     }
 
     // Direction 1 trampolines that the C side defines and which call
@@ -142,6 +156,10 @@ unsafe static class Cases
     [MethodImpl(MethodImplOptions.ForwardRef)]
     [return: CallConvCdecl, IsLong]
     extern static int call_cs_long_negate([IsLong] int x);
+
+    [MethodImpl(MethodImplOptions.ForwardRef)]
+    [return: CallConvCdecl]
+    extern static int call_cs_stdcall_triple(int x);
 
     // ═══════════════════════════════════════════════════════════════════
     //   Entry point
@@ -183,8 +201,10 @@ unsafe static class Cases
 
         sum += call_cs_long_negate(-9);             // 9
 
+        sum += call_cs_stdcall_triple(4);           // 12
+
         // Expected total:
-        //   5 + 88 + 65 + 65 + 65 + 65 + 100 + 42 + 7 + 22 + 5 + 9 = 538
+        //   5 + 88 + 65 + 65 + 65 + 65 + 100 + 42 + 7 + 22 + 5 + 9 + 12 = 550
         return sum;
     }
 }

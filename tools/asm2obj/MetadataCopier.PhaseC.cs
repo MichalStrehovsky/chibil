@@ -523,7 +523,6 @@ public sealed partial class MetadataCopier
 
             string fullName = GetCustomAttributeTypeFullName(MetadataTokens.CustomAttributeHandle(r));
             if (fullName == CompilerGlobalScopeAttrFullName) continue;
-            if (fullName == UnmanagedExportAttrFullName) continue;
 
             EntityHandle outParent = RemapCustomAttributeParent(ca.Parent);
             if (outParent.IsNil) continue;
