@@ -48,11 +48,15 @@ The pipeline is a strict two-pass metadata copier:
    with a body, run `IlBodyRewriter` (raw-IL copy with metadata-token slot
    substitution + `ldstr` UserString remap), and finalise via
    `AddMethodBody`.
-5. **Phase E — NEP thunks.** For each method flagged
-   `MethodAttributes.UnmanagedExport` (0x0008) or annotated
-   `[UnmanagedExportAttribute]`, emit the IJW NEP machinery
-   (`__mep@<mangled>` slot in `.data`, indirect-jump thunk in `.nep`,
-   bare-name alias `_foo`/`foo` per architecture, `.rdata$ilfixup` entry).
+5. **Phase E — NEP thunks.** For each method whose return-type slot
+   carries `modopt(CallConvCdecl)` or `modopt(CallConvStdcall)` —
+   either already in the input signature blob or scheduled to be
+   injected by an `Asm2Obj.CallConv*` attribute — emit the IJW NEP
+   machinery (`__mep@<mangled>` slot in `.data`, indirect-jump thunk
+   in `.nep`, bare-name alias `_foo`/`foo` per architecture,
+   `.rdata$ilfixup` entry). `__clrcall` methods (no callconv modopt)
+   are managed-only and reachable through the metadata token alone,
+   so they need no NEP machinery.
 6. **Phase F — COFF serialisation.** Wrap metadata + IL + data + NEP into a
    COFF object via `ManagedCoffBuilder` and write to `-o`.
 
@@ -94,7 +98,6 @@ chibil-emitted symbols agree at link time, including:
 |-----------|--------|
 | `System.Runtime.CompilerServices.CompilerGlobalScopeAttribute` on a type | Type is *flattened*: its members become members of the output `<Module>` TypeDef. The type itself is dropped. |
 | `System.Runtime.CompilerServices.DecoratedNameAttribute` on a method | Overrides auto-mangling. The string is the literal COFF symbol name. Reattached to the synthesised MemberRef when the method also has `ForwardRef`. |
-| `System.Runtime.InteropServices.UnmanagedExportAttribute` on a method | Equivalent to setting `MethodAttributes.UnmanagedExport`. Triggers NEP-thunk emission for the method. (Roslyn does not expose the metadata flag directly, so this attribute is the practical opt-in.) |
 | `MethodImplOptions.ForwardRef` (set via `[MethodImpl]`) | A method with no body and the ForwardRef flag is converted to an *unresolved MemberRef* parented on the `<Module>` TypeDef (matching the pattern MSVC emits for extern C functions under `/clr`). `link.exe` resolves the CLR token to the matching MethodDef in another object. |
 
 ## v1 limitations (rejected loudly)

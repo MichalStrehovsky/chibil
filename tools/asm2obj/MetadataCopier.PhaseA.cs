@@ -15,8 +15,6 @@ public sealed partial class MetadataCopier
     // Recognized control attribute full names.
     private const string CompilerGlobalScopeAttrFullName = "System.Runtime.CompilerServices.CompilerGlobalScopeAttribute";
     private const string DecoratedNameAttrFullName = "System.Runtime.CompilerServices.DecoratedNameAttribute";
-    // Sentinel for unmanaged-export when the bit in MethodAttributes cannot be set from C#.
-    private const string UnmanagedExportAttrFullName = "System.Runtime.InteropServices.UnmanagedExportAttribute";
 
     private static readonly string[] AcceptedCoreLibs = { "mscorlib" };
 
@@ -98,12 +96,6 @@ public sealed partial class MetadataCopier
                 _methodInfo[row].Disposition = MethodDisposition.Regular;
             }
 
-            // UnmanagedExport (MethodAttributes flag at 0x0008) or sentinel attribute.
-            bool unmanagedExport = (md.Attributes & MethodAttributes.UnmanagedExport) != 0;
-            if (!unmanagedExport && HasCustomAttribute(md.GetCustomAttributes(), UnmanagedExportAttrFullName))
-                unmanagedExport = true;
-            _methodInfo[row].UnmanagedExport = unmanagedExport;
-
             // [DecoratedNameAttribute("...")] — extract the string and mark the
             // CA row for skipping in the CustomAttribute population phase.
             _methodInfo[row].DecoratedName = ExtractDecoratedName(md.GetCustomAttributes());
@@ -128,6 +120,84 @@ public sealed partial class MetadataCopier
         // - ExportedType: type forwarders (only meaningful in the Assembly table)
         // - ImplMap: P/Invoke metadata (not needed for managed-only methods)
         // - FieldMarshal: P/Invoke marshalling info
+    }
+
+    /// <summary>
+    /// Set <c>UnmanagedExport</c> for each defined method whose return-type
+    /// slot carries a <c>modopt(CallConvCdecl)</c> or
+    /// <c>modopt(CallConvStdcall)</c> — either already in the input
+    /// signature blob or scheduled to be injected by
+    /// <see cref="MethodSignatureInjections"/>. The presence of an
+    /// explicit native calling-convention modopt is precisely what tells
+    /// native callers (chibil-compiled C, MSVC <c>/clr</c>, ...) "this
+    /// method is reachable via the bare-name COFF symbol with that
+    /// calling convention", which is what triggers NEP-thunk emission
+    /// in <see cref="EmitNepThunks"/>. <c>__clrcall</c> methods (no
+    /// callconv modopt) are managed-only and reachable through the
+    /// metadata token alone, so they need no NEP machinery.
+    ///
+    /// Must run after <see cref="ScanSignatureAttributes"/> so the
+    /// injection plan is populated.
+    /// </summary>
+    private void ComputeUnmanagedExportFlags()
+    {
+        int methodDefCount = _reader.GetTableRowCount(TableIndex.MethodDef);
+        for (int row = 1; row <= methodDefCount; row++)
+        {
+            if (_methodInfo[row].Disposition != MethodDisposition.Regular) continue;
+
+            var md = _reader.GetMethodDefinition(MetadataTokens.MethodDefinitionHandle(row));
+            _methodInfo[row].UnmanagedExport =
+                ReturnTypeHasNativeCallConvModopt(md) ||
+                InjectionPlanHasNativeCallConvOnReturn(row);
+        }
+    }
+
+    private bool ReturnTypeHasNativeCallConvModopt(MethodDefinition md)
+    {
+        var r = _reader.GetBlobReader(md.Signature);
+        var hdr = r.ReadSignatureHeader();
+        if (hdr.IsGeneric) r.ReadCompressedInteger(); // generic arity
+        r.ReadCompressedInteger();                     // param count
+
+        // Walk the return-type's leading modopt chain. Stop at the first
+        // non-modifier byte (the return type itself). We only care about
+        // the OUTER modopt slot — modopts inside a Pointer's pointee or
+        // FNPTR sub-signature don't determine the method's own ABI.
+        while (r.RemainingBytes > 0)
+        {
+            int save = r.Offset;
+            var tc = (SignatureTypeCode)r.ReadByte();
+            if (tc != SignatureTypeCode.OptionalModifier && tc != SignatureTypeCode.RequiredModifier)
+            {
+                r.Offset = save;
+                return false;
+            }
+            EntityHandle modH = r.ReadTypeHandle();
+            if (IsNativeCallConvTypeRef(modH)) return true;
+        }
+        return false;
+    }
+
+    private bool InjectionPlanHasNativeCallConvOnReturn(int methodRow)
+    {
+        var plan = _methodInjections[methodRow];
+        if (plan == null) return false;
+        if (plan.PerParam.Length == 0) return false;
+        var list = plan.PerParam[0]; // index 0 = return type
+        if (list == null) return false;
+        for (int i = 0; i < list.Count; i++)
+            if (list[i].Slot == 0 && list[i].Kind.IsCallConv()) return true;
+        return false;
+    }
+
+    private bool IsNativeCallConvTypeRef(EntityHandle modH)
+    {
+        if (modH.Kind != HandleKind.TypeReference) return false;
+        var tr = _reader.GetTypeReference((TypeReferenceHandle)modH);
+        if (_reader.GetString(tr.Namespace) != "System.Runtime.CompilerServices") return false;
+        string name = _reader.GetString(tr.Name);
+        return name == "CallConvCdecl" || name == "CallConvStdcall";
     }
 
     private void ValidateFlattenable(TypeDefinitionHandle handle, TypeDefinition td)

@@ -50,27 +50,30 @@ public class Asm2ObjAnnotationsTests : ChibiTestBase
 
             // ── Direction 2: extern C declarations whose definitions live in the C#
             // fixture, plus trampolines so mainCRTStartup can reach them through
-            // ForwardRef externs in C#. The extern declarations use __clrcall so
-            // chibil's call emits via metadata token only (no /clr IJW NEP-thunk
-            // machinery, which asm2obj does not yet produce on the defining side).
+            // ForwardRef externs in C#. The externs are plain __cdecl — asm2obj
+            // auto-emits the /clr IJW NEP-thunk machinery for the defined C#
+            // methods because they carry [return: CallConvCdecl].
 
-            extern int __clrcall cs_double(int x);
-            extern int __clrcall cs_charptr_strlen(const char* s);
-            extern long __clrcall cs_long_negate(long x);
+            extern int cs_double(int x);
+            extern int cs_charptr_strlen(const char* s);
+            extern long cs_long_negate(long x);
+            extern int __stdcall cs_stdcall_triple(int x);
 
             int call_cs_double(int x) { return cs_double(x); }
             int call_cs_charptr_strlen(const char* s) { return cs_charptr_strlen(s); }
             long call_cs_long_negate(long x) { return cs_long_negate(x); }
+            int call_cs_stdcall_triple(int x) { return cs_stdcall_triple(x); }
             """)
         .AddAsm2ObjAssembly("Asm2ObjAssembly.dll")
         .Link(["/subsystem:console"])
-        // Expected checksum computed in Cases.mainCRTStartup:
+        // Expected checksum computed in Cases.mainCRTStartup (538 + 12 = 550):
         //   c_basic(2,3) + c_char('X') + c_charptr("A...") + c_charptrptr(&"A...")
         //   + c_const_charptr("A...") + c_const_voidptr("A...") + c_long(100)
         //   + c_volatile_intptr(&42) + c_const_intptr(&7)
         //   + call_cs_double(11) + call_cs_charptr_strlen("ABCDE") + call_cs_long_negate(-9)
-        //   = 5 + 88 + 65 + 65 + 65 + 65 + 100 + 42 + 7 + 22 + 5 + 9 = 538
-        .RunAndCheck(exitCode: 538);
+        //   + call_cs_stdcall_triple(4)
+        //   = 5 + 88 + 65 + 65 + 65 + 65 + 100 + 42 + 7 + 22 + 5 + 9 + 12 = 550
+        .RunAndCheck(exitCode: 550);
     }
 }
 

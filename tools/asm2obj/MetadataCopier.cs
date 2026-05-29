@@ -94,6 +94,7 @@ public sealed partial class MetadataCopier
     {
         ClassifyTypesAndMethods();
         ScanSignatureAttributes();
+        ComputeUnmanagedExportFlags();
         PredictRows();
     }
 
