@@ -20,7 +20,7 @@ Line numbers and locals work as expected. You can step through the C code in a .
 
 There isn't one.
 
-There is a minimal stub of a C runtime library in [minicrt.cc](scenarios/minicrt.cc). This provides a runnable `main` that takes `string[]` of arguments and dispatches to the C-standard `main` with `argc` and `argv`.
+There is a minimal stub of a C runtime library in the [crt](crt) directory. This provides a runnable `main` that takes `string[]` of arguments and dispatches to the C-standard `main` with `argc` and `argv`. The produced assembly is converted to a COFF object file using the Asm2Obj utility and can be linked together with the C code to form something with a runnable `main`.
 
 ## Consuming C code from .NET code
 
