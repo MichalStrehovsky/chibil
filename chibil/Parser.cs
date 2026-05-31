@@ -123,6 +123,7 @@ public class Parser
     {
         Obj v = NewAnonGvar(ty);
         v.InitData = str;
+        v.IsStringLiteral = true;
         return v;
     }
 

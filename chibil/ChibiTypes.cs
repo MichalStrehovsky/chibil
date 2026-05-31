@@ -190,6 +190,7 @@ public class Obj
     // Global variable
     public bool IsTentative;
     public bool IsTls;
+    public bool IsStringLiteral;
     public byte[] InitData;
     public Relocation Rel;
 
