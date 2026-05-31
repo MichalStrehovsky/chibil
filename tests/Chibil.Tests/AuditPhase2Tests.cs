@@ -148,4 +148,32 @@ public class AuditPhase2Tests : ChibiTestBase
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
+
+    [Fact]
+    public void StaticLocalSameNameDifferentFunctions()
+    {
+        Compile("""
+            int *foo(void) { static int a = 11; static int *p = &a; return p; }
+            int *bar(void) { static int a = 22; static int *p = &a; return p; }
+            int main(void) { return *foo() + *bar(); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 33);
+    }
+
+    [Fact]
+    public void StaticLocalSameNameDifferentScopes()
+    {
+        Compile("""
+            int foo(void) {
+                int r = 0;
+                { static int x = 5; r += x; }
+                { static int x = 7; r += x; }
+                return r;
+            }
+            int main(void) { return foo(); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 12);
+    }
 }
