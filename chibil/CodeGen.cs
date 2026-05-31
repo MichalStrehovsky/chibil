@@ -29,6 +29,7 @@ public class CodeGen
 
     private BlobBuilder _ilStreamBuilder, _ilRelocBuilder;
     private BlobBuilder _dataStream, _dataRelocs;
+    private BlobBuilder _rdataStream;
     private BlobBuilder _nepStream, _nepRelocs;
     private BlobBuilder _ilFixupStream, _ilFixupRelocs;
     private int _bssSize;
@@ -2779,7 +2780,15 @@ public class CodeGen
 
             if (g.InitData != null)
             {
-                int offset = _dataStream.Count;
+                bool isReadOnly = IsReadOnlyData(g);
+                var stream = isReadOnly ? _rdataStream : _dataStream;
+                var section = isReadOnly ? LogicalSection.RData : LogicalSection.Data;
+
+                // Pad to required alignment
+                int aligned = Util.AlignTo(stream.Count, g.Align);
+                while (stream.Count < aligned) stream.WriteByte(0);
+
+                int offset = stream.Count;
 
                 // Copy InitData, writing addends at relocation offsets
                 byte[] data = (byte[])g.InitData.Clone();
@@ -2788,9 +2797,9 @@ public class CodeGen
                     if (rel.Addend != 0)
                         Util.WriteBuf(data, rel.Offset, rel.Addend, PtrSize);
                 }
-                _dataStream.WriteBytes(data);
+                stream.WriteBytes(data);
 
-                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Data, offset, out _,
+                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, section, offset, out _,
                     isExternal: !g.IsStatic && !g.IsLocal);
                 _dataCoffSymbols[g.Name] = coffSym;
             }
@@ -2841,11 +2850,14 @@ public class CodeGen
         }
     }
 
+    private static bool IsReadOnlyData(Obj g) => g.IsStringLiteral;
+
     /// <summary>Phase B: Write data relocations. Runs after NEP emission so
     /// bare-name symbols are available as relocation targets.</summary>
     private void EmitGlobalDataRelocations(Obj prog)
     {
-        // Track cumulative offset through .data to match what Phase A wrote
+        // Track cumulative offset through .data to match what Phase A wrote.
+        // Read-only data (string literals) went to .rdata and must be skipped.
         int dataOffset = 0;
         for (Obj g = prog; g != null; g = g.Next)
         {
@@ -2853,9 +2865,10 @@ public class CodeGen
             if (!g.IsDefinition) continue;
             if (!_fieldDefs.ContainsKey(g)) continue;
             if (g.InitData == null) continue;
+            if (IsReadOnlyData(g)) continue;
 
-            int offset = dataOffset;
-            dataOffset += g.InitData.Length;
+            int offset = Util.AlignTo(dataOffset, g.Align);
+            dataOffset = offset + g.InitData.Length;
 
             for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
             {
@@ -2960,6 +2973,7 @@ public class CodeGen
         _ilRelocBuilder = new BlobBuilder();
         _dataStream = new BlobBuilder();
         _dataRelocs = new BlobBuilder();
+        _rdataStream = new BlobBuilder();
         _nepStream = new BlobBuilder();
         _nepRelocs = new BlobBuilder();
         _ilFixupStream = new BlobBuilder();
@@ -3028,6 +3042,7 @@ public class CodeGen
         var coffBuilder = new ManagedCoffBuilder(_coffHeader, new MetadataRootBuilder(_md), _symtab, _codeviewSymbols,
             _ilStreamBuilder, _ilRelocBuilder,
             dataStream: _dataStream, dataRelocs: _dataRelocs,
+            rdataStream: _rdataStream,
             ilFixupStream: _ilFixupStream, ilFixupRelocs: _ilFixupRelocs,
             nepStream: _nepStream, nepRelocs: _nepRelocs,
             bssSize: _bssSize);
