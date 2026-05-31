@@ -145,7 +145,7 @@ public class Parser
                 "typedef", "enum", "static", "extern", "_Alignas", "signed", "unsigned",
                 "const", "volatile", "auto", "register", "restrict", "__restrict",
                 "__restrict__", "_Noreturn", "float", "double", "typeof", "inline",
-                "_Thread_local", "__thread", "_Atomic", "__declspec", "__forceinline",
+                "_Thread_local", "__thread", "_Atomic", "__declspec",
                 "__cdecl", "__clrcall", "__stdcall",
                 "__int8", "__int16", "__int32", "__int64" };
             foreach (string k in kw) _typenameMap[k] = true;
@@ -222,14 +222,14 @@ public class Parser
         while (IsTypename(tok))
         {
             if (Util.Equal(tok, "typedef") || Util.Equal(tok, "static") || Util.Equal(tok, "extern") ||
-                Util.Equal(tok, "inline") || Util.Equal(tok, "__forceinline") ||
+                Util.Equal(tok, "inline") ||
                 Util.Equal(tok, "_Thread_local") || Util.Equal(tok, "__thread"))
             {
                 if (attr == null) Util.ErrorTok(tok, "storage class specifier is not allowed in this context");
                 if (Util.Equal(tok, "typedef")) attr.IsTypedef = true;
                 else if (Util.Equal(tok, "static")) attr.IsStatic = true;
                 else if (Util.Equal(tok, "extern")) attr.IsExtern = true;
-                else if (Util.Equal(tok, "inline") || Util.Equal(tok, "__forceinline")) attr.IsInline = true;
+                else if (Util.Equal(tok, "inline")) attr.IsInline = true;
                 else { attr.IsTls = true; Util.ErrorTok(tok, "thread-local storage is not supported in MSIL mode"); }
                 if (attr.IsTypedef && ((attr.IsStatic?1:0) + (attr.IsExtern?1:0) + (attr.IsInline?1:0) + (attr.IsTls?1:0) > 1))
                     Util.ErrorTok(tok, "typedef may not be used together with static, extern, inline, __thread or _Thread_local");

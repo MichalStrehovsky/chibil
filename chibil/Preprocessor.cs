@@ -1061,6 +1061,8 @@ public class Preprocessor
         DefineMacro("__const__", "const");
         DefineMacro("__gnu_linux__", "1");
         DefineMacro("__inline__", "inline");
+        DefineMacro("__inline", "inline");
+        DefineMacro("__forceinline", "inline");
         DefineMacro("__linux", "1");
         DefineMacro("__linux__", "1");
         DefineMacro("__signed__", "signed");
