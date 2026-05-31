@@ -2732,37 +2732,19 @@ public class CodeGen
     }
 
     /// <summary>
+    /// <summary>
     /// Emit NEP machinery for a single method: __mep@ slot, thunk, bare-name alias, ilfixup.
-    /// Inlined from ClrIjw.EmitNepMachinery to avoid cross-project dependency.
     /// </summary>
     private CoffSymbolHandle EmitNepForMethod(int methodToken, string bareName, string mangledSuffix)
     {
-        // (1) __mep@?fn slot in .data
-        int slotOffset = _dataStream.Count;
-        for (int i = 0; i < PtrSize; i++) _dataStream.WriteByte(0);
-
-        var mepDataSym = _symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, LogicalSection.Data, slotOffset);
-        var tokenSym = _symtab.GetOrAddUndefinedClrTokenSymbol(methodToken.ToString("X8"));
-        new CoffRelocationEncoder(_coffHeader, _dataRelocs).AddTokenRelocation(slotOffset, tokenSym);
-
-        // (2) NEP thunk: FF 25 [rel32] indirect jump
-        int thunkOffset = _nepStream.Count;
-        _nepStream.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
-        _nepRelocs.WriteInt32(thunkOffset + 2);
-        _nepRelocs.WriteInt32(mepDataSym._value);
-        _nepRelocs.WriteUInt16(Is32 ? (ushort)0x0006 : (ushort)0x0004); // DIR32 / REL32
-
-        // (3) Bare-name COFF alias
-        var bareSym = _symtab.AddExternalDataSymbol(SymPrefix + bareName, LogicalSection.Nep, thunkOffset);
+        var bareSym = ClrIjw.EmitNepMachinery(
+            TargetMachine, Is32, PtrSize, SymPrefix,
+            _coffHeader, _symtab,
+            _dataStream, _dataRelocs,
+            _nepStream, _nepRelocs,
+            _ilFixupStream, _ilFixupRelocs,
+            methodToken, bareName, mangledSuffix);
         _nepBareNameSymbols[bareName] = bareSym;
-
-        // (4) ILFixup entry
-        int ilfixupOffset = _ilFixupStream.Count;
-        _ilFixupStream.WriteInt32(0); // RVA placeholder
-        _ilFixupStream.WriteInt16(1); // Count
-        _ilFixupStream.WriteInt16(Is32 ? (short)0x0009 : (short)0x000A);
-        new CoffRelocationEncoder(_coffHeader, _ilFixupRelocs).AddImageRelativeRelocation(ilfixupOffset, mepDataSym);
-
         return bareSym;
     }
 
