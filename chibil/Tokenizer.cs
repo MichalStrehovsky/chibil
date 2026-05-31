@@ -135,7 +135,7 @@ public class Tokenizer
                 "unsigned", "const", "volatile", "auto", "register", "restrict",
                 "__restrict", "__restrict__", "_Noreturn", "float", "double",
                 "typeof", "asm", "_Thread_local", "__thread", "_Atomic",
-                "__attribute__", "__declspec", "__forceinline", "__cdecl", "__clrcall", "__stdcall",
+                "__attribute__", "__declspec", "__cdecl", "__clrcall", "__stdcall",
                 "__int8", "__int16", "__int32", "__int64",
             };
             foreach (string k in kw)
