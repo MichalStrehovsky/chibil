@@ -2803,6 +2803,10 @@ public class CodeGen
                 var stream = isReadOnly ? _rdataStream : _dataStream;
                 var section = isReadOnly ? LogicalSection.RData : LogicalSection.Data;
 
+                // Pad to required alignment
+                int aligned = Util.AlignTo(stream.Count, g.Align);
+                while (stream.Count < aligned) stream.WriteByte(0);
+
                 int offset = stream.Count;
 
                 // Copy InitData, writing addends at relocation offsets
@@ -2882,8 +2886,8 @@ public class CodeGen
             if (g.InitData == null) continue;
             if (IsReadOnlyData(g)) continue;
 
-            int offset = dataOffset;
-            dataOffset += g.InitData.Length;
+            int offset = Util.AlignTo(dataOffset, g.Align);
+            dataOffset = offset + g.InitData.Length;
 
             for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
             {
