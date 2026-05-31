@@ -2732,7 +2732,6 @@ public class CodeGen
     }
 
     /// <summary>
-    /// <summary>
     /// Emit NEP machinery for a single method: __mep@ slot, thunk, bare-name alias, ilfixup.
     /// </summary>
     private CoffSymbolHandle EmitNepForMethod(int methodToken, string bareName, string mangledSuffix)
