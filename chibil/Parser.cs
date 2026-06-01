@@ -14,6 +14,7 @@ public class Parser
     private Obj _globals;
     private Scope _scope;
     private Obj _currentFn;
+    private int _staticLocalScope;
     private Node _gotos;
     private Node _labels;
     private string _brkLabel;
@@ -38,7 +39,7 @@ public class Parser
     //  Scope management
     // ═══════════════════════════════════════════════════════════════
 
-    private void EnterScope() { var sc = new Scope { Next = _scope }; _scope = sc; }
+    private void EnterScope() { var sc = new Scope { Next = _scope, ScopeIndex = _staticLocalScope++ }; _scope = sc; }
     private void LeaveScope() { _scope = _scope.Next; }
 
     private VarScope FindVar(Token tok)
@@ -117,11 +118,17 @@ public class Parser
         return v;
     }
 
-    private Obj NewAnonGvar(CType ty) => NewGvar(NewUniqueName(), ty);
+    private Obj NewAnonGvar(CType ty, string prefix = "$S")
+    {
+        var v = new Obj { Name = $"{prefix}{_uniqueId++}", Ty = ty, Align = ty.Align, IsAnonymous = true };
+        v.Next = _globals; v.IsStatic = true; v.IsDefinition = true;
+        _globals = v;
+        return v;
+    }
 
     private Obj NewStringLiteral(byte[] str, CType ty)
     {
-        Obj v = NewAnonGvar(ty);
+        Obj v = NewAnonGvar(ty, "$SG");
         v.InitData = str;
         v.IsStringLiteral = true;
         return v;
@@ -1373,8 +1380,13 @@ public class Parser
             if (ty.Name == null) Util.ErrorTok(ty.NamePos, "variable name omitted");
             if (attr != null && attr.IsStatic)
             {
-                Obj v = NewAnonGvar(ty);
-                PushScope(GetIdent(ty.Name)).Var = v;
+                string ident = GetIdent(ty.Name);
+                // NewGvar pushes user name into scope for C lookups, then
+                // we replace g.Name with the mangled COFF name so that
+                // relocation labels and _dataCoffSymbols keys are unique.
+                Obj v = NewGvar(ident, ty);
+                v.StaticLocalFn = _currentFn;
+                v.Name = $"?{ident}@?{_scope.ScopeIndex}??{_currentFn.Name}@@9@9";
                 if (Util.Equal(tok, "=")) GvarInitializer(ref tok, tok.Next, v);
                 continue;
             }
@@ -1835,7 +1847,7 @@ public class Parser
         }
         fn.IsRoot = !(fn.IsStatic && fn.IsInline);
         if (Util.Consume(ref tok, tok, ";")) return tok;
-        _currentFn = fn; _locals = null; EnterScope();
+        _currentFn = fn; _locals = null; _staticLocalScope = 0; EnterScope();
         CreateParamLvars(ty.Params);
         fn.Params = _locals;
         if (ty.IsVariadic && ty.Params != null)

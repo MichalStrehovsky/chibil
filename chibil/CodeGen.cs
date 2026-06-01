@@ -853,9 +853,9 @@ public class CodeGen
         return sb.ToString();
     }
 
-    private string MangleStaticLocalName(Obj fn, Obj var)
+    private string MangleStaticLocalName(Obj var)
     {
-        return $"?A0x{_tuHash}.?{var.Name}@?1??{fn.Name}@@9@9";
+        return $"?A0x{_tuHash}.{var.Name}";
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1241,10 +1241,13 @@ public class CodeGen
         EncodeType(fieldSig, g.Ty);
 
         string fieldName;
-        if (g.IsLocal)
+        if (g.StaticLocalFn != null)
         {
-            // Static local variable
-            fieldName = MangleStaticLocalName(_currentFn ?? _mainObj, g);
+            fieldName = MangleStaticLocalName(g);
+        }
+        else if (g.IsAnonymous)
+        {
+            fieldName = $"?A0x{_tuHash}.unnamed-global-{_anonGlobalCounter++}";
         }
         else
         {
