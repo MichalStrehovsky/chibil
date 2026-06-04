@@ -395,7 +395,7 @@ public class TypeSystem
     //  Type identity helpers
     // ═══════════════════════════════════════════════════════════════
 
-    /// <summary>Get a stable, collision-free identity for a struct/union type for dedup.</summary>
+    /// <summary>Get a stable, collision-free identity for the canonical CType instance (used for struct/union/array dedup).</summary>
     public int GetTypeId(CType ty)
     {
         // Walk through Origin chain to find the canonical type

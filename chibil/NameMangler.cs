@@ -69,8 +69,9 @@ public readonly struct NameMangler
     /// </summary>
     private void MangleArgType(StringBuilder sb, CType ty)
     {
-        // Mangle into a temp buffer WITHOUT name or arg backrefs to get the
-        // canonical arg-type key.
+        // Mangle into a temp buffer with name backrefs disabled and with an isolated
+        // arg-backref table, so we get a deterministic canonical arg-type key without
+        // polluting the outer function's arg-backref slots.
         NameMangler nestedMangler = new NameMangler(_types, useArgBackrefs: true);
         var tmp = new StringBuilder();
         nestedMangler.MangleType(tmp, ty, isReturn: false);
