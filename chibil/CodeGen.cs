@@ -37,19 +37,8 @@ public class CodeGen
     private AssemblyReferenceHandle _mscorlibRef;
     private TypeDefinitionHandle _moduleTypeDef;
 
-    // Lazy TypeRef handles (created on first use)
-    private TypeReferenceHandle _callConvCdeclRef;
-    private TypeReferenceHandle _callConvStdcallRef;
-    private TypeReferenceHandle _isSignUnspecifiedByteRef;
-    private TypeReferenceHandle _isConstRef;
-    private TypeReferenceHandle _isVolatileRef;
-    private TypeReferenceHandle _isLongRef;
-    private TypeReferenceHandle _nativeCppClassAttrRef;
-    private TypeReferenceHandle _valueTypeRef;
-    private TypeReferenceHandle _interlockedRef;
-    private bool _callConvCdeclCreated, _callConvStdcallCreated;
-    private bool _isSignUnspecifiedByteCreated, _isConstCreated, _isVolatileCreated, _isLongCreated;
-    private bool _nativeCppClassAttrCreated, _valueTypeCreated, _interlockedCreated;
+    // Lazy TypeRef handles (created on first use), keyed by type name (without namespace)
+    private readonly Dictionary<string, TypeReferenceHandle> _lazyTypeRefs = new();
 
     // Metadata row tracking
     private int _nextFieldRow = 1, _nextMethodRow = 1, _nextParamRow = 1;
@@ -131,113 +120,27 @@ public class CodeGen
     //  Lazy TypeRef accessors
     // ═══════════════════════════════════════════════════════════════
 
-    private TypeReferenceHandle GetCallConvCdeclRef()
+    private TypeReferenceHandle GetLazyTypeRef(string @namespace, string name)
     {
-        if (!_callConvCdeclCreated)
+        if (!_lazyTypeRefs.TryGetValue(name, out var handle))
         {
-            _callConvCdeclRef = _md.AddTypeReference(_mscorlibRef,
-                _md.GetOrAddString("System.Runtime.CompilerServices"),
-                _md.GetOrAddString("CallConvCdecl"));
-            _callConvCdeclCreated = true;
+            handle = _md.AddTypeReference(_mscorlibRef,
+                _md.GetOrAddString(@namespace),
+                _md.GetOrAddString(name));
+            _lazyTypeRefs[name] = handle;
         }
-        return _callConvCdeclRef;
+        return handle;
     }
 
-    private TypeReferenceHandle GetCallConvStdcallRef()
-    {
-        if (!_callConvStdcallCreated)
-        {
-            _callConvStdcallRef = _md.AddTypeReference(_mscorlibRef,
-                _md.GetOrAddString("System.Runtime.CompilerServices"),
-                _md.GetOrAddString("CallConvStdcall"));
-            _callConvStdcallCreated = true;
-        }
-        return _callConvStdcallRef;
-    }
-
-    private TypeReferenceHandle GetIsSignUnspecifiedByteRef()
-    {
-        if (!_isSignUnspecifiedByteCreated)
-        {
-            _isSignUnspecifiedByteRef = _md.AddTypeReference(_mscorlibRef,
-                _md.GetOrAddString("System.Runtime.CompilerServices"),
-                _md.GetOrAddString("IsSignUnspecifiedByte"));
-            _isSignUnspecifiedByteCreated = true;
-        }
-        return _isSignUnspecifiedByteRef;
-    }
-
-    private TypeReferenceHandle GetIsConstRef()
-    {
-        if (!_isConstCreated)
-        {
-            _isConstRef = _md.AddTypeReference(_mscorlibRef,
-                _md.GetOrAddString("System.Runtime.CompilerServices"),
-                _md.GetOrAddString("IsConst"));
-            _isConstCreated = true;
-        }
-        return _isConstRef;
-    }
-
-    private TypeReferenceHandle GetIsVolatileRef()
-    {
-        if (!_isVolatileCreated)
-        {
-            _isVolatileRef = _md.AddTypeReference(_mscorlibRef,
-                _md.GetOrAddString("System.Runtime.CompilerServices"),
-                _md.GetOrAddString("IsVolatile"));
-            _isVolatileCreated = true;
-        }
-        return _isVolatileRef;
-    }
-
-    private TypeReferenceHandle GetIsLongRef()
-    {
-        if (!_isLongCreated)
-        {
-            _isLongRef = _md.AddTypeReference(_mscorlibRef,
-                _md.GetOrAddString("System.Runtime.CompilerServices"),
-                _md.GetOrAddString("IsLong"));
-            _isLongCreated = true;
-        }
-        return _isLongRef;
-    }
-
-    private TypeReferenceHandle GetNativeCppClassAttrRef()
-    {
-        if (!_nativeCppClassAttrCreated)
-        {
-            _nativeCppClassAttrRef = _md.AddTypeReference(_mscorlibRef,
-                _md.GetOrAddString("System.Runtime.CompilerServices"),
-                _md.GetOrAddString("NativeCppClassAttribute"));
-            _nativeCppClassAttrCreated = true;
-        }
-        return _nativeCppClassAttrRef;
-    }
-
-    private TypeReferenceHandle GetValueTypeRef()
-    {
-        if (!_valueTypeCreated)
-        {
-            _valueTypeRef = _md.AddTypeReference(_mscorlibRef,
-                _md.GetOrAddString("System"),
-                _md.GetOrAddString("ValueType"));
-            _valueTypeCreated = true;
-        }
-        return _valueTypeRef;
-    }
-
-    private TypeReferenceHandle GetInterlockedRef()
-    {
-        if (!_interlockedCreated)
-        {
-            _interlockedRef = _md.AddTypeReference(_mscorlibRef,
-                _md.GetOrAddString("System.Threading"),
-                _md.GetOrAddString("Interlocked"));
-            _interlockedCreated = true;
-        }
-        return _interlockedRef;
-    }
+    private TypeReferenceHandle GetCallConvCdeclRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "CallConvCdecl");
+    private TypeReferenceHandle GetCallConvStdcallRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "CallConvStdcall");
+    private TypeReferenceHandle GetIsSignUnspecifiedByteRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "IsSignUnspecifiedByte");
+    private TypeReferenceHandle GetIsConstRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "IsConst");
+    private TypeReferenceHandle GetIsVolatileRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "IsVolatile");
+    private TypeReferenceHandle GetIsLongRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "IsLong");
+    private TypeReferenceHandle GetNativeCppClassAttrRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "NativeCppClassAttribute");
+    private TypeReferenceHandle GetValueTypeRef() => GetLazyTypeRef("System", "ValueType");
+    private TypeReferenceHandle GetInterlockedRef() => GetLazyTypeRef("System.Threading", "Interlocked");
 
     // ═══════════════════════════════════════════════════════════════
     //  Type encoding: CType → MSIL signature bytes
