@@ -8,6 +8,10 @@ public class TypeSystem
 {
     private readonly DataModel _dm;
 
+    // Monotonic counter for stable, collision-free type IDs
+    private readonly Dictionary<CType, int> _typeIdMap = new(ReferenceEqualityComparer.Instance);
+    private int _nextTypeId;
+
     // Singleton type instances — fixed across data models
     public readonly CType TyVoid = new(TypeKind.Void, 1, 1);
     public readonly CType TyBool = new(TypeKind.Bool, 1, 1);
@@ -30,6 +34,8 @@ public class TypeSystem
     // Semantic types that vary by data model
     public CType PtrdiffType => _dm.LongSize == 8 ? TyLong : TyLongLong;
     public CType SizeType => _dm.LongSize == 8 ? TyUlong : TyUlongLong;
+
+    public int PointerSize => _dm.PointerSize;
 
     public TypeSystem(DataModel dm)
     {
@@ -383,5 +389,49 @@ public class TypeSystem
                 node.Ty = node.Lhs.Ty.Base;
                 return;
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Type identity helpers
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>Get a stable, collision-free identity for a struct/union type for dedup.</summary>
+    public int GetTypeId(CType ty)
+    {
+        // Walk through Origin chain to find the canonical type
+        CType canonical = ty;
+        while (canonical.Origin != null) canonical = canonical.Origin;
+        if (!_typeIdMap.TryGetValue(canonical, out int id))
+        {
+            id = ++_nextTypeId;
+            _typeIdMap[canonical] = id;
+        }
+        return id;
+    }
+
+    public string GetStructName(CType ty)
+    {
+        // Prefer TagName (set by parser from struct/union tag) over Name
+        // (which Declarator overwrites with the variable/parameter name)
+        string tag = GetTagName(ty);
+        if (tag != null)
+            return tag;
+        if (ty.Name != null)
+            return Util.GetTokenText(ty.Name);
+        // Anonymous struct — use a generated name
+        return $"<anon_{GetTypeId(ty):X8}>";
+    }
+
+    /// <summary>Walk the Origin chain to find the tag name of an enum/struct/union.</summary>
+    public static string GetTagName(CType ty)
+    {
+        CType cur = ty;
+        while (cur != null)
+        {
+            if (cur.TagName != null)
+                return cur.TagName;
+            cur = cur.Origin;
+        }
+        return null;
     }
 }
