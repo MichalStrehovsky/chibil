@@ -225,4 +225,35 @@ public class AuditBugTests : ChibiTestBase
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 3);
     }
+
+    [Fact]
+    public void FuncAndFunctionTest()
+    {
+        Compile("""
+            char* f1() {
+                return __func__;
+            }
+
+            char* f2() {
+                return __FUNCTION__;
+            }
+
+            int main(void) {
+                char* r1 = f1();
+                char* r2 = f2();
+                if (r1[0] != 'f' || r1[1] != '1' || r1[2] != 0
+                  || r2[0] != 'f' || r2[1] != '2' || r2[2] != 0)
+                {
+                    return 99;
+                }
+
+                if (sizeof(__func__) != 5)
+                    return 98;
+
+                return 100;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 100);
+    }
 }

@@ -179,9 +179,6 @@ public class Obj
     public bool IsLocal;
     public int Align;
 
-    // Local variable
-    public int Offset;
-
     // Global variable or function
     public bool IsFunction;
     public bool IsDefinition;
@@ -201,9 +198,6 @@ public class Obj
     public Obj Params;
     public Node Body;
     public Obj Locals;
-    public Obj VaArea;
-    public Obj AllocaBottom;
-    public int StackSize;
 
     // Static inline function
     public bool IsLive;

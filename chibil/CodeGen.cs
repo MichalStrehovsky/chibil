@@ -69,10 +69,8 @@ public class CodeGen
     private readonly Dictionary<string, FieldDefinitionHandle> _unepFields = new();
 
     // __CxxPureMSILEntry state
-    private MethodDefinitionHandle _mainMethod;
     private Obj _mainObj;
     private MethodDefinitionHandle _cxxPureMsilEntry;
-    private bool _hasMain;
 
     // Architecture helpers derived from DataModel
     private int PtrSize => _dm.PointerSize;
@@ -96,8 +94,6 @@ public class CodeGen
     private int _scratchLocalBase;
     private int _maxStack, _stackDepth;
     private Dictionary<string, LabelHandle> _labels;
-    private int _labelCount;
-    private StandaloneSignatureHandle _localsSigHandle;
 
     public CodeGen(CompilerOptions options, Tokenizer tokenizer, TypeSystem types)
     {
@@ -106,8 +102,6 @@ public class CodeGen
         _types = types;
         _dm = options.DataModel;
     }
-
-    private int Count() => _labelCount++;
 
     // ═══════════════════════════════════════════════════════════════
     //  Stack tracking
@@ -561,8 +555,6 @@ public class CodeGen
         // If this is main, register __CxxPureMSILEntry
         if (fn.Name == "main")
         {
-            _hasMain = true;
-            _mainMethod = methodDef;
             _mainObj = fn;
             RegisterCxxPureMSILEntry(fn);
         }
@@ -766,10 +758,7 @@ public class CodeGen
             _md.GetOrAddString(fieldName), _md.GetOrAddBlob(fieldSig));
         _nextFieldRow++;
 
-        // FieldRVA table entry required when HasFieldRVA is set.
-        // Actual RVA is 0 — resolved via COFF relocations at link time.
-        if ((fieldAttrs & FieldAttributes.HasFieldRVA) != 0)
-            _md.AddFieldRelativeVirtualAddress(fieldDef, 0);
+        _md.AddFieldRelativeVirtualAddress(fieldDef, 0);
 
         _fieldDefs[g] = fieldDef;
         _globalFieldsByName[g.Name] = fieldDef;
@@ -903,7 +892,6 @@ public class CodeGen
         _maxStack = 0;
         _stackDepth = 0;
         _labels = new Dictionary<string, LabelHandle>();
-        _labelCount = 0;
 
         // Assign parameter slots
         int argIdx = 0;
@@ -916,8 +904,6 @@ public class CodeGen
         {
             if (local.IsLocal && !_paramSlots.ContainsKey(local))
             {
-                if (local == fn.AllocaBottom) continue; // skip alloca bottom
-                if (local == fn.VaArea) continue; // skip va_area
                 _localSlots[local] = localIdx++;
             }
         }
@@ -957,7 +943,6 @@ public class CodeGen
 
             localsSig = _md.AddStandaloneSignature(_md.GetOrAddBlob(localsSigBlob));
         }
-        _localsSigHandle = localsSig;
 
         // Build CodeView local slot info
         var localSlotList = new List<CodeViewManSlot>();
@@ -2105,7 +2090,7 @@ public class CodeGen
 
     private void EmitCxxPureMSILEntry()
     {
-        if (!_hasMain) return;
+        if (_mainObj == null) return;
 
         var enc = new RelocatableInstructionEncoder(
             new BlobBuilder(), new MethodRelocationBuilder(),
@@ -2130,7 +2115,7 @@ public class CodeGen
             enc.OpCode(ILOpCode.Ldarg_2); // envp
         }
 
-        enc.Call(_mainMethod);
+        enc.Call(_methodDefs[_mainObj]);
 
         // If main returns void, push 0
         if (_mainObj.Ty.ReturnTy.Kind == TypeKind.Void)
@@ -2171,14 +2156,6 @@ public class CodeGen
             {
                 EmitUnepSlot(fn, bareSym);
             }
-        }
-
-        // NEP for __CxxPureMSILEntry
-        if (_hasMain)
-        {
-            string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
-            EmitNepForMethod(
-                MetadataTokens.GetToken(_cxxPureMsilEntry), "__CxxPureMSILEntry", mangledName);
         }
 
         // Emit ADDR relocs for extern __unep@ fields (not defined in this TU)
