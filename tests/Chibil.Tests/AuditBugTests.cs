@@ -173,4 +173,56 @@ public class AuditBugTests : ChibiTestBase
             """)
         .AssertErrorContains("variadic");
     }
+
+    [Fact]
+    public void NestedStructMemberAssignment()
+    {
+        Compile("""
+            struct Outer {
+                struct {
+                    int x;
+                    int y;
+                } inner;
+            };
+
+            int main(void) {
+                struct Outer a;
+                struct Outer b;
+                a.inner.x = 1;
+                a.inner.y = 2;
+                b.inner = a.inner;
+                return b.inner.x + b.inner.y;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 3);
+    }
+
+    [Fact]
+    public void NestedStructMemberAssignmentAfterForwardTypeRef()
+    {
+        Compile("""
+            struct inner;
+            struct inner *extern_ref(struct inner *p) { return p; }
+
+            struct Outer {
+                struct {
+                    int x;
+                    int y;
+                } inner;
+            };
+
+            int main(void) {
+                struct Outer a;
+                struct Outer b;
+                extern_ref(0);
+                a.inner.x = 1;
+                a.inner.y = 2;
+                b.inner = a.inner;
+                return b.inner.x + b.inner.y;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 3);
+    }
 }

@@ -27,7 +27,7 @@ public class MsvcInteropTests : ChibiTestBase
     [Theory]
     [InlineData("")]
     [InlineData("__clrcall ")]
-    public void ChibiDefine_MsvcConsume(string cc)
+    public void ChibiDefine_MsvcConsumeDirect(string cc)
     {
         Compile($$"""
             int {{cc}}add(int a, int b) {
@@ -48,7 +48,7 @@ public class MsvcInteropTests : ChibiTestBase
     [Theory]
     [InlineData("")]
     [InlineData("__clrcall ")]
-    public void MsvcDefine_ChibiConsume(string cc)
+    public void MsvcDefine_ChibiConsumeDirect(string cc)
     {
         MsvcCompile($$"""
             int {{cc}}multiply(int a, int b) {
@@ -60,6 +60,50 @@ public class MsvcInteropTests : ChibiTestBase
 
             int main(void) {
                 return multiply(6, 7);
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("__clrcall ")]
+    public void ChibiDefine_MsvcConsumeIndirect(string cc)
+    {
+        Compile($$"""
+            int {{cc}}add(int a, int b) {
+                return a + b;
+            }
+            """)
+        .MsvcCompile($$"""
+            int {{cc}}add(int, int);
+
+            int main(void) {
+                int ({{cc}}*addftn)(int, int) = add;
+                return addftn(30, 12);
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("__clrcall ")]
+    public void MsvcDefine_ChibiConsumeIndirect(string cc)
+    {
+        MsvcCompile($$"""
+            int {{cc}}multiply(int a, int b) {
+                return a * b;
+            }
+            """)
+        .Compile($$"""
+            int {{cc}}multiply(int, int);
+
+            int main(void) {
+                int ({{cc}}*multiplyftn)(int, int) = multiply;
+                return multiplyftn(6, 7);
             }
             """)
         .Link(["/entry:main", "/subsystem:console"])

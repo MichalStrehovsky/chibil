@@ -266,17 +266,9 @@ public class CodeGen
                 {
                     // Fixed-size array → ValueType of array TypeDef
                     string arrayName = NameMangler.MangleArrayTypeName(_types, ty);
-                    if (_arrayTypeDefs.TryGetValue(arrayName, out var arrayTd))
-                    {
-                        sig.WriteByte((byte)(SignatureTypeCode)0x11);
-                        sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(arrayTd));
-                    }
-                    else
-                    {
-                        // Shouldn't happen if PreAllocate ran correctly
-                        sig.WriteByte((byte)SignatureTypeCode.Pointer);
-                        EncodeType(sig, ty.Base);
-                    }
+                    TypeDefinitionHandle arrayTd = _arrayTypeDefs[arrayName];
+                    sig.WriteByte((byte)(SignatureTypeCode)0x11);
+                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(arrayTd));
                 }
                 break;
             case TypeKind.Struct:
@@ -287,24 +279,21 @@ public class CodeGen
                 if (canonical.IsNestedMember)
                     throw new InvalidOperationException(
                         $"Internal error: nested member type '{_types.GetStructName(canonical)}' reached signature encoding");
-                int typeId = _types.GetTypeId(ty);
-                if (_structTypeDefs.TryGetValue(typeId, out var structTd))
+                EntityHandle structHandle = GetStructTypeHandle(ty);
+                if (structHandle.IsNil)
                 {
-                    sig.WriteByte((byte)(SignatureTypeCode)0x11);
-                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(structTd));
-                }
-                else
-                {
-                    // Forward-declared struct → TypeRef
+                    // Forward-declared struct in a signature.
                     string name = _types.GetStructName(ty);
                     if (!_forwardDeclTypeRefs.TryGetValue(name, out var typeRef))
                     {
                         typeRef = _md.AddTypeReference(default, default, _md.GetOrAddString(name));
                         _forwardDeclTypeRefs[name] = typeRef;
                     }
-                    sig.WriteByte((byte)(SignatureTypeCode)0x11);
-                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(typeRef));
+                    structHandle = typeRef;
                 }
+
+                sig.WriteByte((byte)(SignatureTypeCode)0x11);
+                sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(structHandle));
                 break;
             }
             case TypeKind.Func:
@@ -320,24 +309,24 @@ public class CodeGen
                 EncodeType(sig, ty.Base);
                 break;
             default:
-                // Native int for anything else (shouldn't happen)
-                sig.WriteByte((byte)SignatureTypeCode.IntPtr);
-                break;
+                throw new InvalidOperationException("Internal error");
         }
     }
 
     /// <summary>Encode an inline function pointer signature for FNPTR in method/local signatures.</summary>
     private void EncodeFnPtrSignature(BlobBuilder sig, CType funcTy)
     {
-        // Calling convention byte per ECMA-335:
-        // MSVC /clr uses CDecl (0x01) for cdecl, StdCall (0x02) for __stdcall,
-        // and Default (0x00) for __clrcall function pointers.
-        sig.WriteByte(funcTy.CallConv switch
+        EncodeFunctionSignature(sig, funcTy, funcTy.CallConv switch
         {
             CallConv.Clrcall => (byte)SignatureCallingConvention.Default,
             CallConv.Stdcall => (byte)SignatureCallingConvention.StdCall,
             _ => (byte)SignatureCallingConvention.CDecl,
         });
+    }
+
+    private void EncodeFunctionSignature(BlobBuilder sig, CType funcTy, byte callConv = 0)
+    {
+        sig.WriteByte(callConv);
 
         // Count parameters
         int paramCount = 0;
@@ -352,25 +341,22 @@ public class CodeGen
             EncodeType(sig, p);
     }
 
-    /// <summary>Encode the return type for a function, with modopt(CallConvCdecl) for cdecl.</summary>
+    /// <summary>Encode the return type for a function, with modopt(CallConvCdecl) for unmanaged calling conventions.</summary>
     private void EncodeReturnType(BlobBuilder sig, CType funcTy)
     {
-        // For cdecl functions: modopt(CallConvCdecl) on return type
-        if (funcTy.CallConv == CallConv.Cdecl)
+        if (funcTy.CallConv != CallConv.Clrcall)
         {
             sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetCallConvCdeclRef()));
-        }
-        else if (funcTy.CallConv == CallConv.Stdcall)
-        {
-            sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetCallConvStdcallRef()));
+            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(funcTy.CallConv switch
+            {
+                CallConv.Cdecl => GetCallConvCdeclRef(),
+                CallConv.Stdcall => GetCallConvStdcallRef(),
+                _ => throw new UnreachableException()
+            }
+            ));
         }
 
-        if (funcTy.ReturnTy.Kind == TypeKind.Void)
-            sig.WriteByte((byte)SignatureTypeCode.Void);
-        else
-            EncodeType(sig, funcTy.ReturnTy);
+        EncodeType(sig, funcTy.ReturnTy);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -536,27 +522,15 @@ public class CodeGen
     private void RegisterFunction(Obj fn)
     {
         CType funcTy = fn.Ty;
-        bool isCdecl = funcTy.CallConv != CallConv.Clrcall;
+        bool isUnmanaged = funcTy.CallConv != CallConv.Clrcall;
 
         // Build method signature
         var sig = new BlobBuilder();
-        sig.WriteByte(0x00); // DEFAULT calling convention
-
-        // Parameter count
-        int paramCount = 0;
-        for (CType p = funcTy.Params; p != null; p = p.Next) paramCount++;
-        sig.WriteCompressedInteger(paramCount);
-
-        // Return type
-        EncodeReturnType(sig, funcTy);
-
-        // Parameters
-        for (CType p = funcTy.Params; p != null; p = p.Next)
-            EncodeType(sig, p);
+        EncodeFunctionSignature(sig, funcTy);
 
         // Method attributes
         MethodAttributes attrs = MethodAttributes.Assembly | MethodAttributes.Static;
-        if (isCdecl && !fn.IsStatic)
+        if (isUnmanaged && !fn.IsStatic)
             attrs |= (MethodAttributes)0x0008; // UnmanagedExport
 
         var methodDef = _md.AddMethodDefinition(
@@ -591,6 +565,24 @@ public class CodeGen
             _mainMethod = methodDef;
             _mainObj = fn;
             RegisterCxxPureMSILEntry(fn);
+        }
+    }
+
+    private EntityHandle GetFunctionToken(Obj fn)
+    {
+        if (_methodDefs.TryGetValue(fn, out var methodDef))
+        {
+            return methodDef;
+        }
+        else if (_externalFuncRefs.TryGetValue(fn.Name, out var memberRef))
+        {
+            return memberRef;
+        }
+        else
+        {
+            // Register on the fly (might be a forward reference)
+            RegisterExternalFunction(fn);
+            return _externalFuncRefs[fn.Name];
         }
     }
 
@@ -648,13 +640,7 @@ public class CodeGen
 
         // Build MemberRef signature
         var sig = new BlobBuilder();
-        sig.WriteByte(0x00); // DEFAULT
-        int paramCount = 0;
-        for (CType p = funcTy.Params; p != null; p = p.Next) paramCount++;
-        sig.WriteCompressedInteger(paramCount);
-        EncodeReturnType(sig, funcTy);
-        for (CType p = funcTy.Params; p != null; p = p.Next)
-            EncodeType(sig, p);
+        EncodeFunctionSignature(sig, funcTy);
 
         var memberRef = _md.AddMemberReference(
             _moduleTypeDef, _md.GetOrAddString(fn.Name), _md.GetOrAddBlob(sig));
@@ -1031,10 +1017,6 @@ public class CodeGen
         int typeId = _types.GetTypeId(ty);
         if (_structTypeDefs.TryGetValue(typeId, out var handle))
             return handle;
-        // Forward-declared
-        string name = _types.GetStructName(ty);
-        if (_forwardDeclTypeRefs.TryGetValue(name, out var typeRef))
-            return typeRef;
         return default;
     }
 
@@ -1090,7 +1072,7 @@ public class CodeGen
                 if (node.Var.IsFunction || node.Var.Ty.Kind == TypeKind.Func)
                 {
                     // &func — emit function address (same as GenExpr Var for functions)
-                    EmitFunctionAddress(node.Var, node.Tok);
+                    EmitFunctionAddress(node.Var);
                     return;
                 }
                 if (node.Var.IsLocal)
@@ -1372,31 +1354,19 @@ public class CodeGen
         ty.Kind == TypeKind.Struct || ty.Kind == TypeKind.Union || ty.Kind == TypeKind.Array;
 
     /// <summary>Push a callable function address onto the evaluation stack.</summary>
-    private void EmitFunctionAddress(Obj fn, Token tok = null)
+    private void EmitFunctionAddress(Obj fn)
     {
         CType funcTy = fn.Ty;
         if (funcTy.CallConv == CallConv.Clrcall)
         {
-            if (_methodDefs.TryGetValue(fn, out var md))
-            {
-                _enc.OpCode(ILOpCode.Ldftn); _enc.Token(md); Push();
-            }
-            else
-            {
-                Util.ErrorTok(tok ?? fn.Tok, "cannot take address of external __clrcall function");
-            }
+            EntityHandle md = GetFunctionToken(fn);
+            _enc.OpCode(ILOpCode.Ldftn); _enc.Token(md); Push();
         }
         else
         {
-            // cdecl: load the native function pointer from __unep@ field
-            if (_unepFields.TryGetValue(fn.Name, out var unepField))
-            {
-                _enc.OpCode(ILOpCode.Ldsfld); _enc.Token(unepField); Push();
-            }
-            else
-            {
-                Util.ErrorTok(tok ?? fn.Tok, $"cannot take address of cdecl function '{fn.Name}' — __unep@ field not registered");
-            }
+            // unmanaged: load the native function pointer from __unep@ field
+            FieldDefinitionHandle unepField = _unepFields[fn.Name];
+            _enc.OpCode(ILOpCode.Ldsfld); _enc.Token(unepField); Push();
         }
     }
 
@@ -1440,7 +1410,7 @@ public class CodeGen
             case NodeKind.Var:
                 if (node.Ty.Kind == TypeKind.Func || node.Var.IsFunction)
                 {
-                    EmitFunctionAddress(node.Var, node.Tok);
+                    EmitFunctionAddress(node.Var);
                     return;
                 }
                 if (node.Var.IsLocal && !IsAggregateType(node.Ty))
@@ -1735,23 +1705,7 @@ public class CodeGen
 
             // Build standalone signature for calli
             var calliSig = new BlobBuilder();
-            calliSig.WriteByte(funcTy.CallConv switch
-            {
-                CallConv.Clrcall => (byte)SignatureCallingConvention.Default,
-                CallConv.Stdcall => (byte)SignatureCallingConvention.StdCall,
-                _ => (byte)SignatureCallingConvention.CDecl,
-            });
-
-            int paramCount = 0;
-            for (CType p = funcTy.Params; p != null; p = p.Next) paramCount++;
-            calliSig.WriteCompressedInteger(paramCount);
-
-            // Return type (with modopt for calling convention)
-            EncodeReturnType(calliSig, funcTy);
-
-            // Params
-            for (CType p = funcTy.Params; p != null; p = p.Next)
-                EncodeType(calliSig, p);
+            EncodeFnPtrSignature(calliSig, funcTy);
 
             var calliSigHandle = _md.AddStandaloneSignature(_md.GetOrAddBlob(calliSig));
             _enc.CallIndirect(calliSigHandle);
@@ -1760,21 +1714,7 @@ public class CodeGen
         else
         {
             // Direct call
-            string targetName = node.Lhs.Var.Name;
-            if (_methodDefs.TryGetValue(node.Lhs.Var, out var methodDef))
-            {
-                _enc.Call(methodDef);
-            }
-            else if (_externalFuncRefs.TryGetValue(targetName, out var memberRef))
-            {
-                _enc.Call(memberRef);
-            }
-            else
-            {
-                // Register on the fly (might be a forward reference)
-                RegisterExternalFunction(node.Lhs.Var);
-                _enc.Call(_externalFuncRefs[targetName]);
-            }
+            _enc.Call(GetFunctionToken(node.Lhs.Var));
             Pop(argCount);
         }
 
