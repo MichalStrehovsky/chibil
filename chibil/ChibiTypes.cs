@@ -198,6 +198,7 @@ public class Obj
     public Obj Params;
     public Node Body;
     public Obj Locals;
+    public int LabelCount;
 
     // Static inline function
     public bool IsLive;
@@ -242,8 +243,8 @@ public class Node
     public Node Inc;
 
     // "break" and "continue" labels
-    public string BrkLabel;
-    public string ContLabel;
+    public int BrkLabelId;
+    public int ContLabelId;
 
     // Block or statement expression
     public Node Body;
@@ -257,7 +258,7 @@ public class Node
 
     // Goto or labeled statement, or labels-as-values
     public string Label;
-    public string UniqueLabel;
+    public int LabelId;
     public Node GotoNext;
 
     // Switch
