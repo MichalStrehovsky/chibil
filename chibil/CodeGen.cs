@@ -39,6 +39,8 @@ public class CodeGen
 
     // Lazy TypeRef handles (created on first use), keyed by type name (without namespace)
     private readonly Dictionary<string, TypeReferenceHandle> _lazyTypeRefs = new();
+    // Lazy MemberRef handles (created on first use), keyed by "TypeName.MemberName"
+    private readonly Dictionary<string, MemberReferenceHandle> _lazyMemberRefs = new();
 
     // Metadata row tracking
     private int _nextFieldRow = 1, _nextMethodRow = 1, _nextParamRow = 1;
@@ -141,6 +143,16 @@ public class CodeGen
     private TypeReferenceHandle GetNativeCppClassAttrRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "NativeCppClassAttribute");
     private TypeReferenceHandle GetValueTypeRef() => GetLazyTypeRef("System", "ValueType");
     private TypeReferenceHandle GetInterlockedRef() => GetLazyTypeRef("System.Threading", "Interlocked");
+
+    private MemberReferenceHandle GetLazyMemberRef(string key, EntityHandle parent, string memberName, Func<BlobBuilder> buildSignature)
+    {
+        if (!_lazyMemberRefs.TryGetValue(key, out var handle))
+        {
+            handle = _md.AddMemberReference(parent, _md.GetOrAddString(memberName), _md.GetOrAddBlob(buildSignature()));
+            _lazyMemberRefs[key] = handle;
+        }
+        return handle;
+    }
 
     // ═══════════════════════════════════════════════════════════════
     //  Type encoding: CType → MSIL signature bytes
@@ -667,18 +679,18 @@ public class CodeGen
         attrBlob.WriteUInt16(0x0000); // NumNamed
 
         // TypeRef for DecoratedNameAttribute
-        var decoratedNameRef = _md.AddTypeReference(_mscorlibRef,
-            _md.GetOrAddString("System.Runtime.CompilerServices"),
-            _md.GetOrAddString("DecoratedNameAttribute"));
+        var decoratedNameRef = GetLazyTypeRef("System.Runtime.CompilerServices", "DecoratedNameAttribute");
 
         // MemberRef for .ctor(string)
-        var ctorSig = new BlobBuilder();
-        ctorSig.WriteByte(0x20); // HASTHIS
-        ctorSig.WriteCompressedInteger(1); // 1 param
-        ctorSig.WriteByte((byte)SignatureTypeCode.Void); // return void
-        ctorSig.WriteByte((byte)SignatureTypeCode.String); // param: string
-
-        var ctorRef = _md.AddMemberReference(decoratedNameRef, _md.GetOrAddString(".ctor"), _md.GetOrAddBlob(ctorSig));
+        var ctorRef = GetLazyMemberRef("DecoratedNameAttribute..ctor", decoratedNameRef, ".ctor", () =>
+        {
+            var ctorSig = new BlobBuilder();
+            ctorSig.WriteByte(0x20); // HASTHIS
+            ctorSig.WriteCompressedInteger(1); // 1 param
+            ctorSig.WriteByte((byte)SignatureTypeCode.Void); // return void
+            ctorSig.WriteByte((byte)SignatureTypeCode.String); // param: string
+            return ctorSig;
+        });
 
         _md.AddCustomAttribute(target, ctorRef, _md.GetOrAddBlob(attrBlob));
     }
@@ -864,12 +876,14 @@ public class CodeGen
         var attrRef = GetNativeCppClassAttrRef();
 
         // MemberRef for .ctor()
-        var ctorSig = new BlobBuilder();
-        ctorSig.WriteByte(0x20); // HASTHIS
-        ctorSig.WriteCompressedInteger(0);
-        ctorSig.WriteByte((byte)SignatureTypeCode.Void);
-
-        var ctorRef = _md.AddMemberReference(attrRef, _md.GetOrAddString(".ctor"), _md.GetOrAddBlob(ctorSig));
+        var ctorRef = GetLazyMemberRef("NativeCppClassAttribute..ctor", attrRef, ".ctor", () =>
+        {
+            var ctorSig = new BlobBuilder();
+            ctorSig.WriteByte(0x20); // HASTHIS
+            ctorSig.WriteCompressedInteger(0);
+            ctorSig.WriteByte((byte)SignatureTypeCode.Void);
+            return ctorSig;
+        });
 
         var attrBlob = new BlobBuilder();
         attrBlob.WriteUInt16(0x0001); // Prolog
@@ -1782,17 +1796,18 @@ public class CodeGen
 
         // Call Interlocked.CompareExchange(ref int, int, int)
         var interlocked = GetInterlockedRef();
-        var sig = new BlobBuilder();
-        sig.WriteByte(0x00); // DEFAULT
-        sig.WriteCompressedInteger(3);
-        sig.WriteByte((byte)SignatureTypeCode.Int32); // return
-        sig.WriteByte((byte)SignatureTypeCode.Pointer);
-        sig.WriteByte((byte)SignatureTypeCode.Int32); // ref param
-        sig.WriteByte((byte)SignatureTypeCode.Int32);
-        sig.WriteByte((byte)SignatureTypeCode.Int32);
-
-        var cxchgRef = _md.AddMemberReference(interlocked,
-            _md.GetOrAddString("CompareExchange"), _md.GetOrAddBlob(sig));
+        var cxchgRef = GetLazyMemberRef("Interlocked.CompareExchange", interlocked, "CompareExchange", () =>
+        {
+            var sig = new BlobBuilder();
+            sig.WriteByte(0x00); // DEFAULT
+            sig.WriteCompressedInteger(3);
+            sig.WriteByte((byte)SignatureTypeCode.Int32); // return
+            sig.WriteByte((byte)SignatureTypeCode.Pointer);
+            sig.WriteByte((byte)SignatureTypeCode.Int32); // ref param
+            sig.WriteByte((byte)SignatureTypeCode.Int32);
+            sig.WriteByte((byte)SignatureTypeCode.Int32);
+            return sig;
+        });
         _enc.Call(cxchgRef);
         Pop(2); // 3 args → 1 result
 
@@ -1809,16 +1824,17 @@ public class CodeGen
         GenExpr(node.Rhs); // new value
 
         var interlocked = GetInterlockedRef();
-        var sig = new BlobBuilder();
-        sig.WriteByte(0x00);
-        sig.WriteCompressedInteger(2);
-        sig.WriteByte((byte)SignatureTypeCode.Int32);
-        sig.WriteByte((byte)SignatureTypeCode.Pointer);
-        sig.WriteByte((byte)SignatureTypeCode.Int32);
-        sig.WriteByte((byte)SignatureTypeCode.Int32);
-
-        var xchgRef = _md.AddMemberReference(interlocked,
-            _md.GetOrAddString("Exchange"), _md.GetOrAddBlob(sig));
+        var xchgRef = GetLazyMemberRef("Interlocked.Exchange", interlocked, "Exchange", () =>
+        {
+            var sig = new BlobBuilder();
+            sig.WriteByte(0x00);
+            sig.WriteCompressedInteger(2);
+            sig.WriteByte((byte)SignatureTypeCode.Int32);
+            sig.WriteByte((byte)SignatureTypeCode.Pointer);
+            sig.WriteByte((byte)SignatureTypeCode.Int32);
+            sig.WriteByte((byte)SignatureTypeCode.Int32);
+            return sig;
+        });
         _enc.Call(xchgRef);
         Pop(); // 2 args → 1 result
     }
