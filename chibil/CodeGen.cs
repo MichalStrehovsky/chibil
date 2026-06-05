@@ -341,7 +341,7 @@ public class CodeGen
             EncodeType(sig, p);
     }
 
-    /// <summary>Encode the return type for a function, with modopt(CallConvCdecl) for cdecl.</summary>
+    /// <summary>Encode the return type for a function, with modopt(CallConvCdecl) for unmanaged calling conventions.</summary>
     private void EncodeReturnType(BlobBuilder sig, CType funcTy)
     {
         if (funcTy.CallConv != CallConv.Clrcall)
