@@ -46,8 +46,20 @@ public class Parser
     {
         string name = Util.GetTokenText(tok);
         for (Scope sc = _scope; sc != null; sc = sc.Next)
+        {
             if (sc.Vars.TryGetValue(name, out VarScope vs))
                 return vs;
+
+            if (sc.Next?.Next == null
+                && _currentFn != null
+                && name is "__func__" or "__FUNCTION__")
+            {
+                byte[] nameBytesWithNul = new byte[Encoding.UTF8.GetByteCount(_currentFn.Name) + 1];
+                Encoding.UTF8.GetBytes(_currentFn.Name, nameBytesWithNul);
+                return sc.Vars[name] = new VarScope { Var = NewStringLiteral(nameBytesWithNul, TypeSystem.ArrayOf(_types.TyChar, nameBytesWithNul.Length)) };
+            }
+        }
+
         return null;
     }
 
@@ -1852,16 +1864,9 @@ public class Parser
         fn.Params = _locals;
         if (ty.IsVariadic && ty.Params != null)
             Util.ErrorTok(ty.Name, "variadic function definitions are not supported in MSIL mode");
-        if (ty.IsVariadic) fn.VaArea = NewLvar("__va_area__", TypeSystem.ArrayOf(_types.TyChar, 136));
-        fn.AllocaBottom = NewLvar("__alloca_size__", _types.PointerTo(_types.TyChar));
         tok = Util.Skip(tok, "{");
-        byte[] nameBytes = Encoding.UTF8.GetBytes(fn.Name);
-        byte[] nameBytesNul = new byte[nameBytes.Length + 1];
-        Array.Copy(nameBytes, nameBytesNul, nameBytes.Length);
-        PushScope("__func__").Var = NewStringLiteral(nameBytesNul, TypeSystem.ArrayOf(_types.TyChar, nameBytes.Length + 1));
-        PushScope("__FUNCTION__").Var = NewStringLiteral(nameBytesNul, TypeSystem.ArrayOf(_types.TyChar, nameBytes.Length + 1));
         fn.Body = CompoundStmt(ref tok, tok);
-        fn.Locals = _locals; LeaveScope(); ResolveGotoLabels();
+        fn.Locals = _locals; LeaveScope(); ResolveGotoLabels(); _currentFn = null;
         return tok;
     }
 
