@@ -136,7 +136,7 @@ public class CodeGen
             case TypeKind.Union:
                 // For struct return, push a zeroed struct
                 int scratch = GetOrAddScratchLocal(ty);
-                _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)scratch); Push();
+                _enc.LoadLocalAddress(scratch); Push();
                 _enc.OpCode(ILOpCode.Initobj); _enc.Token(_emit.GetStructTypeHandle(ty)); Pop();
                 _enc.LoadLocal(scratch); Push();
                 break;
@@ -204,11 +204,11 @@ public class CodeGen
                 {
                     if (_paramSlots.TryGetValue(node.Var, out int argIdx))
                     {
-                        _enc.OpCode(ILOpCode.Ldarga_s); _enc.CodeBuilder.WriteByte((byte)argIdx); Push();
+                        _enc.LoadArgumentAddress(argIdx); Push();
                     }
                     else if (_localSlots.TryGetValue(node.Var, out int localIdx))
                     {
-                        _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)localIdx); Push();
+                        _enc.LoadLocalAddress(localIdx); Push();
                     }
                     return;
                 }
@@ -252,7 +252,7 @@ public class CodeGen
                     }
                     int fScratch = GetOrAddScratchLocal(node.Ty);
                     _enc.StoreLocal(fScratch); Pop();
-                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)fScratch); Push();
+                    _enc.LoadLocalAddress(fScratch); Push();
                     return;
                 }
                 break;
@@ -275,7 +275,7 @@ public class CodeGen
                     // Normal struct — spill value to scratch, return address of scratch.
                     int acScratch = GetOrAddScratchLocal(node.Ty);
                     _enc.StoreLocal(acScratch); Pop();
-                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)acScratch); Push();
+                    _enc.LoadLocalAddress(acScratch); Push();
                     return;
                 }
                 break;
@@ -283,7 +283,7 @@ public class CodeGen
             case NodeKind.VlaPtr:
                 if (_localSlots.TryGetValue(node.Var, out int vlaSlot))
                 {
-                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)vlaSlot); Push();
+                    _enc.LoadLocalAddress(vlaSlot); Push();
                 }
                 return;
         }
@@ -390,7 +390,7 @@ public class CodeGen
     {
         if (_paramSlots.TryGetValue(var, out int argIdx))
         {
-            _enc.OpCode(ILOpCode.Starg_s); _enc.CodeBuilder.WriteByte((byte)argIdx); Pop();
+            _enc.StoreArgument(argIdx); Pop();
         }
         else if (_localSlots.TryGetValue(var, out int localIdx))
         {
@@ -648,7 +648,7 @@ public class CodeGen
             case NodeKind.MemZero:
                 if (_localSlots.TryGetValue(node.Var, out int mzSlot))
                 {
-                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)mzSlot); Push();
+                    _enc.LoadLocalAddress(mzSlot); Push();
                     EmitConstI4(0);
                     EmitConstI4(node.Var.Ty.Size);
                     _enc.OpCode(ILOpCode.Initblk); Pop(3);
