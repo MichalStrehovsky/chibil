@@ -78,6 +78,30 @@ public class AuditBugTests : ChibiTestBase
     }
 
     [Fact]
+    public void LabelsAsValuesRejected()
+    {
+        CompileExpectingError("""
+            int main() {
+            label:
+                return &&label != 0;
+            }
+            """)
+        .AssertErrorContains("expected an expression");
+    }
+
+    [Fact]
+    public void ComputedGotoRejected()
+    {
+        CompileExpectingError("""
+            int main() {
+                void *p = 0;
+                goto *p;
+            }
+            """)
+        .AssertErrorContains("expected an identifier");
+    }
+
+    [Fact]
     public void CastToVoid()
     {
         Compile("""

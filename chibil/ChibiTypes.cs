@@ -33,7 +33,7 @@ public enum NodeKind
     Assign, Cond, Comma, Member,
     Addr, Deref, Not, BitNot, LogAnd, LogOr,
     Return, If, For, Do, Switch, Case,
-    Block, Goto, GotoExpr, Label, LabelVal,
+    Block, Goto, Label,
     FunCall, ExprStmt, StmtExpr,
     Var, VlaPtr, Num, Cast, MemZero,
     Asm, Cas, Exch,
@@ -256,7 +256,7 @@ public class Node
     public CType FuncTy;
     public Node Args;
 
-    // Goto or labeled statement, or labels-as-values
+    // Goto or labeled statement
     public string Label;
     public int LabelId;
     public Node GotoNext;

@@ -1606,10 +1606,6 @@ public class CodeGen
                 GenFunCall(node);
                 return;
 
-            case NodeKind.LabelVal:
-                Util.ErrorTok(node.Tok, "labels-as-values not supported in MSIL");
-                return;
-
             case NodeKind.Cas:
                 GenCas(node);
                 return;
@@ -2028,10 +2024,6 @@ public class CodeGen
 
             case NodeKind.Goto:
                 _enc.Branch(ILOpCode.Br, GetLabel(node.LabelId));
-                return;
-
-            case NodeKind.GotoExpr:
-                Util.ErrorTok(node.Tok, "computed goto not supported in MSIL");
                 return;
 
             case NodeKind.Label:
