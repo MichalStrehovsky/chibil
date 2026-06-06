@@ -2286,7 +2286,7 @@ public class CodeGen
 
             for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
             {
-                string targetName = rel.Label();
+                string targetName = rel.Label;
                 CoffSymbolHandle targetSym;
 
                 if (_dataCoffSymbols.TryGetValue(targetName, out targetSym))
@@ -2327,7 +2327,7 @@ public class CodeGen
                 if (g.IsFunction) continue;
                 for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
                 {
-                    string label = rel.Label();
+                    string label = rel.Label;
                     _addressTakenFuncs.Add(label);
                 }
             }

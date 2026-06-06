@@ -728,9 +728,9 @@ public class Parser
     // ═══════════════════════════════════════════════════════════════
 
     // C's eval(node) passes NULL for label → labels not allowed
-    private long Eval(Node node) => Eval2(node, out Unsafe.NullRef<Func<string>>());
+    private long Eval(Node node) => Eval2(node, out Unsafe.NullRef<string>());
 
-    private long Eval2(Node node, out Func<string> label)
+    private long Eval2(Node node, out string label)
     {
         Unsafe.SkipInit(out label);
         _types.AddType(node);
@@ -791,7 +791,7 @@ public class Parser
             case NodeKind.Var:
                 if (Unsafe.IsNullRef(ref label)) Util.ErrorTok(node.Tok, "not a compile-time constant");
                 if (node.Var.Ty.Kind != TypeKind.Array && node.Var.Ty.Kind != TypeKind.Func) Util.ErrorTok(node.Tok, "invalid initializer");
-                { Obj v = node.Var; label = () => v.Name; }
+                label = node.Var.Name;
                 return 0;
             case NodeKind.Deref:
                 // Array subscript on global: *(arr + i) where result is array type (decays to pointer)
@@ -806,14 +806,14 @@ public class Parser
         return 0;
     }
 
-    private long EvalRval(Node node, out Func<string> label)
+    private long EvalRval(Node node, out string label)
     {
         label = null;
         switch (node.Kind)
         {
             case NodeKind.Var:
                 if (node.Var.IsLocal) Util.ErrorTok(node.Tok, "not a compile-time constant");
-                { Obj v = node.Var; label = () => v.Name; }
+                label = node.Var.Name;
                 return 0;
             case NodeKind.Deref: return Eval2(node.Lhs, out label);
             case NodeKind.Member: return EvalRval(node.Lhs, out label) + node.Member.Offset;
@@ -1724,7 +1724,7 @@ public class Parser
             return cur;
         }
 
-        long val = Eval2(init.Expr, out Func<string> label);
+        long val = Eval2(init.Expr, out string label);
         if (label == null) { Util.WriteBuf(buf, offset, val, ty.Size); return cur; }
         var rel = new Relocation { Offset = offset, Label = label, Addend = val };
         cur.Next = rel; return cur.Next;

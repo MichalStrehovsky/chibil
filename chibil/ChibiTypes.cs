@@ -214,10 +214,7 @@ public class Relocation
 {
     public Relocation Next;
     public int Offset;
-    // In C, this is char **label — a pointer to a string that can be
-    // updated after the Relocation is created. We use a Func<string>
-    // to capture deferred reads (e.g., () => obj.Name).
-    public Func<string> Label;
+    public string Label;
     public long Addend;
 }
 
