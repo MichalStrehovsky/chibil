@@ -808,7 +808,7 @@ public class Parser
 
     private long EvalRval(Node node, out string label)
     {
-        label = null;
+        Unsafe.SkipInit(out label);
         switch (node.Kind)
         {
             case NodeKind.Var:
