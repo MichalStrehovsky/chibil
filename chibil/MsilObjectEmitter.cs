@@ -1088,16 +1088,16 @@ public class MsilObjectEmitter
         {
             if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
             ScanAddressTakenNode(fn.Body);
+        }
 
-            // Also check global initializers that reference functions
-            for (Obj g = prog; g != null; g = g.Next)
+        // Also check global initializers that reference functions
+        for (Obj g = prog; g != null; g = g.Next)
+        {
+            if (g.IsFunction) continue;
+            for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
             {
-                if (g.IsFunction) continue;
-                for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
-                {
-                    string label = rel.Label;
-                    _addressTakenFuncs.Add(label);
-                }
+                string label = rel.Label;
+                _addressTakenFuncs.Add(label);
             }
         }
     }

@@ -115,6 +115,35 @@ public class CodeGen
 
     private LabelHandle GetLabel(int label) => _labels[label - 1];
 
+    private void GenExprDiscard(Node node)
+    {
+        switch (node.Kind)
+        {
+            case NodeKind.Assign:
+                GenAssign(node, wantValue: false);
+                return;
+            case NodeKind.Comma:
+                GenExprDiscard(node.Lhs);
+                GenExprDiscard(node.Rhs);
+                return;
+            case NodeKind.StmtExpr:
+                for (Node n = node.Body; n != null; n = n.Next)
+                    GenStmt(n);
+                return;
+            case NodeKind.Cast when node.Ty.Kind == TypeKind.Void:
+                GenExprDiscard(node.Lhs);
+                return;
+        }
+
+        int depthBefore = _stackDepth;
+        GenExpr(node);
+        while (_stackDepth > depthBefore)
+        {
+            _enc.OpCode(ILOpCode.Pop);
+            Pop();
+        }
+    }
+
     private void EncodeLocalType(SignatureTypeEncoder enc, CType ty)
     {
         // Encode using the builder directly
@@ -136,7 +165,7 @@ public class CodeGen
             case TypeKind.Union:
                 // For struct return, push a zeroed struct
                 int scratch = GetOrAddScratchLocal(ty);
-                _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)scratch); Push();
+                _enc.LoadLocalAddress(scratch); Push();
                 _enc.OpCode(ILOpCode.Initobj); _enc.Token(_emit.GetStructTypeHandle(ty)); Pop();
                 _enc.LoadLocal(scratch); Push();
                 break;
@@ -204,11 +233,11 @@ public class CodeGen
                 {
                     if (_paramSlots.TryGetValue(node.Var, out int argIdx))
                     {
-                        _enc.OpCode(ILOpCode.Ldarga_s); _enc.CodeBuilder.WriteByte((byte)argIdx); Push();
+                        _enc.LoadArgumentAddress(argIdx); Push();
                     }
                     else if (_localSlots.TryGetValue(node.Var, out int localIdx))
                     {
-                        _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)localIdx); Push();
+                        _enc.LoadLocalAddress(localIdx); Push();
                     }
                     return;
                 }
@@ -222,7 +251,7 @@ public class CodeGen
                 return;
 
             case NodeKind.Comma:
-                GenExpr(node.Lhs); Pop(); // discard LHS value
+                GenExprDiscard(node.Lhs);
                 GenAddr(node.Rhs);
                 return;
 
@@ -252,7 +281,7 @@ public class CodeGen
                     }
                     int fScratch = GetOrAddScratchLocal(node.Ty);
                     _enc.StoreLocal(fScratch); Pop();
-                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)fScratch); Push();
+                    _enc.LoadLocalAddress(fScratch); Push();
                     return;
                 }
                 break;
@@ -275,7 +304,7 @@ public class CodeGen
                     // Normal struct — spill value to scratch, return address of scratch.
                     int acScratch = GetOrAddScratchLocal(node.Ty);
                     _enc.StoreLocal(acScratch); Pop();
-                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)acScratch); Push();
+                    _enc.LoadLocalAddress(acScratch); Push();
                     return;
                 }
                 break;
@@ -283,7 +312,7 @@ public class CodeGen
             case NodeKind.VlaPtr:
                 if (_localSlots.TryGetValue(node.Var, out int vlaSlot))
                 {
-                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)vlaSlot); Push();
+                    _enc.LoadLocalAddress(vlaSlot); Push();
                 }
                 return;
         }
@@ -390,7 +419,7 @@ public class CodeGen
     {
         if (_paramSlots.TryGetValue(var, out int argIdx))
         {
-            _enc.OpCode(ILOpCode.Starg_s); _enc.CodeBuilder.WriteByte((byte)argIdx); Pop();
+            _enc.StoreArgument(argIdx); Pop();
         }
         else if (_localSlots.TryGetValue(var, out int localIdx))
         {
@@ -434,8 +463,6 @@ public class CodeGen
             case TypeKind.Float:
             case TypeKind.Double:
             case TypeKind.LDouble:
-            case TypeKind.LLong:
-            case TypeKind.Long when _types.DataModel.LongSize == 8:
                 EmitTypedZero(ty);
                 _enc.OpCode(ILOpCode.Ceq); Pop();
                 EmitConstI4(0);
@@ -538,6 +565,13 @@ public class CodeGen
                     LoadLocalOrParam(node.Var);
                     return;
                 }
+                if (!node.Var.IsLocal && !IsAggregateType(node.Ty))
+                {
+                    _enc.OpCode(ILOpCode.Ldsfld);
+                    _enc.Token(_emit.GetFieldToken(node.Var));
+                    Push();
+                    return;
+                }
                 GenAddr(node);
                 Load(node.Ty);
                 return;
@@ -546,20 +580,7 @@ public class CodeGen
                 GenAddr(node);
                 Load(node.Ty);
                 if (node.Member.IsBitfield)
-                {
-                    int shift = (node.Member.Ty.Size * 8) - node.Member.BitWidth - node.Member.BitOffset;
-                    if (shift > 0)
-                    {
-                        EmitConstI4(shift);
-                        _enc.OpCode(ILOpCode.Shl); Pop();
-                    }
-                    int rightShift = (node.Member.Ty.Size * 8) - node.Member.BitWidth;
-                    if (rightShift > 0)
-                    {
-                        EmitConstI4(rightShift);
-                        _enc.OpCode(node.Member.Ty.IsUnsigned ? ILOpCode.Shr_un : ILOpCode.Shr); Pop();
-                    }
-                }
+                    ExtractBitfieldValue(node.Member);
                 return;
 
             case NodeKind.Deref:
@@ -572,44 +593,7 @@ public class CodeGen
                 return;
 
             case NodeKind.Assign:
-                // Handle bitfield assignment
-                if (node.Lhs.Kind == NodeKind.Member && node.Lhs.Member.IsBitfield)
-                {
-                    GenBitfieldAssign(node);
-                    return;
-                }
-                // Optimize: direct store to local/param for simple scalars
-                if (node.Lhs.Kind == NodeKind.Var && node.Lhs.Var.IsLocal && !IsAggregateType(node.Ty))
-                {
-                    GenExpr(node.Rhs);
-                    _enc.OpCode(ILOpCode.Dup); Push();
-                    StoreLocalOrParam(node.Lhs.Var);
-                    return;
-                }
-                GenAddr(node.Lhs);
-                if ((node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) &&
-                    _emit.GetStructTypeHandle(node.Ty).IsNil)
-                {
-                    // Nested/flattened struct: GenExpr(rhs) returns an address.
-                    // Save dest address before generating rhs so the assignment
-                    // expression result refers to the destination, not the source.
-                    // Use a fresh scratch to avoid clobber by inner chain assignments.
-                    var destScratch = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
-                    _enc.OpCode(ILOpCode.Dup); Push();
-                    _enc.StoreLocal(destScratch); Pop();
-                    GenExpr(node.Rhs);
-                    Store(node.Ty);
-                    _enc.LoadLocal(destScratch); Push();
-                }
-                else
-                {
-                    GenExpr(node.Rhs);
-                    int assignScratch = GetOrAddScratchLocal(node.Ty);
-                    _enc.OpCode(ILOpCode.Dup); Push();
-                    _enc.StoreLocal(assignScratch); Pop();
-                    Store(node.Ty);
-                    _enc.LoadLocal(assignScratch); Push();
-                }
+                GenAssign(node, wantValue: true);
                 return;
 
             case NodeKind.StmtExpr:
@@ -630,12 +614,8 @@ public class CodeGen
             case NodeKind.Comma:
             {
                 int depthBeforeComma = _stackDepth;
-                GenExpr(node.Lhs);
-                // Discard LHS result if it pushed anything
-                while (_stackDepth > depthBeforeComma)
-                {
-                    _enc.OpCode(ILOpCode.Pop); Pop();
-                }
+                GenExprDiscard(node.Lhs);
+                Debug.Assert(_stackDepth == depthBeforeComma);
                 GenExpr(node.Rhs);
                 return;
             }
@@ -648,7 +628,7 @@ public class CodeGen
             case NodeKind.MemZero:
                 if (_localSlots.TryGetValue(node.Var, out int mzSlot))
                 {
-                    _enc.OpCode(ILOpCode.Ldloca_s); _enc.CodeBuilder.WriteByte((byte)mzSlot); Push();
+                    _enc.LoadLocalAddress(mzSlot); Push();
                     EmitConstI4(0);
                     EmitConstI4(node.Var.Ty.Size);
                     _enc.OpCode(ILOpCode.Initblk); Pop(3);
@@ -789,6 +769,82 @@ public class CodeGen
         Util.ErrorTok(node.Tok, "invalid expression");
     }
 
+    private void GenAssign(Node node, bool wantValue)
+    {
+        if (node.Lhs.Kind == NodeKind.Member && node.Lhs.Member.IsBitfield)
+        {
+            GenBitfieldAssign(node, wantValue);
+            return;
+        }
+
+        if (node.Lhs.Kind == NodeKind.Var && !IsAggregateType(node.Ty))
+        {
+            GenExpr(node.Rhs);
+            if (wantValue)
+            {
+                _enc.OpCode(ILOpCode.Dup);
+                Push();
+            }
+
+            if (node.Lhs.Var.IsLocal)
+            {
+                StoreLocalOrParam(node.Lhs.Var);
+            }
+            else
+            {
+                _enc.OpCode(ILOpCode.Stsfld);
+                _enc.Token(_emit.GetFieldToken(node.Lhs.Var));
+                Pop();
+            }
+            return;
+        }
+
+        GenAddr(node.Lhs);
+        if ((node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) &&
+            _emit.GetStructTypeHandle(node.Ty).IsNil)
+        {
+            if (wantValue)
+            {
+                // Nested/flattened struct: GenExpr(rhs) returns an address.
+                // Save dest address before generating rhs so the assignment
+                // expression result refers to the destination, not the source.
+                // Use a fresh scratch to avoid clobber by inner chain assignments.
+                var destScratch = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
+                _enc.OpCode(ILOpCode.Dup);
+                Push();
+                _enc.StoreLocal(destScratch);
+                Pop();
+                GenExpr(node.Rhs);
+                Store(node.Ty);
+                _enc.LoadLocal(destScratch);
+                Push();
+            }
+            else
+            {
+                GenExpr(node.Rhs);
+                Store(node.Ty);
+            }
+            return;
+        }
+
+        GenExpr(node.Rhs);
+        if (wantValue)
+        {
+            int assignScratch = GetOrAddScratchLocal(node.Ty);
+            _enc.OpCode(ILOpCode.Dup);
+            Push();
+            _enc.StoreLocal(assignScratch);
+            Pop();
+            Store(node.Ty);
+            _enc.LoadLocal(assignScratch);
+            Push();
+        }
+        else
+        {
+            Store(node.Ty);
+        }
+    }
+
     // ─── Function call ───────────────────────────────────────────
 
     private void GenFunCall(Node node)
@@ -896,7 +952,7 @@ public class CodeGen
 
     // ─── Bitfield assignment ─────────────────────────────────────
 
-    private void GenBitfieldAssign(Node node)
+    private void GenBitfieldAssign(Node node, bool wantValue)
     {
         Member mem = node.Lhs.Member;
         GenAddr(node.Lhs);
@@ -906,11 +962,7 @@ public class CodeGen
 
         GenExpr(node.Rhs);
 
-        // Save the truncated value for the expression result
         long mask = (1L << mem.BitWidth) - 1;
-        int assignScratch = GetOrAddScratchLocal(node.Ty);
-        _enc.OpCode(ILOpCode.Dup); Push();
-        _enc.StoreLocal(assignScratch); Pop();
 
         // Mask and shift new value into position
         EmitConstI4(mask);
@@ -939,7 +991,38 @@ public class CodeGen
 
         Store(node.Ty);
 
-        _enc.LoadLocal(assignScratch); Push();
+        if (wantValue)
+        {
+            _enc.OpCode(ILOpCode.Dup); Push();
+            Load(mem.Ty);
+            ExtractBitfieldValue(mem);
+            int assignScratch = GetOrAddScratchLocal(node.Ty);
+            _enc.StoreLocal(assignScratch); Pop();
+            _enc.OpCode(ILOpCode.Pop); Pop(); // discard the saved destination address
+            _enc.LoadLocal(assignScratch);
+            Push();
+        }
+        else
+        {
+            _enc.OpCode(ILOpCode.Pop); Pop(); // discard the saved destination address
+        }
+    }
+
+    private void ExtractBitfieldValue(Member mem)
+    {
+        int shift = (mem.Ty.Size * 8) - mem.BitWidth - mem.BitOffset;
+        if (shift > 0)
+        {
+            EmitConstI4(shift);
+            _enc.OpCode(ILOpCode.Shl); Pop();
+        }
+
+        int rightShift = (mem.Ty.Size * 8) - mem.BitWidth;
+        if (rightShift > 0)
+        {
+            EmitConstI4(rightShift);
+            _enc.OpCode(mem.Ty.IsUnsigned ? ILOpCode.Shr_un : ILOpCode.Shr); Pop();
+        }
     }
 
     // ─── Type cast ───────────────────────────────────────────────
@@ -1075,8 +1158,8 @@ public class CodeGen
                 if (node.Inc != null)
                 {
                     int incDepth = _stackDepth;
-                    GenExpr(node.Inc);
-                    while (_stackDepth > incDepth) { _enc.OpCode(ILOpCode.Pop); Pop(); }
+                    GenExprDiscard(node.Inc);
+                    Debug.Assert(_stackDepth == incDepth);
                 }
                 _enc.Branch(ILOpCode.Br, beginLabel);
                 _enc.MarkLabel(brkLabel);
@@ -1176,12 +1259,8 @@ public class CodeGen
             case NodeKind.ExprStmt:
             {
                 int depthBefore = _stackDepth;
-                GenExpr(node.Lhs);
-                // Pop any leftover value to maintain stack neutrality
-                while (_stackDepth > depthBefore)
-                {
-                    _enc.OpCode(ILOpCode.Pop); Pop();
-                }
+                GenExprDiscard(node.Lhs);
+                Debug.Assert(_stackDepth == depthBefore);
                 return;
             }
 
