@@ -93,7 +93,7 @@ public class CodeGen
     private List<(CType ty, int slot)> _scratchLocals;
     private int _scratchLocalBase;
     private int _maxStack, _stackDepth;
-    private Dictionary<string, LabelHandle> _labels;
+    private LabelHandle[] _labels;
 
     public CodeGen(CompilerOptions options, Tokenizer tokenizer, TypeSystem types)
     {
@@ -891,7 +891,9 @@ public class CodeGen
         _scratchLocals = new List<(CType, int)>();
         _maxStack = 0;
         _stackDepth = 0;
-        _labels = new Dictionary<string, LabelHandle>();
+        _labels = new LabelHandle[fn.LabelCount];
+        for (int i = 0; i < _labels.Length; i++)
+            _labels[i] = _enc.DefineLabel();
 
         // Assign parameter slots
         int argIdx = 0;
@@ -911,10 +913,6 @@ public class CodeGen
 
         // Emit function body
         GenStmt(fn.Body);
-
-        // Epilogue — fallthrough return
-        if (_labels.TryGetValue($".L.return.{fn.Name}", out var retLabel))
-            _enc.MarkLabel(retLabel);
 
         if (fn.Ty.ReturnTy.Kind != TypeKind.Void)
         {
@@ -965,7 +963,10 @@ public class CodeGen
             localSlots: localSlotList.Count > 0 ? localSlotList.ToArray() : null);
 
         _currentFn = null;
+        _labels = null;
     }
+
+    private LabelHandle GetLabel(int label) => _labels[label - 1];
 
     private void EncodeLocalType(SignatureTypeEncoder enc, CType ty)
     {
@@ -1929,10 +1930,8 @@ public class CodeGen
             case NodeKind.For:
             {
                 var beginLabel = _enc.DefineLabel();
-                var contLabel = _enc.DefineLabel();
-                var brkLabel = _enc.DefineLabel();
-                if (node.ContLabel != null) _labels[node.ContLabel] = contLabel;
-                if (node.BrkLabel != null) _labels[node.BrkLabel] = brkLabel;
+                var contLabel = GetLabel(node.ContLabelId);
+                var brkLabel = GetLabel(node.BrkLabelId);
 
                 if (node.Init != null) GenStmt(node.Init);
                 _enc.MarkLabel(beginLabel);
@@ -1958,10 +1957,8 @@ public class CodeGen
             case NodeKind.Do:
             {
                 var beginLabel = _enc.DefineLabel();
-                var contLabel = _enc.DefineLabel();
-                var brkLabel = _enc.DefineLabel();
-                if (node.ContLabel != null) _labels[node.ContLabel] = contLabel;
-                if (node.BrkLabel != null) _labels[node.BrkLabel] = brkLabel;
+                var contLabel = GetLabel(node.ContLabelId);
+                var brkLabel = GetLabel(node.BrkLabelId);
 
                 _enc.MarkLabel(beginLabel);
                 GenStmt(node.Then);
@@ -1975,8 +1972,7 @@ public class CodeGen
 
             case NodeKind.Switch:
             {
-                var brkLabel = _enc.DefineLabel();
-                if (node.BrkLabel != null) _labels[node.BrkLabel] = brkLabel;
+                var brkLabel = GetLabel(node.BrkLabelId);
 
                 // x64: always if/else chain (no IL switch)
                 GenExpr(node.Cond);
@@ -1985,8 +1981,7 @@ public class CodeGen
 
                 for (Node c = node.CaseNext; c != null; c = c.CaseNext)
                 {
-                    var caseLabel = _enc.DefineLabel();
-                    _labels[c.Label] = caseLabel;
+                    var caseLabel = GetLabel(c.LabelId);
                     bool is64 = node.Cond.Ty.Size == 8;
 
                     if (c.Begin == c.End)
@@ -2008,8 +2003,7 @@ public class CodeGen
 
                 if (node.DefaultCase != null)
                 {
-                    var defaultLabel = _enc.DefineLabel();
-                    _labels[node.DefaultCase.Label] = defaultLabel;
+                    var defaultLabel = GetLabel(node.DefaultCase.LabelId);
                     _enc.Branch(ILOpCode.Br, defaultLabel);
                 }
                 else
@@ -2023,8 +2017,7 @@ public class CodeGen
             }
 
             case NodeKind.Case:
-                if (_labels.TryGetValue(node.Label, out var cLabel))
-                    _enc.MarkLabel(cLabel);
+                _enc.MarkLabel(GetLabel(node.LabelId));
                 GenStmt(node.Lhs);
                 return;
 
@@ -2034,12 +2027,7 @@ public class CodeGen
                 return;
 
             case NodeKind.Goto:
-                if (!_labels.TryGetValue(node.UniqueLabel, out var gotoTarget))
-                {
-                    gotoTarget = _enc.DefineLabel();
-                    _labels[node.UniqueLabel] = gotoTarget;
-                }
-                _enc.Branch(ILOpCode.Br, gotoTarget);
+                _enc.Branch(ILOpCode.Br, GetLabel(node.LabelId));
                 return;
 
             case NodeKind.GotoExpr:
@@ -2047,12 +2035,7 @@ public class CodeGen
                 return;
 
             case NodeKind.Label:
-                if (!_labels.TryGetValue(node.UniqueLabel, out var labelTarget))
-                {
-                    labelTarget = _enc.DefineLabel();
-                    _labels[node.UniqueLabel] = labelTarget;
-                }
-                _enc.MarkLabel(labelTarget);
+                _enc.MarkLabel(GetLabel(node.LabelId));
                 GenStmt(node.Lhs);
                 return;
 
