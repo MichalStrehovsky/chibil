@@ -37,6 +37,8 @@ public class TypeSystem
 
     public int PointerSize => _dm.PointerSize;
 
+    public DataModel DataModel => _dm;
+
     public TypeSystem(DataModel dm)
     {
         _dm = dm;

@@ -431,7 +431,7 @@ public class Driver
         string objName = Path.GetFileName(_outputFile ?? "a.obj");
         string sourceFile = Path.GetFullPath(Options.BaseFile);
 
-        var codegen = new CodeGen(Options, tokenizer, types);
+        var codegen = new MsilObjectEmitter(Options, tokenizer, types);
         byte[] objBytes = codegen.Generate(prog, objName, sourceFile);
 
         if (_outputFile == null || _outputFile == "-")
