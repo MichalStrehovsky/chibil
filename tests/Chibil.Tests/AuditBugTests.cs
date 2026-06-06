@@ -251,6 +251,94 @@ public class AuditBugTests : ChibiTestBase
     }
 
     [Fact]
+    public void BitfieldAssignmentExpressionValue()
+    {
+        Compile("""
+            struct Flags {
+                unsigned int a : 3;
+                unsigned int b : 5;
+            };
+
+            int id(int x) { return x; }
+
+            int main(void) {
+                struct Flags f;
+                f.a = 0;
+                f.b = 0;
+                return id(f.a = 5) + f.a;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 10);
+    }
+
+    [Fact]
+    public void BitfieldAssignmentExpressionValueIsStoredValue()
+    {
+        Compile("""
+            struct Flags {
+                unsigned int a : 3;
+            };
+
+            int main(void) {
+                struct Flags f = { 0 };
+                int assigned = (f.a = 9);
+                if (assigned != 1)
+                    return 10;
+                if (f.a != 1)
+                    return 20;
+                return 0;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
+    public void ScalarGlobalLoadStore()
+    {
+        Compile("""
+            int g;
+
+            int main(void) {
+                g = 41;
+                return g + 1;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void LongLongBranchConditions()
+    {
+        Compile("""
+            int main(void) {
+                long long x = 0x100000000LL;
+                long long y = 0;
+                int r = 0;
+
+                if (x)
+                    r += 1;
+
+                while (x) {
+                    r += 2;
+                    x = 0;
+                }
+
+                if (x || y)
+                    r += 4;
+
+                if (r == 3 && !y)
+                    return 0;
+                return 1;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
     public void FuncAndFunctionTest()
     {
         Compile("""
