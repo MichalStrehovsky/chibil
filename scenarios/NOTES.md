@@ -681,7 +681,6 @@ must be handled by the backend:
 |---------|----------------|---------------|
 | `asm("...")` | NodeKind.Asm | Reject with error — no inline assembly in managed code |
 | `({...})` statement exprs | NodeKind.StmtExpr | GCC extension; lower to sequential IL with value on stack |
-| `&&label` / `goto *ptr` | NodeKind.LabelVal/GotoExpr | GCC extension; lower to switch-dispatch (no label address in IL) |
 | `_Atomic` compound assign | NodeKind.Cas/Exch | Generate `Interlocked.CompareExchange` CAS loop |
 
 ### 8. Compile-time-only features
@@ -995,4 +994,3 @@ hybrid approach across architectures:
   function. `IMAGE_SYM_CLASS_STATIC` would link cleanly when only
   this one object is involved but break the moment another `.obj`
   has an extern reference to the same C name.
-

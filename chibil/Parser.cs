@@ -784,12 +784,6 @@ public class Parser
                 return val;
             }
             case NodeKind.Addr: return EvalRval(node.Lhs, out label);
-            case NodeKind.LabelVal:
-            {
-                string functionName = _currentFn?.Name ?? "";
-                label = () => FormatLabelSymbol(functionName, node.LabelId);
-                return 0;
-            }
             case NodeKind.Member:
                 if (Unsafe.IsNullRef(ref label)) Util.ErrorTok(node.Tok, "not a compile-time constant");
                 if (node.Ty.Kind != TypeKind.Array) Util.ErrorTok(node.Tok, "invalid initializer");
@@ -1075,7 +1069,6 @@ public class Parser
         if (Util.Equal(tok, "~")) return NewUnary(NodeKind.BitNot, CastExpr(ref rest, tok.Next), tok);
         if (Util.Equal(tok, "++")) return ToAssign(NewAdd(Unary(ref rest, tok.Next), NewNum(1, tok), tok));
         if (Util.Equal(tok, "--")) return ToAssign(NewSub(Unary(ref rest, tok.Next), NewNum(1, tok), tok));
-        if (Util.Equal(tok, "&&")) { var node = NewNode(NodeKind.LabelVal, tok); node.Label = GetIdent(tok.Next); node.GotoNext = _gotos; _gotos = node; rest = tok.Next.Next; return node; }
         return Postfix(ref rest, tok);
     }
 
@@ -1305,7 +1298,6 @@ public class Parser
         if (Util.Equal(tok, "asm")) return AsmStmt(ref rest, tok);
         if (Util.Equal(tok, "goto"))
         {
-            if (Util.Equal(tok.Next, "*")) { var node = NewNode(NodeKind.GotoExpr, tok); node.Lhs = Expr(ref tok, tok.Next.Next); rest = Util.Skip(tok, ";"); return node; }
             var gn = NewNode(NodeKind.Goto, tok); gn.Label = GetIdent(tok.Next); gn.GotoNext = _gotos; _gotos = gn;
             rest = Util.Skip(tok.Next.Next, ";"); return gn;
         }
@@ -1789,11 +1781,6 @@ public class Parser
             if (x.LabelId == NoLabel) Util.ErrorTok(x.Tok.Next, "use of undeclared label");
         }
         _gotos = _labels = null;
-    }
-
-    private static string FormatLabelSymbol(string functionName, int labelId)
-    {
-        return functionName.Length != 0 ? $".L.{functionName}.{labelId}" : $".L..{labelId}";
     }
 
     private Obj FindFunc(string name)

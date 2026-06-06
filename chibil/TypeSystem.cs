@@ -370,9 +370,6 @@ public class TypeSystem
                 }
                 Util.ErrorTok(node.Tok, "statement expression returning void is not supported");
                 return;
-            case NodeKind.LabelVal:
-                node.Ty = PointerTo(TyVoid);
-                return;
             case NodeKind.Cas:
                 AddType(node.CasAddr);
                 AddType(node.CasOld);
