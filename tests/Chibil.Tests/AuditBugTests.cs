@@ -295,6 +295,50 @@ public class AuditBugTests : ChibiTestBase
     }
 
     [Fact]
+    public void BitfieldUnsignedInt64Storage()
+    {
+        Compile("""
+            struct S {
+                unsigned __int64 x : 40;
+                __int64 y : 40;
+                unsigned __int64 prefix : 4;
+                unsigned __int64 z : 40;
+                unsigned __int64 full : 64;
+            };
+
+            int main(void) {
+                struct S s = { 0 };
+                unsigned __int64 assigned = (s.x = 0x100000001ULL);
+                if (assigned != 0x100000001ULL)
+                    return 10;
+                if (s.x != 0x100000001ULL)
+                    return 20;
+                __int64 signedAssigned = (s.y = -1);
+                if (signedAssigned != -1)
+                    return 30;
+                if (s.y != -1)
+                    return 40;
+                s.prefix = 0xFULL;
+                unsigned __int64 offsetAssigned = (s.z = 0x100000002ULL);
+                if (offsetAssigned != 0x100000002ULL)
+                    return 50;
+                if (s.prefix != 0xFULL)
+                    return 60;
+                if (s.z != 0x100000002ULL)
+                    return 70;
+                unsigned __int64 fullAssigned = (s.full = 0xFEDCBA9876543210ULL);
+                if (fullAssigned != 0xFEDCBA9876543210ULL)
+                    return 80;
+                if (s.full != 0xFEDCBA9876543210ULL)
+                    return 90;
+                return 0;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
     public void ScalarGlobalLoadStore()
     {
         Compile("""
