@@ -962,10 +962,10 @@ public class CodeGen
 
         GenExpr(node.Rhs);
 
-        long mask = (1L << mem.BitWidth) - 1;
+        ulong mask = BitMask(mem.BitWidth);
 
         // Mask and shift new value into position
-        EmitConstI4(mask);
+        EmitBitfieldStorageConst(mem, mask);
         _enc.OpCode(ILOpCode.And); Pop();
         if (mem.BitOffset > 0)
         {
@@ -978,13 +978,13 @@ public class CodeGen
         // We need: addr, (old & ~field_mask) | shifted_new
         // Duplicate addr, load old value
         // This requires reordering; use scratch
-        int newValScratch = GetOrAddScratchLocal(_types.TyInt);
+        int newValScratch = GetOrAddScratchLocal(BitfieldScratchType(mem));
         _enc.StoreLocal(newValScratch); Pop();
         _enc.OpCode(ILOpCode.Dup); Push(); // dup addr
         Load(mem.Ty); // load old value
 
-        long clearMask = ~(mask << mem.BitOffset);
-        EmitConstI4(clearMask);
+        ulong clearMask = ~(mask << mem.BitOffset);
+        EmitBitfieldStorageConst(mem, clearMask);
         _enc.OpCode(ILOpCode.And); Pop();
         _enc.LoadLocal(newValScratch); Push();
         _enc.OpCode(ILOpCode.Or); Pop();
@@ -1006,6 +1006,20 @@ public class CodeGen
         {
             _enc.OpCode(ILOpCode.Pop); Pop(); // discard the saved destination address
         }
+    }
+
+    private static ulong BitMask(int width) =>
+        width >= 64 ? ulong.MaxValue : (1UL << width) - 1;
+
+    private CType BitfieldScratchType(Member mem) =>
+        mem.Ty.Size <= 4 ? _types.TyInt : mem.Ty;
+
+    private void EmitBitfieldStorageConst(Member mem, ulong value)
+    {
+        if (mem.Ty.Size <= 4)
+            EmitConstI4(unchecked((int)value));
+        else
+            EmitConstI8(unchecked((long)value));
     }
 
     private void ExtractBitfieldValue(Member mem)
