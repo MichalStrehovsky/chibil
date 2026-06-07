@@ -364,6 +364,38 @@ public class AuditBugTests : ChibiTestBase
     }
 
     [Fact]
+    public void BitfieldSignedSubWordStorage()
+    {
+        // A signed bitfield in a sub-word storage unit (char/short) must read back
+        // sign-extended. Load widens the storage to a 32-bit stack int (e.g. a char
+        // via ldind.i1), so the extracting shifts must be sized to the loaded
+        // container width (32 for <=4-byte storage), not the storage width: shifting
+        // by storage*8 leaves the field below bit 31, so the arithmetic right shift
+        // never sign-extends and a signed `:4` field reads back as if unsigned.
+        Compile("""
+            struct S {
+                signed char v : 4;
+            };
+
+            int main(void) {
+                struct S s = { 0 };
+                s.v = -1;
+                if (s.v != -1)
+                    return 10;
+                s.v = -8;
+                if (s.v != -8)
+                    return 20;
+                s.v = 7;
+                if (s.v != 7)
+                    return 30;
+                return 0;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
     public void ScalarGlobalLoadStore()
     {
         Compile("""

@@ -979,14 +979,23 @@ public class CodeGen
 
     private void ExtractBitfieldValue(Member mem)
     {
-        int shift = (mem.Ty.Size * 8) - mem.BitWidth - mem.BitOffset;
+        // Size the extracting shifts by the width of the LOADED value, not the
+        // storage unit: Load widens a sub-word storage type to a 32-bit stack int
+        // (a char/short via ldind.i1/i2 -> i4), and an 8-byte storage to i8. Using
+        // the storage width (Ty.Size * 8) would leave a char/short field below bit
+        // 31, so the arithmetic right shift never sign-extends and a signed sub-word
+        // bitfield reads back as if unsigned. The loaded container is 32 bits for
+        // <=4-byte storage, 64 bits for 8-byte storage.
+        int containerBits = mem.Ty.Size <= 4 ? 32 : 64;
+
+        int shift = containerBits - mem.BitWidth - mem.BitOffset;
         if (shift > 0)
         {
             EmitConstI4(shift);
             _enc.OpCode(ILOpCode.Shl); Pop();
         }
 
-        int rightShift = (mem.Ty.Size * 8) - mem.BitWidth;
+        int rightShift = containerBits - mem.BitWidth;
         if (rightShift > 0)
         {
             EmitConstI4(rightShift);
