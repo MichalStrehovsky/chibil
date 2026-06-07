@@ -402,15 +402,10 @@ public class CodeGen
     //  Branch normalization helpers
     // ═══════════════════════════════════════════════════════════════
 
-    private void NormalizeToBranchable(CType ty)
-    {
-        if (TypeSystem.IsFlonum(ty))
-            EmitNonZero(ty);
-    }
-
     private void EmitBranch(ILOpCode opcode, LabelHandle label, CType conditionType)
     {
-        NormalizeToBranchable(conditionType);
+        if (TypeSystem.IsFlonum(conditionType))
+            EmitNonZero(conditionType);
         _enc.Branch(opcode, label);
         Pop();
     }
@@ -455,12 +450,6 @@ public class CodeGen
                 EmitConstI4(0);
                 return;
         }
-    }
-
-    private void EmitConstForType(CType ty, long value)
-    {
-        if (ty.Size == 8) EmitConstI8(value);
-        else EmitConstI4(value);
     }
 
     private static bool IsStructOrUnion(CType ty) =>
@@ -1142,6 +1131,7 @@ public class CodeGen
                 GenExpr(node.Cond);
                 int condScratch = GetOrAddScratchLocal(node.Cond.Ty);
                 _enc.StoreLocal(condScratch); Pop();
+                bool is64 = node.Cond.Ty.Size == 8;
 
                 for (Node c = node.CaseNext; c != null; c = c.CaseNext)
                 {
@@ -1149,16 +1139,16 @@ public class CodeGen
                     if (c.Begin == c.End)
                     {
                         _enc.LoadLocal(condScratch); Push();
-                        EmitConstForType(node.Cond.Ty, c.Begin);
+                        if (is64) EmitConstI8(c.Begin); else EmitConstI4(c.Begin);
                         _enc.Branch(ILOpCode.Beq, caseLabel); Pop(2);
                     }
                     else
                     {
                         // Range case: val - begin <= (end - begin)
                         _enc.LoadLocal(condScratch); Push();
-                        EmitConstForType(node.Cond.Ty, c.Begin);
+                        if (is64) EmitConstI8(c.Begin); else EmitConstI4(c.Begin);
                         _enc.OpCode(ILOpCode.Sub); Pop();
-                        EmitConstForType(node.Cond.Ty, c.End - c.Begin);
+                        if (is64) EmitConstI8(c.End - c.Begin); else EmitConstI4(c.End - c.Begin);
                         _enc.Branch(ILOpCode.Ble_un, caseLabel); Pop(2);
                     }
                 }
