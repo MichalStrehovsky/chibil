@@ -301,13 +301,17 @@ public class AuditBugTests : ChibiTestBase
             struct S {
                 unsigned __int64 x : 40;
                 __int64 y : 40;
-                unsigned __int64 prefix : 4;
-                unsigned __int64 z : 40;
                 unsigned __int64 full : 64;
+            };
+            struct Offset {
+                unsigned __int64 lower : 4;
+                unsigned __int64 mid : 40;
+                unsigned __int64 upper : 20;
             };
 
             int main(void) {
                 struct S s = { 0 };
+                struct Offset o = { 0 };
                 unsigned __int64 assigned = (s.x = 0x100000001ULL);
                 if (assigned != 0x100000001ULL)
                     return 10;
@@ -318,19 +322,22 @@ public class AuditBugTests : ChibiTestBase
                     return 30;
                 if (s.y != -1)
                     return 40;
-                s.prefix = 0xFULL;
-                unsigned __int64 offsetAssigned = (s.z = 0x100000002ULL);
-                if (offsetAssigned != 0x100000002ULL)
-                    return 50;
-                if (s.prefix != 0xFULL)
-                    return 60;
-                if (s.z != 0x100000002ULL)
-                    return 70;
                 unsigned __int64 fullAssigned = (s.full = 0xFEDCBA9876543210ULL);
                 if (fullAssigned != 0xFEDCBA9876543210ULL)
-                    return 80;
+                    return 50;
                 if (s.full != 0xFEDCBA9876543210ULL)
+                    return 60;
+                o.lower = 0xFULL;
+                o.upper = 0xABCDEULL;
+                unsigned __int64 offsetAssigned = (o.mid = 0x100000002ULL);
+                if (offsetAssigned != 0x100000002ULL)
+                    return 70;
+                if (o.lower != 0xFULL)
+                    return 80;
+                if (o.mid != 0x100000002ULL)
                     return 90;
+                if (o.upper != 0xABCDEULL)
+                    return 100;
                 return 0;
             }
             """)
