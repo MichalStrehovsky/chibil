@@ -979,14 +979,15 @@ public class CodeGen
 
     private void ExtractBitfieldValue(Member mem)
     {
-        int shift = (mem.Ty.Size * 8) - mem.BitWidth - mem.BitOffset;
+        int storageBits = mem.Ty.Size <= 4 ? 32 : 64;
+        int shift = storageBits - mem.BitWidth - mem.BitOffset;
         if (shift > 0)
         {
             EmitConstI4(shift);
             _enc.OpCode(ILOpCode.Shl); Pop();
         }
 
-        int rightShift = (mem.Ty.Size * 8) - mem.BitWidth;
+        int rightShift = storageBits - mem.BitWidth;
         if (rightShift > 0)
         {
             EmitConstI4(rightShift);

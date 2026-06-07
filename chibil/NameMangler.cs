@@ -348,4 +348,7 @@ public readonly struct NameMangler
     {
         return $"?A0x{tuHash}.{var.Name}";
     }
+
+    public static string MangleStaticGlobalName(string tuHash, string name) =>
+        $"?A0x{tuHash}.{name}";
 }
