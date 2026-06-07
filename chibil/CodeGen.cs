@@ -71,9 +71,21 @@ public class CodeGen
         // Emit function body
         GenStmt(_currentFn.Body);
 
-        if (_currentFn.Ty.ReturnTy.Kind != TypeKind.Void)
+        CType returnTy = _currentFn.Ty.ReturnTy;
+        if (returnTy.Kind != TypeKind.Void)
         {
-            EmitDefaultValue(_currentFn.Ty.ReturnTy);
+            if (IsStructOrUnion(returnTy))
+            {
+                // For struct return, push a zeroed struct.
+                int scratch = GetOrAddScratchLocal(returnTy);
+                _enc.LoadLocalAddress(scratch); Push();
+                _enc.OpCode(ILOpCode.Initobj); _enc.Token(_emit.GetStructTypeHandle(returnTy)); Pop();
+                _enc.LoadLocal(scratch); Push();
+            }
+            else
+            {
+                EmitTypedZero(returnTy);
+            }
         }
         _enc.OpCode(ILOpCode.Ret);
 
@@ -83,18 +95,19 @@ public class CodeGen
         if (totalLocals > 0)
         {
             var localsSigBlob = new BlobBuilder();
-            var enc = new BlobEncoder(localsSigBlob).LocalVariableSignature(totalLocals);
+            localsSigBlob.WriteByte(0x07); // LOCAL_SIG
+            localsSigBlob.WriteCompressedInteger(totalLocals);
 
             // User locals
             for (Obj local = _currentFn.Locals; local != null; local = local.Next)
             {
                 if (_localSlots.ContainsKey(local))
-                    EncodeLocalType(enc.AddVariable().Type(), local.Ty);
+                    _emit.EncodeType(localsSigBlob, local.Ty);
             }
 
             // Scratch locals
             foreach (var (ty, _) in _scratchLocals)
-                EncodeLocalType(enc.AddVariable().Type(), ty);
+                _emit.EncodeType(localsSigBlob, ty);
 
             localsSig = _emit.AddStandaloneSignature(localsSigBlob);
         }
@@ -144,36 +157,6 @@ public class CodeGen
         }
     }
 
-    private void EncodeLocalType(SignatureTypeEncoder enc, CType ty)
-    {
-        // Encode using the builder directly
-        _emit.EncodeType(enc.Builder, ty);
-    }
-
-    private void EmitDefaultValue(CType ty)
-    {
-        switch (ty.Kind)
-        {
-            case TypeKind.Float:
-                _enc.LoadConstantR4(0.0f); Push(); break;
-            case TypeKind.Double:
-            case TypeKind.LDouble:
-                _enc.LoadConstantR8(0.0); Push(); break;
-            case TypeKind.LLong:
-                _enc.LoadConstantI8(0); Push(); break;
-            case TypeKind.Struct:
-            case TypeKind.Union:
-                // For struct return, push a zeroed struct
-                int scratch = GetOrAddScratchLocal(ty);
-                _enc.LoadLocalAddress(scratch); Push();
-                _enc.OpCode(ILOpCode.Initobj); _enc.Token(_emit.GetStructTypeHandle(ty)); Pop();
-                _enc.LoadLocal(scratch); Push();
-                break;
-            default:
-                _enc.OpCode(ILOpCode.Ldc_i4_0); Push(); break;
-        }
-    }
-
     // ═══════════════════════════════════════════════════════════════
     //  Scratch locals
     // ═══════════════════════════════════════════════════════════════
@@ -189,7 +172,7 @@ public class CodeGen
                 existingTy.IsUnsigned == ty.IsUnsigned)
             {
                 // Struct/union/array: only reuse if same canonical type
-                if (ty.Kind == TypeKind.Struct || ty.Kind == TypeKind.Union || ty.Kind == TypeKind.Array)
+                if (IsAggregateType(ty))
                 {
                     if (_types.GetTypeId(existingTy) == _types.GetTypeId(ty))
                         return slot;
@@ -264,49 +247,28 @@ public class CodeGen
                 }
                 return;
 
-            case NodeKind.FunCall:
-                // Struct-returning call — evaluate, spill to scratch, return address
-                if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union)
+            case NodeKind.FunCall when IsStructOrUnion(node.Ty):
+            case NodeKind.Assign when IsStructOrUnion(node.Ty):
+            case NodeKind.Cond when IsStructOrUnion(node.Ty):
+                GenExpr(node);
+                var handle = _emit.GetStructTypeHandle(node.Ty);
+                if (handle.IsNil)
                 {
-                    GenExpr(node);
-                    var fHandle = _emit.GetStructTypeHandle(node.Ty);
-                    if (fHandle.IsNil)
-                    {
-                        // Nested/flattened struct — GenExpr already returned an address.
-                        // Spill to void* scratch, then return address.
-                        int scratch = GetOrAddScratchLocal(_types.PointerTo(_types.TyVoid));
-                        _enc.StoreLocal(scratch); Pop();
-                        _enc.LoadLocal(scratch); Push();
-                        return;
-                    }
-                    int fScratch = GetOrAddScratchLocal(node.Ty);
-                    _enc.StoreLocal(fScratch); Pop();
-                    _enc.LoadLocalAddress(fScratch); Push();
+                    // Nested/flattened struct — GenExpr returned an address.
+                    int scratch = GetOrAddScratchLocal(_types.PointerTo(_types.TyVoid));
+                    _enc.StoreLocal(scratch); Pop();
+                    _enc.LoadLocal(scratch); Push();
                     return;
                 }
-                break;
 
+                int valueScratch = GetOrAddScratchLocal(node.Ty);
+                _enc.StoreLocal(valueScratch); Pop();
+                _enc.LoadLocalAddress(valueScratch); Push();
+                return;
+
+            case NodeKind.FunCall:
             case NodeKind.Assign:
             case NodeKind.Cond:
-                if (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union)
-                {
-                    GenExpr(node);
-                    var acHandle = _emit.GetStructTypeHandle(node.Ty);
-                    if (acHandle.IsNil)
-                    {
-                        // Nested/flattened struct — GenExpr returned an address.
-                        // Spill to void* scratch, then return that address.
-                        int scratch = GetOrAddScratchLocal(_types.PointerTo(_types.TyVoid));
-                        _enc.StoreLocal(scratch); Pop();
-                        _enc.LoadLocal(scratch); Push();
-                        return;
-                    }
-                    // Normal struct — spill value to scratch, return address of scratch.
-                    int acScratch = GetOrAddScratchLocal(node.Ty);
-                    _enc.StoreLocal(acScratch); Pop();
-                    _enc.LoadLocalAddress(acScratch); Push();
-                    return;
-                }
                 break;
 
             case NodeKind.VlaPtr:
@@ -327,13 +289,10 @@ public class CodeGen
     {
         switch (ty.Kind)
         {
-            case TypeKind.Array:
-            case TypeKind.Func:
-            case TypeKind.Vla:
+            case TypeKind.Array or TypeKind.Func or TypeKind.Vla:
                 // Address IS the value
                 return;
-            case TypeKind.Struct:
-            case TypeKind.Union:
+            case TypeKind.Struct or TypeKind.Union:
             {
                 var handle = _emit.GetStructTypeHandle(ty);
                 if (handle.IsNil)
@@ -347,28 +306,22 @@ public class CodeGen
             }
             case TypeKind.Float:
                 _enc.OpCode(ILOpCode.Ldind_r4); return;
-            case TypeKind.Double:
-            case TypeKind.LDouble:
+            case TypeKind.Double or TypeKind.LDouble:
                 _enc.OpCode(ILOpCode.Ldind_r8); return;
         }
 
         // Integer types
-        if (ty.Size == 1)
-            _enc.OpCode(ty.IsUnsigned ? ILOpCode.Ldind_u1 : ILOpCode.Ldind_i1);
-        else if (ty.Size == 2)
-            _enc.OpCode(ty.IsUnsigned ? ILOpCode.Ldind_u2 : ILOpCode.Ldind_i2);
-        else if (ty.Size == 4)
-            _enc.OpCode(ty.IsUnsigned ? ILOpCode.Ldind_u4 : ILOpCode.Ldind_i4);
-        else
-            _enc.OpCode(ILOpCode.Ldind_i8);
+        if (ty.Size == 1) _enc.OpCode(ty.IsUnsigned ? ILOpCode.Ldind_u1 : ILOpCode.Ldind_i1);
+        else if (ty.Size == 2) _enc.OpCode(ty.IsUnsigned ? ILOpCode.Ldind_u2 : ILOpCode.Ldind_i2);
+        else if (ty.Size == 4) _enc.OpCode(ty.IsUnsigned ? ILOpCode.Ldind_u4 : ILOpCode.Ldind_i4);
+        else _enc.OpCode(ILOpCode.Ldind_i8);
     }
 
     private void Store(CType ty)
     {
         switch (ty.Kind)
         {
-            case TypeKind.Struct:
-            case TypeKind.Union:
+            case TypeKind.Struct or TypeKind.Union:
             {
                 var handle = _emit.GetStructTypeHandle(ty);
                 if (handle.IsNil)
@@ -387,8 +340,7 @@ public class CodeGen
             }
             case TypeKind.Float:
                 _enc.OpCode(ILOpCode.Stind_r4); Pop(2); return;
-            case TypeKind.Double:
-            case TypeKind.LDouble:
+            case TypeKind.Double or TypeKind.LDouble:
                 _enc.OpCode(ILOpCode.Stind_r8); Pop(2); return;
         }
 
@@ -446,29 +398,40 @@ public class CodeGen
         _enc.LoadConstantI8(value); Push();
     }
 
-    /// <summary>Emit conv.i8 for pointer arithmetic widening on 64-bit.</summary>
-    private void ConvI8IfNeeded()
-    {
-        if (_types.PointerSize != 4) _enc.OpCode(ILOpCode.Conv_i8);
-    }
-
     // ═══════════════════════════════════════════════════════════════
     //  Branch normalization helpers
     // ═══════════════════════════════════════════════════════════════
 
     private void NormalizeToBranchable(CType ty)
     {
-        switch (ty.Kind)
+        if (TypeSystem.IsFlonum(ty))
+            EmitNonZero(ty);
+    }
+
+    private void EmitBranch(ILOpCode opcode, LabelHandle label, CType conditionType)
+    {
+        NormalizeToBranchable(conditionType);
+        _enc.Branch(opcode, label);
+        Pop();
+    }
+
+    private void EmitNonZero(CType ty)
+    {
+        if (TypeSystem.IsFlonum(ty))
         {
-            case TypeKind.Float:
-            case TypeKind.Double:
-            case TypeKind.LDouble:
-                EmitTypedZero(ty);
-                _enc.OpCode(ILOpCode.Ceq); Pop();
-                EmitConstI4(0);
-                _enc.OpCode(ILOpCode.Ceq); Pop();
-                break;
+            EmitTypedZero(ty);
+            _enc.OpCode(ILOpCode.Ceq); Pop();
+            EmitConstI4(0);
+            _enc.OpCode(ILOpCode.Ceq); Pop();
+            return;
         }
+
+        EmitConstI4(0);
+        if (ty.Kind == TypeKind.Ptr)
+            _enc.OpCode(ILOpCode.Conv_i);
+        else if (ty.Size == 8)
+            _enc.OpCode(ILOpCode.Conv_i8);
+        _enc.OpCode(ILOpCode.Cgt_un); Pop();
     }
 
     private void EmitTypedZero(CType ty)
@@ -478,17 +441,15 @@ public class CodeGen
             case TypeKind.Float:
                 _enc.LoadConstantR4(0.0f); Push();
                 return;
-            case TypeKind.Double:
-            case TypeKind.LDouble:
+            case TypeKind.Double or TypeKind.LDouble:
                 _enc.LoadConstantR8(0.0); Push();
                 return;
             case TypeKind.LLong:
                 EmitConstI8(0);
                 return;
-            case TypeKind.Long:
+            case TypeKind.Long when _types.DataModel.LongSize == 8:
                 // LP64: long is 8 bytes = int64
-                if (_types.DataModel.LongSize == 8) { EmitConstI8(0); return; }
-                EmitConstI4(0);
+                EmitConstI8(0);
                 return;
             default:
                 EmitConstI4(0);
@@ -496,8 +457,17 @@ public class CodeGen
         }
     }
 
+    private void EmitConstForType(CType ty, long value)
+    {
+        if (ty.Size == 8) EmitConstI8(value);
+        else EmitConstI4(value);
+    }
+
+    private static bool IsStructOrUnion(CType ty) =>
+        ty.Kind is TypeKind.Struct or TypeKind.Union;
+
     private static bool IsAggregateType(CType ty) =>
-        ty.Kind == TypeKind.Struct || ty.Kind == TypeKind.Union || ty.Kind == TypeKind.Array;
+        ty.Kind is TypeKind.Struct or TypeKind.Union or TypeKind.Array;
 
     /// <summary>Push a callable function address onto the evaluation stack.</summary>
     private void EmitFunctionAddress(Obj fn)
@@ -648,8 +618,7 @@ public class CodeGen
                 var elseLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
                 GenExpr(node.Cond);
-                NormalizeToBranchable(node.Cond.Ty);
-                _enc.Branch(ILOpCode.Brfalse, elseLabel); Pop();
+                EmitBranch(ILOpCode.Brfalse, elseLabel, node.Cond.Ty);
                 _stackDepth = savedDepth;
                 GenExpr(node.Then);
                 _enc.Branch(ILOpCode.Br, endLabel);
@@ -677,12 +646,10 @@ public class CodeGen
                 var falseLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
                 GenExpr(node.Lhs);
-                NormalizeToBranchable(node.Lhs.Ty);
-                _enc.Branch(ILOpCode.Brfalse, falseLabel); Pop();
+                EmitBranch(ILOpCode.Brfalse, falseLabel, node.Lhs.Ty);
                 _stackDepth = savedDepth;
                 GenExpr(node.Rhs);
-                NormalizeToBranchable(node.Rhs.Ty);
-                _enc.Branch(ILOpCode.Brfalse, falseLabel); Pop();
+                EmitBranch(ILOpCode.Brfalse, falseLabel, node.Rhs.Ty);
                 _stackDepth = savedDepth;
                 EmitConstI4(1);
                 _enc.Branch(ILOpCode.Br, endLabel);
@@ -699,12 +666,10 @@ public class CodeGen
                 var trueLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
                 GenExpr(node.Lhs);
-                NormalizeToBranchable(node.Lhs.Ty);
-                _enc.Branch(ILOpCode.Brtrue, trueLabel); Pop();
+                EmitBranch(ILOpCode.Brtrue, trueLabel, node.Lhs.Ty);
                 _stackDepth = savedDepth;
                 GenExpr(node.Rhs);
-                NormalizeToBranchable(node.Rhs.Ty);
-                _enc.Branch(ILOpCode.Brtrue, trueLabel); Pop();
+                EmitBranch(ILOpCode.Brtrue, trueLabel, node.Rhs.Ty);
                 _stackDepth = savedDepth;
                 EmitConstI4(0);
                 _enc.Branch(ILOpCode.Br, endLabel);
@@ -800,7 +765,7 @@ public class CodeGen
         }
 
         GenAddr(node.Lhs);
-        if ((node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union) &&
+        if (IsStructOrUnion(node.Ty) &&
             _emit.GetStructTypeHandle(node.Ty).IsNil)
         {
             if (wantValue)
@@ -978,7 +943,7 @@ public class CodeGen
         // We need: addr, (old & ~field_mask) | shifted_new
         // Duplicate addr, load old value
         // This requires reordering; use scratch
-        int newValScratch = GetOrAddScratchLocal(BitfieldScratchType(mem));
+        int newValScratch = GetOrAddScratchLocal(mem.Ty.Size <= 4 ? _types.TyInt : mem.Ty);
         _enc.StoreLocal(newValScratch); Pop();
         _enc.OpCode(ILOpCode.Dup); Push(); // dup addr
         Load(mem.Ty); // load old value
@@ -1010,9 +975,6 @@ public class CodeGen
 
     private static ulong BitMask(int width) =>
         width >= 64 ? ulong.MaxValue : (1UL << width) - 1;
-
-    private CType BitfieldScratchType(Member mem) =>
-        mem.Ty.Size <= 4 ? _types.TyInt : mem.Ty;
 
     private void EmitBitfieldStorageConst(Member mem, ulong value)
     {
@@ -1046,28 +1008,7 @@ public class CodeGen
         if (to.Kind == TypeKind.Void) { if (from.Kind != TypeKind.Void) { _enc.OpCode(ILOpCode.Pop); Pop(); } return; }
         if (to.Kind == TypeKind.Bool)
         {
-            // Non-zero → 1, zero → 0
-            switch (from.Kind)
-            {
-                case TypeKind.Float:
-                case TypeKind.Double:
-                case TypeKind.LDouble:
-                    if (from.Kind == TypeKind.Float)
-                        _enc.LoadConstantR4(0.0f);
-                    else
-                        _enc.LoadConstantR8(0.0);
-                    Push();
-                    _enc.OpCode(ILOpCode.Ceq); Pop();
-                    EmitConstI4(0);
-                    _enc.OpCode(ILOpCode.Ceq); Pop();
-                    break;
-                default:
-                    EmitConstI4(0);
-                    if (from.Kind == TypeKind.Ptr) _enc.OpCode(ILOpCode.Conv_i);
-                    else if (from.Size == 8) _enc.OpCode(ILOpCode.Conv_i8);
-                    _enc.OpCode(ILOpCode.Cgt_un); Pop();
-                    break;
-            }
+            EmitNonZero(from);
             return;
         }
 
@@ -1143,8 +1084,7 @@ public class CodeGen
                 var elseLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
                 GenExpr(node.Cond);
-                NormalizeToBranchable(node.Cond.Ty);
-                _enc.Branch(ILOpCode.Brfalse, elseLabel); Pop();
+                EmitBranch(ILOpCode.Brfalse, elseLabel, node.Cond.Ty);
                 GenStmt(node.Then);
                 _enc.Branch(ILOpCode.Br, endLabel);
                 _enc.MarkLabel(elseLabel);
@@ -1164,8 +1104,7 @@ public class CodeGen
                 if (node.Cond != null)
                 {
                     GenExpr(node.Cond);
-                    NormalizeToBranchable(node.Cond.Ty);
-                    _enc.Branch(ILOpCode.Brfalse, brkLabel); Pop();
+                    EmitBranch(ILOpCode.Brfalse, brkLabel, node.Cond.Ty);
                 }
                 GenStmt(node.Then);
                 _enc.MarkLabel(contLabel);
@@ -1190,8 +1129,7 @@ public class CodeGen
                 GenStmt(node.Then);
                 _enc.MarkLabel(contLabel);
                 GenExpr(node.Cond);
-                NormalizeToBranchable(node.Cond.Ty);
-                _enc.Branch(ILOpCode.Brtrue, beginLabel); Pop();
+                EmitBranch(ILOpCode.Brtrue, beginLabel, node.Cond.Ty);
                 _enc.MarkLabel(brkLabel);
                 return;
             }
@@ -1208,21 +1146,19 @@ public class CodeGen
                 for (Node c = node.CaseNext; c != null; c = c.CaseNext)
                 {
                     var caseLabel = GetLabel(c.LabelId);
-                    bool is64 = node.Cond.Ty.Size == 8;
-
                     if (c.Begin == c.End)
                     {
                         _enc.LoadLocal(condScratch); Push();
-                        if (is64) EmitConstI8(c.Begin); else EmitConstI4(c.Begin);
+                        EmitConstForType(node.Cond.Ty, c.Begin);
                         _enc.Branch(ILOpCode.Beq, caseLabel); Pop(2);
                     }
                     else
                     {
                         // Range case: val - begin <= (end - begin)
                         _enc.LoadLocal(condScratch); Push();
-                        if (is64) EmitConstI8(c.Begin); else EmitConstI4(c.Begin);
+                        EmitConstForType(node.Cond.Ty, c.Begin);
                         _enc.OpCode(ILOpCode.Sub); Pop();
-                        if (is64) EmitConstI8(c.End - c.Begin); else EmitConstI4(c.End - c.Begin);
+                        EmitConstForType(node.Cond.Ty, c.End - c.Begin);
                         _enc.Branch(ILOpCode.Ble_un, caseLabel); Pop(2);
                     }
                 }
