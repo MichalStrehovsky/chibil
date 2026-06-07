@@ -967,7 +967,8 @@ public class Parser
         if (lhs.Ty.Base != null && rhs.Ty.Base != null) Util.ErrorTok(tok, "invalid operands");
         if (lhs.Ty.Base == null && rhs.Ty.Base != null) { var tmp = lhs; lhs = rhs; rhs = tmp; }
         if (lhs.Ty.Base.Kind == TypeKind.Vla) { rhs = NewBinary(NodeKind.Mul, rhs, NewVarNode(lhs.Ty.Base.VlaSize, tok), tok); return NewBinary(NodeKind.Add, lhs, rhs, tok); }
-        rhs = NewBinary(NodeKind.Mul, rhs, NewLong(lhs.Ty.Base.Size, tok), tok);
+        if (lhs.Ty.Base.Size != 1)
+            rhs = NewBinary(NodeKind.Mul, rhs, NewLong(lhs.Ty.Base.Size, tok), tok);
         return NewBinary(NodeKind.Add, lhs, rhs, tok);
     }
 
@@ -1685,8 +1686,13 @@ public class Parser
     {
         Initializer init = InitializerEntry(ref rest, tok, var.Ty, out var.Ty);
         var desg = new InitDesg { Var = var };
-        Node lhs = NewNode(NodeKind.MemZero, tok); lhs.Var = var;
         Node rhs = CreateLvarInit(init, var.Ty, desg, tok);
+        // Aggregate initializers may omit elements; keep the explicit zero-fill
+        // so unspecified members/elements have C's required zero value.
+        if (var.Ty.Kind is not (TypeKind.Array or TypeKind.Struct or TypeKind.Union))
+            return rhs;
+
+        Node lhs = NewNode(NodeKind.MemZero, tok); lhs.Var = var;
         return NewBinary(NodeKind.Comma, lhs, rhs, tok);
     }
 

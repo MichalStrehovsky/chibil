@@ -693,6 +693,10 @@ public class MsilObjectEmitter
         {
             fieldName = $"?A0x{_tuHash}.unnamed-global-{_anonGlobalCounter++}";
         }
+        else if (g.IsStatic)
+        {
+            fieldName = NameMangler.MangleStaticGlobalName(_tuHash, g.Name);
+        }
         else
         {
             fieldName = g.Name;

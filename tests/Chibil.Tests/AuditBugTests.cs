@@ -313,6 +313,58 @@ public class AuditBugTests : ChibiTestBase
     }
 
     [Fact]
+    public void CharBitfieldExtractionUsesStackWidth()
+    {
+        Compile("""
+            struct UnsignedBits {
+                unsigned char low : 1;
+                unsigned char next : 1;
+            };
+
+            struct SignedBits {
+                signed char low : 1;
+                signed char next : 1;
+            };
+
+            int main(void) {
+                struct UnsignedBits u;
+                struct SignedBits s;
+
+                *(unsigned char *)&u = 0xFE;
+                if (u.low != 0)
+                    return 10;
+                if (u.next != 1)
+                    return 20;
+
+                *(unsigned char *)&s = 0x02;
+                if (s.low != 0)
+                    return 30;
+                if (s.next != -1)
+                    return 40;
+
+                return 42;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void CharPointerArithmeticDoesNotScaleByOne()
+    {
+        Compile("""
+            int main(void) {
+                char data[4];
+                char *p = data;
+                p[2] = 42;
+                return data[2];
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
     public void BitfieldUnsignedInt64Storage()
     {
         Compile("""
