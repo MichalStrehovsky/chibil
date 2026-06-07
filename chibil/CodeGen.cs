@@ -422,7 +422,7 @@ public class CodeGen
         }
 
         EmitConstI4(0);
-        if (ty.Kind == TypeKind.Ptr)
+        if (ty.Kind is TypeKind.Ptr or TypeKind.Func or TypeKind.Array or TypeKind.Vla)
             _enc.OpCode(ILOpCode.Conv_i);
         else if (ty.Size == 8)
             _enc.OpCode(ILOpCode.Conv_i8);
@@ -445,6 +445,10 @@ public class CodeGen
             case TypeKind.Long when _types.DataModel.LongSize == 8:
                 // LP64: long is 8 bytes = int64
                 EmitConstI8(0);
+                return;
+            case TypeKind.Ptr or TypeKind.Func or TypeKind.Array or TypeKind.Vla:
+                EmitConstI4(0);
+                _enc.OpCode(ILOpCode.Conv_i);
                 return;
             default:
                 EmitConstI4(0);

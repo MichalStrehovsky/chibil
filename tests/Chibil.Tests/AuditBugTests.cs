@@ -52,6 +52,24 @@ public class AuditBugTests : ChibiTestBase
     }
 
     [Fact]
+    public void ArrayAndFunctionConditions()
+    {
+        Compile("""
+            int callee(void) { return 0; }
+
+            int main() {
+                int arr[1];
+                if (!arr) return 1;
+                if (!callee) return 2;
+                if (arr && callee) return 0;
+                return 3;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
     public void NotLongLong()
     {
         Compile("""
