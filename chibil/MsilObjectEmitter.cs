@@ -231,8 +231,7 @@ public class MsilObjectEmitter
                 else
                 {
                     // Fixed-size array → ValueType of array TypeDef
-                    string arrayName = NameMangler.MangleArrayTypeName(_types, ty);
-                    TypeDefinitionHandle arrayTd = _arrayTypeDefs[arrayName];
+                    TypeDefinitionHandle arrayTd = GetOrReserveArrayTypeHandle(ty);
                     sig.WriteByte((byte)(SignatureTypeCode)0x11);
                     sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(arrayTd));
                 }
@@ -327,8 +326,6 @@ public class MsilObjectEmitter
 
     private void RegisterMetadata(Obj prog, string objName)
     {
-        PreAllocateStructTypeDefs(prog);
-
         _moduleTypeDef = _md.AddTypeDefinition(
             TypeAttributes.Class, default, _md.GetOrAddString("<Module>"),
             default,
@@ -343,113 +340,72 @@ public class MsilObjectEmitter
     }
 
     // We predict handles based on row position. <Module> is TypeDef row 1.
-    // All struct/array TypeDefs will be rows 2, 3, 4, ... in the order they're discovered.
+    // Struct/array TypeDefs are reserved lazily as signatures and IL tokens need them.
     private int _nextStructTypeDefRow = 2; // starts at 2 since <Module> is row 1
 
-    private void PreAllocateStructTypeDefs(Obj prog)
+    private static CType CanonicalizeType(CType ty)
     {
-        var visited = new HashSet<Node>();
-        for (Obj fn = prog; fn != null; fn = fn.Next)
-        {
-            PreAllocateFromType(fn.Ty);
-            if (fn.IsFunction && fn.IsDefinition && fn.IsLive)
-            {
-                for (Obj local = fn.Locals; local != null; local = local.Next)
-                    PreAllocateFromType(local.Ty);
-                for (Obj param = fn.Params; param != null; param = param.Next)
-                    PreAllocateFromType(param.Ty);
-                if (fn.Body != null)
-                    PreAllocateFromNode(fn.Body, visited);
-            }
-        }
+        while (ty.Origin != null) ty = ty.Origin;
+        return ty;
     }
 
-    private void PreAllocateFromType(CType ty)
+    private void ReserveTypeDefFromType(CType ty)
     {
         if (ty == null) return;
-        CType canonical = ty;
-        while (canonical.Origin != null) canonical = canonical.Origin;
+        CType canonical = CanonicalizeType(ty);
 
         switch (canonical.Kind)
         {
             case TypeKind.Struct:
             case TypeKind.Union:
-                if (canonical.Members != null) // Only complete types
-                {
-                    // Skip nested member types — they're flattened into the parent
-                    if (canonical.IsNestedMember) break;
-                    int id = _types.GetTypeId(canonical);
-                    if (!_structTypeDefs.ContainsKey(id))
-                    {
-                        // Reserve a predicted handle
-                        var predictedHandle = MetadataTokens.TypeDefinitionHandle(_nextStructTypeDefRow++);
-                        _structTypeDefs[id] = predictedHandle;
-                        string name = _types.GetStructName(canonical);
-                        _pendingTypeDefs.Add((id, canonical, name));
-
-                        // Do NOT recurse into member types — nested structs/unions are
-                        // flattened into the parent as opaque byte ranges, matching MSVC
-                        // /clr /BC behavior. TypeDefs are only created for types that
-                        // appear directly in function signatures, local/global variable
-                        // types, and pointer targets.
-                    }
-                }
+                GetStructTypeHandle(canonical);
                 break;
             case TypeKind.Array:
                 if (canonical.ArrayLen >= 0)
-                {
-                    string arrayName = NameMangler.MangleArrayTypeName(_types, canonical);
-                    if (!_arrayTypeDefs.ContainsKey(arrayName))
-                    {
-                        var predictedHandle = MetadataTokens.TypeDefinitionHandle(_nextStructTypeDefRow++);
-                        _arrayTypeDefs[arrayName] = predictedHandle;
-                        _pendingTypeDefs.Add((0, canonical, arrayName));
-                    }
-                    PreAllocateFromType(canonical.Base);
-                }
+                    GetOrReserveArrayTypeHandle(canonical);
                 break;
             case TypeKind.Ptr:
-                PreAllocateFromType(canonical.Base);
+                ReserveTypeDefFromType(canonical.Base);
                 break;
             case TypeKind.Func:
-                PreAllocateFromType(canonical.ReturnTy);
+                ReserveTypeDefFromType(canonical.ReturnTy);
                 for (CType p = canonical.Params; p != null; p = p.Next)
-                    PreAllocateFromType(p);
+                    ReserveTypeDefFromType(p);
                 break;
         }
     }
 
-    private void PreAllocateFromNode(Node node, HashSet<Node> visited)
+    public EntityHandle GetStructTypeHandle(CType ty)
     {
-        if (node == null || !visited.Add(node)) return;
-        if (node.Ty != null)
-        {
-            // Don't create TypeDefs for struct/union types that appear only as
-            // member-access intermediaries. MSVC flattens nested struct members
-            // into the parent — no TypeDef for `struct Inner` in `o.inner.a`.
-            // The type will still get a TypeDef if it's used independently in a
-            // function signature, local variable, or global variable.
-            bool isMemberAccess = node.Kind == NodeKind.Member &&
-                (node.Ty.Kind == TypeKind.Struct || node.Ty.Kind == TypeKind.Union);
-            if (!isMemberAccess)
-                PreAllocateFromType(node.Ty);
-        }
-        if (node.FuncTy != null) PreAllocateFromType(node.FuncTy);
-        PreAllocateFromNode(node.Lhs, visited);
-        PreAllocateFromNode(node.Rhs, visited);
-        PreAllocateFromNode(node.Cond, visited);
-        PreAllocateFromNode(node.Then, visited);
-        PreAllocateFromNode(node.Els, visited);
-        PreAllocateFromNode(node.Init, visited);
-        PreAllocateFromNode(node.Inc, visited);
-        PreAllocateFromNode(node.Body, visited);
-        PreAllocateFromNode(node.Next, visited);
-        for (Node arg = node.Args; arg != null; arg = arg.Next)
-            PreAllocateFromNode(arg, visited);
-        PreAllocateFromNode(node.CasAddr, visited);
-        PreAllocateFromNode(node.CasOld, visited);
-        PreAllocateFromNode(node.CasNew, visited);
-        PreAllocateFromNode(node.AtomicExpr, visited);
+        CType canonical = CanonicalizeType(ty);
+        if (canonical.Members == null || canonical.IsNestedMember)
+            return default;
+
+        int id = _types.GetTypeId(canonical);
+        if (_structTypeDefs.TryGetValue(id, out TypeDefinitionHandle handle))
+            return handle;
+
+        handle = MetadataTokens.TypeDefinitionHandle(_nextStructTypeDefRow++);
+        _structTypeDefs[id] = handle;
+        _pendingTypeDefs.Add((id, canonical, _types.GetStructName(canonical)));
+        return handle;
+    }
+
+    private TypeDefinitionHandle GetOrReserveArrayTypeHandle(CType ty)
+    {
+        CType canonical = CanonicalizeType(ty);
+        Debug.Assert(canonical.Kind == TypeKind.Array && canonical.ArrayLen >= 0);
+
+        string arrayName = NameMangler.MangleArrayTypeName(_types, canonical);
+        if (_arrayTypeDefs.TryGetValue(arrayName, out TypeDefinitionHandle handle))
+            return handle;
+
+        handle = MetadataTokens.TypeDefinitionHandle(_nextStructTypeDefRow++);
+        _arrayTypeDefs[arrayName] = handle;
+        _pendingTypeDefs.Add((0, canonical, arrayName));
+
+        ReserveTypeDefFromType(canonical.Base);
+        return handle;
     }
 
     private void RegisterFunctions(Obj prog)
@@ -827,14 +783,6 @@ public class MsilObjectEmitter
                 debugName: fn.Name,
                 localSlots: body.LocalDebugInfo);
         }
-    }
-
-    public EntityHandle GetStructTypeHandle(CType ty)
-    {
-        int typeId = _types.GetTypeId(ty);
-        if (_structTypeDefs.TryGetValue(typeId, out var handle))
-            return handle;
-        return default;
     }
 
     private void EmitCxxPureMSILEntry()
