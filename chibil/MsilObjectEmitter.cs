@@ -910,7 +910,7 @@ public class MsilObjectEmitter
             if (!_unepSlotOffsets.TryGetValue(funcName, out int slotOffset)) continue;
 
             // Create an undefined external bare-name symbol — linker resolves from defining TU
-            var externBareSym = _symtab.AddUndefinedExternalSymbol(SymPrefix + funcName);
+            var externBareSym = _symtab.AddUndefinedExternalSymbol(SymPrefix + funcName, CoffSymbolType.Null);
             new CoffRelocationEncoder(_coffHeader, _dataRelocs)
                 .AddAddressRelocation(slotOffset, externBareSym);
         }
