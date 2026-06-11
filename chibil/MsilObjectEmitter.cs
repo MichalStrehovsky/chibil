@@ -54,9 +54,6 @@ public class MsilObjectEmitter
     private readonly List<(int typeId, CType type, string name)> _pendingTypeDefs = new();
     private readonly Dictionary<string, FieldDefinitionHandle> _globalFieldsByName = new();
 
-    // Tracks which functions have their address taken (need __unep@ slot)
-    private readonly HashSet<string> _addressTakenFuncs = new();
-
     // Bare-name NEP COFF symbols (func name → COFF symbol for the NEP thunk alias)
     private readonly Dictionary<string, CoffSymbolHandle> _nepBareNameSymbols = new();
 
@@ -339,9 +336,7 @@ public class MsilObjectEmitter
             MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
 
         RegisterFunctions(prog);
-        RegisterUnepFields(prog);
         RegisterGlobalFields(prog);
-        MaterializeStructTypeDefs();
 
         // Module row
         _md.AddModule(0, _md.GetOrAddString(objName), _md.GetOrAddGuid(Guid.NewGuid()), default, default);
@@ -525,8 +520,35 @@ public class MsilObjectEmitter
     public EntityHandle GetFieldToken(Obj var)
         => _fieldDefs.TryGetValue(var, out var fieldDef) ? fieldDef : _globalFieldsByName[var.Name];
 
-    public FieldDefinitionHandle GetUnepFieldToken(Obj fn)
-        => _unepFields[fn.Name];
+    public FieldDefinitionHandle GetOrReserveUnepFieldToken(Obj fn)
+    {
+        Debug.Assert(fn.Ty.CallConv != CallConv.Clrcall);
+
+        if (_unepFields.TryGetValue(fn.Name, out FieldDefinitionHandle unepField))
+            return unepField;
+
+        string mangledName = NameMangler.MangleFunctionName(_types, _tuHash, fn);
+        string unepName = $"__unep@{mangledName}";
+
+        var unepFieldSig = new BlobBuilder();
+        unepFieldSig.WriteByte(0x06); // FIELD
+        unepFieldSig.WriteByte((byte)SignatureTypeCode.IntPtr);
+
+        unepField = _md.AddFieldDefinition(
+            FieldAttributes.Assembly | FieldAttributes.Static | FieldAttributes.HasFieldRVA,
+            _md.GetOrAddString(unepName), _md.GetOrAddBlob(unepFieldSig));
+        _nextFieldRow++;
+        _md.AddFieldRelativeVirtualAddress(unepField, 0);
+
+        int slotOffset = _dataStream.Count;
+        for (int i = 0; i < PtrSize; i++) _dataStream.WriteByte(0);
+
+        _unepFields[fn.Name] = unepField;
+        _unepSlotOffsets[fn.Name] = slotOffset;
+        _symtab.AddDataClrToken(unepName, unepField, LogicalSection.Data, slotOffset, out _);
+
+        return unepField;
+    }
 
     private void RegisterCxxPureMSILEntry(Obj mainFn)
     {
@@ -626,38 +648,6 @@ public class MsilObjectEmitter
         });
 
         _md.AddCustomAttribute(target, ctorRef, _md.GetOrAddBlob(attrBlob));
-    }
-
-    private void RegisterUnepFields(Obj prog)
-    {
-        foreach (string funcName in _addressTakenFuncs)
-        {
-            // Find the function (defined or extern)
-            Obj fn = null;
-            for (Obj f = prog; f != null; f = f.Next)
-            {
-                if (f.IsFunction && f.Name == funcName && f.Ty.CallConv != CallConv.Clrcall)
-                {
-                    fn = f; break;
-                }
-            }
-            if (fn == null) continue;
-
-            string mangledName = NameMangler.MangleFunctionName(_types, _tuHash, fn);
-            string unepName = $"__unep@{mangledName}";
-
-            var unepFieldSig = new BlobBuilder();
-            unepFieldSig.WriteByte(0x06); // FIELD
-            unepFieldSig.WriteByte((byte)SignatureTypeCode.IntPtr);
-
-            var unepField = _md.AddFieldDefinition(
-                FieldAttributes.Assembly | FieldAttributes.Static | FieldAttributes.HasFieldRVA,
-                _md.GetOrAddString(unepName), _md.GetOrAddBlob(unepFieldSig));
-            _nextFieldRow++;
-            _md.AddFieldRelativeVirtualAddress(unepField, 0);
-
-            _unepFields[funcName] = unepField;
-        }
     }
 
     private void RegisterGlobalFields(Obj prog)
@@ -907,7 +897,7 @@ public class MsilObjectEmitter
             if (fn.IsStatic && !_nepBareNameSymbols.ContainsKey(fn.Name))
                 _nepBareNameSymbols[fn.Name] = bareSym;
 
-            if (fn.Ty.CallConv != CallConv.Clrcall && _addressTakenFuncs.Contains(fn.Name))
+            if (fn.Ty.CallConv != CallConv.Clrcall && _unepFields.ContainsKey(fn.Name))
             {
                 EmitUnepSlot(fn, bareSym);
             }
@@ -920,7 +910,7 @@ public class MsilObjectEmitter
             if (!_unepSlotOffsets.TryGetValue(funcName, out int slotOffset)) continue;
 
             // Create an undefined external bare-name symbol — linker resolves from defining TU
-            var externBareSym = _symtab.AddUndefinedExternalSymbol(SymPrefix + funcName);
+            var externBareSym = _symtab.AddUndefinedExternalSymbol(SymPrefix + funcName, CoffSymbolType.Null);
             new CoffRelocationEncoder(_coffHeader, _dataRelocs)
                 .AddAddressRelocation(slotOffset, externBareSym);
         }
@@ -1021,23 +1011,6 @@ public class MsilObjectEmitter
             }
         }
 
-        // Pre-allocate __unep@ data slots
-        foreach (var (funcName, unepField) in _unepFields)
-        {
-            Obj fn = null;
-            for (Obj f = prog; f != null; f = f.Next)
-                if (f.IsFunction && f.Name == funcName) { fn = f; break; }
-            if (fn == null) continue;
-
-            string mangledName = NameMangler.MangleFunctionName(_types, _tuHash, fn);
-            string unepName = $"__unep@{mangledName}";
-
-            int slotOffset = _dataStream.Count;
-            for (int i = 0; i < PtrSize; i++) _dataStream.WriteByte(0);
-            _unepSlotOffsets[funcName] = slotOffset;
-
-            _symtab.AddDataClrToken(unepName, unepField, LogicalSection.Data, slotOffset, out _);
-        }
     }
 
     private static bool IsReadOnlyData(Obj g) => g.IsStringLiteral;
@@ -1076,73 +1049,14 @@ public class MsilObjectEmitter
                 else
                 {
                     // Unknown target — create as undefined external
-                    targetSym = _symtab.AddExternalDataSymbol(
-                        SymPrefix + targetName, LogicalSection.Data, 0);
+                    targetSym = _symtab.AddUndefinedExternalSymbol(
+                        SymPrefix + targetName, CoffSymbolType.Null);
                 }
 
                 new CoffRelocationEncoder(_coffHeader, _dataRelocs)
                     .AddAddressRelocation(offset + rel.Offset, targetSym);
             }
         }
-    }
-
-    private void ScanAddressTaken(Obj prog)
-    {
-        for (Obj fn = prog; fn != null; fn = fn.Next)
-        {
-            if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
-            ScanAddressTakenNode(fn.Body);
-        }
-
-        // Also check global initializers that reference functions
-        for (Obj g = prog; g != null; g = g.Next)
-        {
-            if (g.IsFunction) continue;
-            for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
-            {
-                string label = rel.Label;
-                _addressTakenFuncs.Add(label);
-            }
-        }
-    }
-
-    private void ScanAddressTakenNode(Node node)
-    {
-        if (node == null) return;
-        // Explicit address-of: &func
-        if (node.Kind == NodeKind.Addr && node.Lhs?.Kind == NodeKind.Var &&
-            node.Lhs.Var.IsFunction)
-        {
-            _addressTakenFuncs.Add(node.Lhs.Var.Name);
-        }
-        // Implicit function-to-pointer: using function name as a value
-        // (e.g., `fp = add;` without `&`)
-        if (node.Kind == NodeKind.Var && node.Var != null && node.Var.IsFunction &&
-            node.Var.Ty.CallConv != CallConv.Clrcall)
-        {
-            _addressTakenFuncs.Add(node.Var.Name);
-        }
-        // Function passed as argument to another function (e.g., `apply(add, 1, 2)`)
-        if (node.Kind == NodeKind.FunCall)
-        {
-            for (Node arg = node.Args; arg != null; arg = arg.Next)
-            {
-                if (arg.Kind == NodeKind.Var && arg.Var != null && arg.Var.IsFunction &&
-                    arg.Var.Ty.CallConv != CallConv.Clrcall)
-                    _addressTakenFuncs.Add(arg.Var.Name);
-            }
-        }
-        ScanAddressTakenNode(node.Lhs);
-        ScanAddressTakenNode(node.Rhs);
-        ScanAddressTakenNode(node.Cond);
-        ScanAddressTakenNode(node.Then);
-        ScanAddressTakenNode(node.Els);
-        ScanAddressTakenNode(node.Init);
-        ScanAddressTakenNode(node.Inc);
-        ScanAddressTakenNode(node.Body);
-        ScanAddressTakenNode(node.Next);
-        for (Node arg = node.Args; arg != null; arg = arg.Next)
-            ScanAddressTakenNode(arg);
     }
 
     public byte[] Generate(Obj prog, string objName, string sourceFile)
@@ -1199,9 +1113,6 @@ public class MsilObjectEmitter
         byte[] pathHash = SHA256.HashData(Encoding.UTF8.GetBytes(sourceFile));
         _tuHash = BitConverter.ToString(pathHash, 0, 4).Replace("-", "").ToLowerInvariant();
 
-        // Scan for address-taken functions before metadata registration
-        ScanAddressTaken(prog);
-
         // Metadata
         RegisterMetadata(prog, objName);
 
@@ -1212,6 +1123,8 @@ public class MsilObjectEmitter
         EmitFunctions(prog);
 
         EmitCxxPureMSILEntry();
+
+        MaterializeStructTypeDefs();
 
         // NEP machinery (creates bare-name symbols for functions)
         EmitNepMachinery(prog);

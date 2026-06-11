@@ -1968,9 +1968,9 @@ namespace System.Reflection.PortableExecutable
         /// Adds an undefined external symbol (Sect=0, Value=0) for a symbol
         /// defined in another translation unit. The linker resolves it at link time.
         /// </summary>
-        public CoffSymbolHandle AddUndefinedExternalSymbol(string name)
+        public CoffSymbolHandle AddUndefinedExternalSymbol(string name, CoffSymbolType type = CoffSymbolType.Function)
         {
-            return GetOrAddCoffSymbol(name, 0, 0, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0);
+            return GetOrAddCoffSymbol(name, 0, 0, type, CoffSymbolStorageClass.External, 0);
         }
 
         /// <summary>
