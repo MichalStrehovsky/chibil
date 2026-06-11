@@ -474,7 +474,7 @@ public class MsilObjectEmitter
         => _methodDefs.TryGetValue(fn, out var methodDef) ? methodDef : GetExternalFunctionToken(fn);
 
     public EntityHandle GetFieldToken(Obj var)
-        => _fieldDefs.TryGetValue(var, out var fieldDef) ? fieldDef : _globalFieldsByName[var.Name];
+        => _fieldDefs.TryGetValue(var, out var fieldDef) ? fieldDef : GetExternalFieldToken(var);
 
     public FieldDefinitionHandle GetOrReserveUnepFieldToken(Obj fn)
     {
@@ -615,13 +615,6 @@ public class MsilObjectEmitter
             RegisterGlobalField(g);
         }
 
-        // Externs (not yet registered)
-        for (Obj g = prog; g != null; g = g.Next)
-        {
-            if (g.IsFunction || g.IsDefinition) continue;
-            if (_fieldDefs.ContainsKey(g) || _globalFieldsByName.ContainsKey(g.Name)) continue;
-            RegisterExternField(g);
-        }
     }
 
     private void RegisterGlobalField(Obj g)
@@ -665,20 +658,29 @@ public class MsilObjectEmitter
         _globalFieldsByName[g.Name] = fieldDef;
     }
 
-    private void RegisterExternField(Obj g)
+    private FieldDefinitionHandle GetExternalFieldToken(Obj g)
     {
+        if (_globalFieldsByName.TryGetValue(g.Name, out FieldDefinitionHandle fieldDef))
+        {
+            _fieldDefs[g] = fieldDef;
+            return fieldDef;
+        }
+
+        Debug.Assert(!g.IsFunction && !g.IsDefinition);
+
         var fieldSig = new BlobBuilder();
         fieldSig.WriteByte(0x06); // FIELD
         EncodeType(fieldSig, g.Ty);
 
         FieldAttributes attrs = FieldAttributes.Assembly | FieldAttributes.Static;
 
-        var fieldDef = _md.AddFieldDefinition(attrs,
+        fieldDef = _md.AddFieldDefinition(attrs,
             _md.GetOrAddString(g.Name), _md.GetOrAddBlob(fieldSig));
         _nextFieldRow++;
 
         _fieldDefs[g] = fieldDef;
         _globalFieldsByName[g.Name] = fieldDef;
+        return fieldDef;
     }
 
     private void MaterializeStructTypeDefs()
