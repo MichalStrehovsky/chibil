@@ -81,4 +81,19 @@ public class LinkageTests : ChibiTestBase
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
+
+    [Fact]
+    public void GlobalFuncPtrInitializerToExternFunction()
+    {
+        Compile("""
+            int target(void);
+            int (*p)(void) = target;
+            int main(void) { return p(); }
+            """)
+        .Compile("""
+            int target(void) { return 42; }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
 }
