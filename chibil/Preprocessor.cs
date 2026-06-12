@@ -94,6 +94,7 @@ public class Preprocessor
             File = tok.File, FileName = tok.FileName, LineNo = tok.LineNo,
             LineDelta = tok.LineDelta, AtBol = tok.AtBol, HasSpace = tok.HasSpace,
             Hideset = tok.Hideset, Origin = tok.Origin,
+            AttrNext = tok.AttrNext, AttrArgs = tok.AttrArgs,
         };
         return t;
     }
@@ -556,6 +557,10 @@ public class Preprocessor
 
         Macro m = FindMacro(tok);
         if (m == null) return false;
+
+        if (Util.Equal(tok, "__attribute__") && !m.IsObjlike && m.Body.Kind == TokenKind.Eof &&
+            Util.Equal(tok.Next, "("))
+            return false;
 
         // Built-in dynamic macro
         if (m.Handler != null)
@@ -1063,6 +1068,9 @@ public class Preprocessor
         DefineMacro("__inline__", "inline");
         DefineMacro("__inline", "inline");
         DefineMacro("__forceinline", "inline");
+        DefineMacro("__cdecl", "__attribute__((cdecl))");
+        DefineMacro("__clrcall", "__attribute__((clrcall))");
+        DefineMacro("__stdcall", "__attribute__((stdcall))");
         DefineMacro("__linux", "1");
         DefineMacro("__linux__", "1");
         DefineMacro("__signed__", "signed");
@@ -1191,6 +1199,84 @@ public class Preprocessor
         }
     }
 
+    private Token ReadAttributeList(Token tok, Token end)
+    {
+        Token head = null;
+        bool first = true;
+
+        while (tok != end)
+        {
+            if (!first)
+                tok = Util.Skip(tok, ",");
+            first = false;
+
+            if (tok.Kind != TokenKind.Ident)
+                Util.ErrorTok(tok, "expected attribute name");
+
+            Token name = tok;
+            tok = tok.Next;
+
+            Token args = null;
+            if (Util.Equal(tok, "("))
+            {
+                Token rparen = Util.FindMatchingParen(tok);
+                Token argHead = new(), argCur = argHead;
+                for (Token t = tok.Next; t != rparen && t.Kind != TokenKind.Eof; t = t.Next)
+                    argCur = argCur.Next = CopyToken(t);
+                argCur.Next = NewEof(rparen);
+                args = argHead.Next;
+                tok = rparen.Next;
+            }
+
+            Token attr = CopyToken(name);
+            attr.Next = null;
+            attr.AttrNext = null;
+            attr.AttrArgs = args;
+            if (attr.AttrArgs != null)
+                _tokenizer.ConvertPpTokens(attr.AttrArgs);
+
+            AppendAttributes(ref head, attr);
+        }
+
+        return head;
+    }
+
+    private static void AppendAttributes(ref Token list, Token attrs)
+    {
+        while (list != null)
+            list = ref list.AttrNext;
+        list = attrs;
+    }
+
+    private Token PreprocessAttributes(Token tok)
+    {
+        Token head = new(), cur = head;
+
+        while (tok.Kind != TokenKind.Eof)
+        {
+            if (Util.Equal(tok, "__attribute__"))
+            {
+                Token innerOpen = Util.Skip(tok.Next, "(");
+                Token attrsStart = Util.Skip(innerOpen, "(");
+                Token innerClose = Util.FindMatchingParen(innerOpen);
+                Token rest = Util.Skip(innerClose.Next, ")");
+
+                Token attrs = tok.AttrNext;
+                tok.AttrNext = null;
+                AppendAttributes(ref attrs, ReadAttributeList(attrsStart, innerClose));
+                tok = rest;
+                AppendAttributes(ref tok.AttrNext, attrs);
+                continue;
+            }
+
+            cur = cur.Next = tok;
+            tok = tok.Next;
+        }
+
+        cur.Next = tok;
+        return head.Next;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     //  Entry point
     // ═══════════════════════════════════════════════════════════════
@@ -1200,6 +1286,7 @@ public class Preprocessor
         tok = Preprocess2(tok);
         if (_condIncl != null)
             Util.ErrorTok(_condIncl.Tok, "unterminated conditional directive");
+        tok = PreprocessAttributes(tok);
         _tokenizer.ConvertPpTokens(tok);
         JoinAdjacentStringLiterals(tok);
 

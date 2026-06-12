@@ -24,6 +24,33 @@ public class MsvcInteropTests : ChibiTestBase
             """);
     }
 
+    [Fact]
+    public void HiddenAttributeMacroStillPreservesKnownAttributes()
+    {
+        Compile("""
+            #define __attribute__(x)
+            struct __attribute__((packed)) S { char a; int b; };
+            int main(void) {
+                return sizeof(struct S);
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 5);
+    }
+
+    [Fact]
+    public void ConsecutiveAttributeClausesPreserveEarlierAttributes()
+    {
+        Compile("""
+            struct __attribute__((packed)) __attribute__((aligned(1))) S { char a; int b; };
+            int main(void) {
+                return sizeof(struct S);
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 5);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("__clrcall ")]

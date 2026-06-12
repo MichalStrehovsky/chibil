@@ -35,6 +35,29 @@ public static class Util
         return false;
     }
 
+    public static Token FindMatchingParen(Token lparen)
+    {
+        if (!Equal(lparen, "("))
+            ErrorTok(lparen, "expected '('");
+
+        int depth = 0;
+        for (Token tok = lparen; tok.Kind != TokenKind.Eof; tok = tok.Next)
+        {
+            if (Equal(tok, "(")) depth++;
+            else if (Equal(tok, ")"))
+            {
+                depth--;
+                if (depth == 0)
+                    return tok;
+            }
+        }
+
+        ErrorTok(lparen, "unclosed '('");
+        return null;
+    }
+
+    public static Token SkipBalancedParens(Token tok) => FindMatchingParen(tok).Next;
+
     // Extract token text as a C# string
     public static string GetTokenText(Token tok)
     {
