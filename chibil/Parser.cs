@@ -1867,7 +1867,7 @@ public class Parser
         if (attr.IsExtern) fn.ForceExternalDefinition = true;
         if (hasBody || fn.Body != null)
             fn.IsDefinition = !(fn.IsInline && !fn.IsStatic && !fn.ForceExternalDefinition);
-        fn.IsRoot = fn.IsDefinition && !(fn.IsStatic && fn.IsInline);
+        fn.IsRoot |= fn.IsDefinition && !(fn.IsStatic && fn.IsInline);
         if (Util.Consume(ref tok, tok, ";")) return tok;
         _currentFn = fn; _locals = null; _staticLocalScope = 0; _brkLabel = _contLabel = NoLabel; _labelCount = 0; EnterScope();
         CreateParamLvars(ty.Params);

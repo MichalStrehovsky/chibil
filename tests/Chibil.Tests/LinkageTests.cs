@@ -122,6 +122,19 @@ public class LinkageTests : ChibiTestBase
     }
 
     [Fact]
+    public void StaticInlineReferencedByGlobalInitializerStaysLiveAfterRedeclaration()
+    {
+        Compile("""
+            static inline int getnum(void) { return 42; }
+            int (*p)(void) = getnum;
+            static inline int getnum(void);
+            int main(void) { return p(); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
     public void ExternInlineDefinitionProvidesExternalDefinition()
     {
         Compile("""
