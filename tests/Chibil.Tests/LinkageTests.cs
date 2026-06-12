@@ -96,4 +96,64 @@ public class LinkageTests : ChibiTestBase
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
+
+    [Fact]
+    public void PlainInlineDefinitionDoesNotProvideExternalDefinition()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            Compile("""
+                inline int getnum(void) { return 42; }
+                int main(void) { return getnum(); }
+                """)
+            .Link(["/entry:main", "/subsystem:console"]));
+
+        Assert.Contains("getnum", ex.Message);
+    }
+
+    [Fact]
+    public void StaticInlineDefinitionCanBeUsedInSameTranslationUnit()
+    {
+        Compile("""
+            static inline int getnum(void) { return 42; }
+            int main(void) { return getnum(); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void StaticInlineReferencedByGlobalInitializerStaysLiveAfterRedeclaration()
+    {
+        Compile("""
+            static inline int getnum(void) { return 42; }
+            int (*p)(void) = getnum;
+            static inline int getnum(void);
+            int main(void) { return p(); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void ExternInlineDefinitionProvidesExternalDefinition()
+    {
+        Compile("""
+            extern inline int getnum(void) { return 42; }
+            int main(void) { return getnum(); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void ExternInlineRedeclarationMakesInlineDefinitionExternal()
+    {
+        Compile("""
+            inline int getnum(void) { return 42; }
+            extern inline int getnum(void);
+            int main(void) { return getnum(); }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
 }

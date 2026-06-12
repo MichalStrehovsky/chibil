@@ -1800,6 +1800,7 @@ public class Parser
     {
         if (!var.IsFunction || var.IsLive) return;
         var.IsLive = true;
+        if (!var.IsDefinition) return;
         foreach (string name in var.Refs) { Obj fn = FindFunc(name); if (fn != null) MarkLive(fn); }
     }
 
@@ -1816,13 +1817,13 @@ public class Parser
         CType ty = Declarator(ref tok, tok, basety, attr.PendingCallConv);
         if (ty.Name == null) Util.ErrorTok(ty.NamePos, "function name omitted");
         string nameStr = GetIdent(ty.Name);
+        bool hasBody = Util.Equal(tok, "{");
         Obj fn = FindFunc(nameStr);
         if (fn != null)
         {
             if (!fn.IsFunction) Util.ErrorTok(tok, "redeclared as a different kind of symbol");
-            if (fn.IsDefinition && Util.Equal(tok, "{")) Util.ErrorTok(tok, $"redefinition of {nameStr}");
+            if (fn.Body != null && hasBody) Util.ErrorTok(tok, $"redefinition of {nameStr}");
             if (!fn.IsStatic && attr.IsStatic) Util.ErrorTok(tok, "static declaration follows a non-static declaration");
-            fn.IsDefinition = fn.IsDefinition || Util.Equal(tok, "{");
 
             // MSIL unprototyped function handling:
             //
@@ -1843,7 +1844,7 @@ public class Parser
             // For the same-TU case (forward decl followed by definition), we update
             // fn.Ty here so the MethodDef gets the correct signature from the
             // definition. For cross-TU, the linker will reject mismatched signatures.
-            if (Util.Equal(tok, "{"))
+            if (hasBody)
             {
                 // Check calling convention compatibility (MSVC rejects clrcall vs cdecl)
                 if (fn.Ty.CallConv != ty.CallConv)
@@ -1856,11 +1857,17 @@ public class Parser
         else
         {
             fn = NewGvar(nameStr, ty);
-            fn.IsFunction = true; fn.IsDefinition = Util.Equal(tok, "{");
-            fn.IsStatic = attr.IsStatic || (attr.IsInline && !attr.IsExtern);
-            fn.IsInline = attr.IsInline;
+            fn.IsFunction = true;
+            fn.IsDefinition = false;
+            fn.IsStatic = attr.IsStatic;
         }
-        fn.IsRoot = !(fn.IsStatic && fn.IsInline);
+
+        if (attr.IsInline) fn.IsInline = true;
+        else fn.ForceExternalDefinition = true;
+        if (attr.IsExtern) fn.ForceExternalDefinition = true;
+        if (hasBody || fn.Body != null)
+            fn.IsDefinition = !(fn.IsInline && !fn.IsStatic && !fn.ForceExternalDefinition);
+        fn.IsRoot |= fn.IsDefinition && !(fn.IsStatic && fn.IsInline);
         if (Util.Consume(ref tok, tok, ";")) return tok;
         _currentFn = fn; _locals = null; _staticLocalScope = 0; _brkLabel = _contLabel = NoLabel; _labelCount = 0; EnterScope();
         CreateParamLvars(ty.Params);

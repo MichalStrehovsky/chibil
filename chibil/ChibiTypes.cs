@@ -195,6 +195,7 @@ public class Obj
 
     // Function
     public bool IsInline;
+    public bool ForceExternalDefinition;
     public Obj Params;
     public Node Body;
     public Obj Locals;
