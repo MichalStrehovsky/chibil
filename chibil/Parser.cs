@@ -1496,7 +1496,7 @@ public class Parser
             Member mem = StructDesignator(ref tok, tok, init.Ty);
             Designation(ref tok, tok, init.Children[mem.Idx]);
             init.Expr = null;
-            StructInitializer2(ref rest, tok, init, mem.Next);
+            StructInitializer2(ref rest, tok, init, mem.Next, true);
             return;
         }
         if (Util.Equal(tok, ".") && init.Ty.Kind == TypeKind.Union)
@@ -1522,7 +1522,7 @@ public class Parser
             if (Util.Equal(tok, "{")) { StructInitializer1(ref rest, tok, init); return; }
             Node expr = Assign(ref rest, tok); _types.AddType(expr);
             if (expr.Ty.Kind == TypeKind.Struct) { init.Expr = expr; return; }
-            StructInitializer2(ref rest, tok, init, init.Ty.Members); return;
+            StructInitializer2(ref rest, tok, init, init.Ty.Members, false); return;
         }
         if (init.Ty.Kind == TypeKind.Union) { UnionInitializer(ref rest, tok, init); return; }
         if (Util.Equal(tok, "{")) { Initializer2(ref tok, tok.Next, init); rest = Util.Skip(tok, "}"); return; }
@@ -1612,12 +1612,12 @@ public class Parser
         }
     }
 
-    private void StructInitializer2(ref Token rest, Token tok, Initializer init, Member mem)
+    private void StructInitializer2(ref Token rest, Token tok, Initializer init, Member mem, bool postDesignator)
     {
         bool first = true;
         for (; mem != null && !IsEnd(tok); mem = mem.Next)
         {
-            Token start = tok; if (!first) tok = Util.Skip(tok, ","); first = false;
+            Token start = tok; if (!first || postDesignator) tok = Util.Skip(tok, ","); first = false;
             if (Util.Equal(tok, "[") || Util.Equal(tok, ".")) { rest = start; return; }
             Initializer2(ref tok, tok, init.Children[mem.Idx]);
         }

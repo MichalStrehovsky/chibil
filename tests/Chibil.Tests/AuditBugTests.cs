@@ -269,6 +269,36 @@ public class AuditBugTests : ChibiTestBase
     }
 
     [Fact]
+    public void NestedStructDesignatorInitializerContinuesAfterComma()
+    {
+        Compile("""
+            struct Inner {
+                int i;
+                int j;
+            };
+
+            struct Outer {
+                int prefix;
+                struct Inner inner;
+                int suffix;
+            };
+
+            int main(void) {
+                struct Outer x = { .inner.i = 1, .suffix = 2 };
+                struct Outer y = { .inner.i = 3, 4, 5 };
+
+                if (x.inner.i != 1 || x.inner.j != 0 || x.suffix != 2)
+                    return 10;
+                if (y.inner.i != 3 || y.inner.j != 4 || y.suffix != 5)
+                    return 20;
+                return 42;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
     public void BitfieldAssignmentExpressionValue()
     {
         Compile("""
