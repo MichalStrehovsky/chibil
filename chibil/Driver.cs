@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Chibil;
@@ -431,7 +432,11 @@ public class Driver
         string objName = Path.GetFileName(_outputFile ?? "a.obj");
         string sourceFile = Path.GetFullPath(Options.BaseFile);
 
-        var codegen = new MsilObjectEmitter(Options, tokenizer, types);
+        // TU hash (from source path)
+        byte[] pathHash = SHA256.HashData(Encoding.UTF8.GetBytes(sourceFile));
+        string tuHash = BitConverter.ToString(pathHash, 0, 4).Replace("-", "").ToLowerInvariant();
+
+        var codegen = new MsilObjectEmitter(Options, tokenizer, types, new MsvcNameMangler(types, tuHash));
         byte[] objBytes = codegen.Generate(prog, objName, sourceFile);
 
         if (_outputFile == null || _outputFile == "-")

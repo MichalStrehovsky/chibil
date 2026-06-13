@@ -4,7 +4,6 @@ using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
-using System.Text;
 
 namespace Chibil;
 
@@ -18,6 +17,7 @@ public class MsilObjectEmitter
     private readonly TypeSystem _types;
     private readonly Tokenizer _tokenizer;
     private readonly DataModel _dm;
+    private readonly NameMangler _nameMangler;
 
     private MetadataBuilder _md;
     private CoffHeaderBuilder _coffHeader;
@@ -57,16 +57,13 @@ public class MsilObjectEmitter
     // Bare-name NEP COFF symbols (func name → COFF symbol for the NEP thunk alias)
     private readonly Dictionary<string, CoffSymbolHandle> _nepBareNameSymbols = new();
 
-    // Anonymous global counter and TU hash
-    private int _anonGlobalCounter;
-    private string _tuHash;
-
     // __unep@ fields for address-taken cdecl functions
     private readonly Dictionary<string, FieldDefinitionHandle> _unepFields = new();
 
     // __CxxPureMSILEntry state
     private Obj _mainObj;
     private MethodDefinitionHandle _cxxPureMsilEntry;
+    private string _cxxPureMsilEntryMangledName;
 
     // Architecture helpers derived from DataModel
     private int PtrSize => _dm.PointerSize;
@@ -81,12 +78,13 @@ public class MsilObjectEmitter
         : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
     private static readonly byte[] MscorlibPkt = { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 };
 
-    public MsilObjectEmitter(CompilerOptions options, Tokenizer tokenizer, TypeSystem types)
+    public MsilObjectEmitter(CompilerOptions options, Tokenizer tokenizer, TypeSystem types, NameMangler nameMangler)
     {
         _options = options;
         _tokenizer = tokenizer;
         _types = types;
         _dm = options.DataModel;
+        _nameMangler = nameMangler;
     }
 
     public StandaloneSignatureHandle AddStandaloneSignature(BlobBuilder blob)
@@ -396,7 +394,7 @@ public class MsilObjectEmitter
         CType canonical = CanonicalizeType(ty);
         Debug.Assert(canonical.Kind == TypeKind.Array && canonical.ArrayLen >= 0);
 
-        string arrayName = NameMangler.MangleArrayTypeName(_types, canonical);
+        string arrayName = _nameMangler.MangleArrayTypeName(canonical);
         if (_arrayTypeDefs.TryGetValue(arrayName, out TypeDefinitionHandle handle))
             return handle;
 
@@ -459,7 +457,7 @@ public class MsilObjectEmitter
         _methodDefs[fn] = methodDef;
 
         // Pre-register COFF symbol
-        string mangledName = NameMangler.MangleFunctionName(_types, _tuHash, fn);
+        string mangledName = _nameMangler.MangleFunctionName(fn);
         _symtab.PreRegisterFunctionClrToken(mangledName, methodDef);
 
         // If this is main, register __CxxPureMSILEntry
@@ -483,8 +481,7 @@ public class MsilObjectEmitter
         if (_unepFields.TryGetValue(fn.Name, out FieldDefinitionHandle unepField))
             return unepField;
 
-        string mangledName = NameMangler.MangleFunctionName(_types, _tuHash, fn);
-        string unepName = $"__unep@{mangledName}";
+        string unepName = _nameMangler.MangleUnmanagedEntryPointName(fn);
 
         var unepFieldSig = new BlobBuilder();
         unepFieldSig.WriteByte(0x06); // FIELD
@@ -550,8 +547,14 @@ public class MsilObjectEmitter
         _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("envp"), 3);
         _nextParamRow += 3;
 
-        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
-        _symtab.PreRegisterFunctionClrToken(mangledName, _cxxPureMsilEntry);
+        CType ty = TypeSystem.FuncType(TypeSystem.CopyType(_types.TyInt));
+        ty.CallConv = CallConv.Clrcall;
+        ty.Params = TypeSystem.CopyType(_types.TyInt);
+        ty.Params.Next = _types.PointerTo(_types.PointerTo(_types.TyChar));
+        ty.Params.Next.Next = _types.PointerTo(_types.PointerTo(_types.TyChar));
+        _cxxPureMsilEntryMangledName = _nameMangler.MangleFunctionName(new Obj { Name = "__CxxPureMSILEntry", Ty = ty });
+
+        _symtab.PreRegisterFunctionClrToken(_cxxPureMsilEntryMangledName, _cxxPureMsilEntry);
     }
 
     private MemberReferenceHandle GetExternalFunctionToken(Obj fn)
@@ -570,7 +573,7 @@ public class MsilObjectEmitter
         _externalFuncRefs[fn.Name] = memberRef;
 
         // Add DecoratedNameAttribute
-        string mangledName = NameMangler.MangleFunctionName(_types, _tuHash, fn);
+        string mangledName = _nameMangler.MangleFunctionName(fn);
         AddDecoratedNameAttribute(memberRef, mangledName);
 
         // Register external CLR token
@@ -626,15 +629,15 @@ public class MsilObjectEmitter
         string fieldName;
         if (g.StaticLocalFn != null)
         {
-            fieldName = NameMangler.MangleStaticLocalName(_tuHash, g);
+            fieldName = _nameMangler.MangleStaticLocalName(g);
         }
         else if (g.IsAnonymous)
         {
-            fieldName = $"?A0x{_tuHash}.unnamed-global-{_anonGlobalCounter++}";
+            fieldName = _nameMangler.GenerateAnonymousGlobalName();
         }
         else if (g.IsStatic)
         {
-            fieldName = NameMangler.MangleStaticGlobalName(_tuHash, g.Name);
+            fieldName = _nameMangler.MangleStaticGlobalName(g.Name);
         }
         else
         {
@@ -778,7 +781,7 @@ public class MsilObjectEmitter
 
             // Finalize method body
             var methodDef = _methodDefs[fn];
-            string mangledName = NameMangler.MangleFunctionName(_types, _tuHash, fn);
+            string mangledName = _nameMangler.MangleFunctionName(fn);
 
             _bodyEncoder.AddMethodBody(methodDef, mangledName, body.Instructions,
                 body.MaxStack, body.LocalVariables, attributes: MethodBodyAttributes.InitLocals,
@@ -822,8 +825,7 @@ public class MsilObjectEmitter
 
         enc.OpCode(ILOpCode.Ret);
 
-        string mangledName = $"?__CxxPureMSILEntry@@$$J0YMHH{(Is32 ? "PAPA" : "PEAPEA")}D0@Z";
-        _bodyEncoder.AddMethodBody(_cxxPureMsilEntry, mangledName, enc,
+        _bodyEncoder.AddMethodBody(_cxxPureMsilEntry, _cxxPureMsilEntryMangledName, enc,
             maxStack: Math.Max(mainParamCount, 1), localVariablesSignature: default, attributes: MethodBodyAttributes.InitLocals,
             debugName: "__CxxPureMSILEntry");
     }
@@ -835,10 +837,8 @@ public class MsilObjectEmitter
             if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
 
             var methodDef = _methodDefs[fn];
-            string mangledName = NameMangler.MangleFunctionName(_types, _tuHash, fn);
-
-            // Static functions use TU-hash-scoped bare names to avoid cross-TU collisions
-            string bareName = fn.IsStatic ? $"{fn.Name}_?A0x{_tuHash}" : fn.Name;
+            string mangledName = _nameMangler.MangleFunctionName(fn);
+            string bareName = _nameMangler.MangleFunctionBaseName(fn);
 
             var bareSym = EmitNepForMethod(
                 MetadataTokens.GetToken(methodDef), bareName, mangledName);
@@ -1058,10 +1058,6 @@ public class MsilObjectEmitter
 
         _bodyEncoder = new RelocatableMethodBodyStreamEncoder(
             _ilStreamBuilder, _ilRelocBuilder, _symtab, _coffHeader, _codeviewSymbols);
-
-        // TU hash (from source path, matching MSVC behavior)
-        byte[] pathHash = SHA256.HashData(Encoding.UTF8.GetBytes(sourceFile));
-        _tuHash = BitConverter.ToString(pathHash, 0, 4).Replace("-", "").ToLowerInvariant();
 
         // Metadata
         RegisterMetadata(prog, objName);
