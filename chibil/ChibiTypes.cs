@@ -146,6 +146,14 @@ public class CType
         Align = align;
         IsUnsigned = isUnsigned;
     }
+
+    public CType Canonicalize()
+    {
+        CType ty = this;
+        while (ty.Origin != null)
+            ty = ty.Origin;
+        return ty;
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════

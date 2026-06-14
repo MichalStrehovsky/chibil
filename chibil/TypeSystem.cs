@@ -71,8 +71,9 @@ public class TypeSystem
     public static bool IsCompatible(CType t1, CType t2)
     {
         if (t1 == t2) return true;
-        if (t1.Origin != null) return IsCompatible(t1.Origin, t2);
-        if (t2.Origin != null) return IsCompatible(t1, t2.Origin);
+        t1 = t1.Canonicalize();
+        t2 = t2.Canonicalize();
+        if (t1 == t2) return true;
         if (t1.Kind != t2.Kind) return false;
 
         switch (t1.Kind)
@@ -397,9 +398,7 @@ public class TypeSystem
     /// <summary>Get a stable, collision-free identity for the canonical CType instance (used for struct/union/array dedup).</summary>
     public int GetTypeId(CType ty)
     {
-        // Walk through Origin chain to find the canonical type
-        CType canonical = ty;
-        while (canonical.Origin != null) canonical = canonical.Origin;
+        CType canonical = ty.Canonicalize();
         if (!_typeIdMap.TryGetValue(canonical, out int id))
         {
             id = ++_nextTypeId;
