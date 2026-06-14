@@ -585,8 +585,7 @@ public class Parser
             if ((basety.Kind == TypeKind.Struct || basety.Kind == TypeKind.Union) && Util.Consume(ref tok, tok, ";"))
             {
                 // Anonymous struct/union member (no tag name) — mark as nested
-                CType c = basety;
-                while (c.Origin != null) c = c.Origin;
+                CType c = basety.Canonicalize();
                 if (c.TagName == null) c.IsNestedMember = true;
                 var mem = new Member { Ty = basety, Idx = idx++, Align = attr.Align != 0 ? attr.Align : basety.Align };
                 cur = cur.Next = mem; continue;
@@ -607,8 +606,7 @@ public class Parser
                         baseOfMember = baseOfMember.Base;
                     if (baseOfMember.Kind == TypeKind.Struct || baseOfMember.Kind == TypeKind.Union)
                     {
-                        CType c = baseOfMember;
-                        while (c.Origin != null) c = c.Origin;
+                        CType c = baseOfMember.Canonicalize();
                         if (c.TagName == null) c.IsNestedMember = true;
                     }
                 }

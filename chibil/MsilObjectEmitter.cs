@@ -237,8 +237,7 @@ public class MsilObjectEmitter
             case TypeKind.Struct:
             case TypeKind.Union:
                 {
-                    CType canonical = ty;
-                    while (canonical.Origin != null) canonical = canonical.Origin;
+                    CType canonical = ty.Canonicalize();
                     if (canonical.IsNestedMember)
                         throw new InvalidOperationException(
                             $"Internal error: nested member type '{_types.GetStructName(canonical)}' reached signature encoding");
@@ -341,16 +340,10 @@ public class MsilObjectEmitter
     // Struct/array TypeDefs are reserved lazily as signatures and IL tokens need them.
     private int _nextStructTypeDefRow = 2; // starts at 2 since <Module> is row 1
 
-    private static CType CanonicalizeType(CType ty)
-    {
-        while (ty.Origin != null) ty = ty.Origin;
-        return ty;
-    }
-
     private void ReserveTypeDefFromType(CType ty)
     {
         if (ty == null) return;
-        CType canonical = CanonicalizeType(ty);
+        CType canonical = ty.Canonicalize();
 
         switch (canonical.Kind)
         {
@@ -375,7 +368,7 @@ public class MsilObjectEmitter
 
     public EntityHandle GetStructTypeHandle(CType ty)
     {
-        CType canonical = CanonicalizeType(ty);
+        CType canonical = ty.Canonicalize();
         if (canonical.Members == null || canonical.IsNestedMember)
             return default;
 
@@ -391,7 +384,7 @@ public class MsilObjectEmitter
 
     private TypeDefinitionHandle GetOrReserveArrayTypeHandle(CType ty)
     {
-        CType canonical = CanonicalizeType(ty);
+        CType canonical = ty.Canonicalize();
         Debug.Assert(canonical.Kind == TypeKind.Array && canonical.ArrayLen >= 0);
 
         string arrayName = _nameMangler.MangleArrayTypeName(canonical);
