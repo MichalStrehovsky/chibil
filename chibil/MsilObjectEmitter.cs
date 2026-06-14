@@ -329,10 +329,17 @@ public class MsilObjectEmitter
             MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
             MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
 
-        RegisterFunctions(prog);
-        RegisterGlobalFields(prog);
+        for (Obj o = prog; o != null; o = o.Next)
+        {
+            if (!o.IsDefinition)
+                continue;
 
-        // Module row
+            if (!o.IsFunction)
+                RegisterGlobalField(o);
+            else if (o.IsLive)
+                RegisterFunction(o);
+        }
+
         _md.AddModule(0, _md.GetOrAddString(objName), _md.GetOrAddGuid(Guid.NewGuid()), default, default);
     }
 
@@ -397,21 +404,6 @@ public class MsilObjectEmitter
 
         ReserveTypeDefFromType(canonical.Base);
         return handle;
-    }
-
-    private void RegisterFunctions(Obj prog)
-    {
-        // Pass A: defined functions → MethodDef
-        for (Obj fn = prog; fn != null; fn = fn.Next)
-        {
-            if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
-            RegisterFunction(fn);
-        }
-
-        // Pass B: External function MemberRefs are created on-demand during IL emission
-        // (GenFunCall calls RegisterExternalFunction when it encounters a call to an
-        // undefined function). MSVC only emits MemberRefs for functions that actually
-        // appear in IL — declared-but-never-called functions don't get MemberRefs.
     }
 
     private MethodDefinitionHandle RegisterFunction(Obj fn, string[] parameterNames = null)
@@ -559,17 +551,6 @@ public class MsilObjectEmitter
         });
 
         _md.AddCustomAttribute(target, ctorRef, _md.GetOrAddBlob(attrBlob));
-    }
-
-    private void RegisterGlobalFields(Obj prog)
-    {
-        // Definitions
-        for (Obj g = prog; g != null; g = g.Next)
-        {
-            if (g.IsFunction || !g.IsDefinition) continue;
-            RegisterGlobalField(g);
-        }
-
     }
 
     private void RegisterGlobalField(Obj g)
