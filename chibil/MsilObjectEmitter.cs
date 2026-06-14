@@ -421,7 +421,7 @@ public class MsilObjectEmitter
         // appear in IL — declared-but-never-called functions don't get MemberRefs.
     }
 
-    private void RegisterFunction(Obj fn)
+    private MethodDefinitionHandle RegisterFunction(Obj fn, string[] parameterNames = null)
     {
         CType funcTy = fn.Ty;
         bool isUnmanaged = funcTy.CallConv != CallConv.Clrcall;
@@ -448,7 +448,9 @@ public class MsilObjectEmitter
         int paramIdx = 1;
         for (CType p = funcTy.Params; p != null; p = p.Next)
         {
-            string paramName = p.Name != null ? Util.GetTokenText(p.Name) : $"_a{paramIdx}";
+            string paramName = parameterNames != null && paramIdx <= parameterNames.Length
+                ? parameterNames[paramIdx - 1]
+                : p.Name != null ? Util.GetTokenText(p.Name) : $"_a{paramIdx}";
             _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString(paramName), paramIdx);
             _nextParamRow++;
             paramIdx++;
@@ -464,8 +466,19 @@ public class MsilObjectEmitter
         if (fn.Name == "main")
         {
             _mainObj = fn;
-            RegisterCxxPureMSILEntry(fn);
+
+            CType ty = TypeSystem.FuncType(TypeSystem.CopyType(_types.TyInt));
+            ty.CallConv = CallConv.Clrcall;
+            ty.Params = TypeSystem.CopyType(_types.TyInt);
+            ty.Params.Next = _types.PointerTo(_types.PointerTo(_types.TyChar));
+            ty.Params.Next.Next = _types.PointerTo(_types.PointerTo(_types.TyChar));
+
+            var entryFn = new Obj { Name = "__CxxPureMSILEntry", Ty = ty };
+            _cxxPureMsilEntry = RegisterFunction(entryFn, ["argc", "argv", "envp"]);
+            _cxxPureMsilEntryMangledName = _nameMangler.MangleFunctionName(entryFn);
         }
+
+        return methodDef;
     }
 
     public EntityHandle GetFunctionToken(Obj fn)
@@ -501,60 +514,6 @@ public class MsilObjectEmitter
         _symtab.AddDataClrToken(unepName, unepField, LogicalSection.Data, slotOffset, out _);
 
         return unepField;
-    }
-
-    private void RegisterCxxPureMSILEntry(Obj mainFn)
-    {
-        // Signature: int __clrcall(int argc, char** argv, char** envp)
-        var sig = new BlobBuilder();
-        sig.WriteByte(0x00); // DEFAULT calling convention
-        sig.WriteCompressedInteger(3); // 3 params
-
-        // Return type: int32 (no CallConvCdecl modopt — this is __clrcall)
-        sig.WriteByte((byte)SignatureTypeCode.Int32);
-
-        // Param 1: int argc
-        sig.WriteByte((byte)SignatureTypeCode.Int32);
-
-        // Param 2: char** argv — Ptr Ptr modopt(IsSignUnspecifiedByte) SByte.
-        // The IsSignUnspecifiedByte modopt marks plain `char` whose signedness
-        // is implementation-defined; MSVC and asm2obj both emit it on `char**`
-        // params and link.exe compares signature bytes including this marker.
-        sig.WriteByte((byte)SignatureTypeCode.Pointer);
-        sig.WriteByte((byte)SignatureTypeCode.Pointer);
-        sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-        sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
-        sig.WriteByte((byte)SignatureTypeCode.SByte);
-
-        // Param 3: char** envp — same encoding, '0' backreference in mangling.
-        sig.WriteByte((byte)SignatureTypeCode.Pointer);
-        sig.WriteByte((byte)SignatureTypeCode.Pointer);
-        sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-        sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
-        sig.WriteByte((byte)SignatureTypeCode.SByte);
-
-        _cxxPureMsilEntry = _md.AddMethodDefinition(
-            MethodAttributes.Assembly | MethodAttributes.Static,
-            MethodImplAttributes.IL | MethodImplAttributes.Managed,
-            _md.GetOrAddString("__CxxPureMSILEntry"),
-            _md.GetOrAddBlob(sig),
-            0,
-            MetadataTokens.ParameterHandle(_nextParamRow));
-        _nextMethodRow++;
-
-        _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("argc"), 1);
-        _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("argv"), 2);
-        _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString("envp"), 3);
-        _nextParamRow += 3;
-
-        CType ty = TypeSystem.FuncType(TypeSystem.CopyType(_types.TyInt));
-        ty.CallConv = CallConv.Clrcall;
-        ty.Params = TypeSystem.CopyType(_types.TyInt);
-        ty.Params.Next = _types.PointerTo(_types.PointerTo(_types.TyChar));
-        ty.Params.Next.Next = _types.PointerTo(_types.PointerTo(_types.TyChar));
-        _cxxPureMsilEntryMangledName = _nameMangler.MangleFunctionName(new Obj { Name = "__CxxPureMSILEntry", Ty = ty });
-
-        _symtab.PreRegisterFunctionClrToken(_cxxPureMsilEntryMangledName, _cxxPureMsilEntry);
     }
 
     private MemberReferenceHandle GetExternalFunctionToken(Obj fn)
