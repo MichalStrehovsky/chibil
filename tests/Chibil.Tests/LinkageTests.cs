@@ -1,9 +1,13 @@
+using System.Text;
 using Xunit;
 
 namespace Chibil.Tests;
 
 public class LinkageTests : ChibiTestBase
 {
+    private static string ReadLastObjectText(CompilationBuilder builder)
+        => Encoding.Latin1.GetString(File.ReadAllBytes(builder._objFiles[^1]));
+
     [Fact]
     public void TestMacrosAndReferences()
     {
@@ -92,6 +96,85 @@ public class LinkageTests : ChibiTestBase
             """)
         .Compile("""
             int target(void) { return 42; }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void DirectExternFunctionCallDoesNotReserveUnepField()
+    {
+        var builder = Compile("""
+            int target(void);
+            int main(void) { return target(); }
+            """);
+
+        Assert.DoesNotContain("__unep@", ReadLastObjectText(builder));
+
+        builder.Compile("""
+            int target(void) { return 42; }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void AddressTakenExternFunctionReservesUnepField()
+    {
+        var builder = Compile("""
+            int target(void);
+            int main(void) {
+                int (*p)(void) = target;
+                return p() + target();
+            }
+            """);
+
+        Assert.Contains("__unep@", ReadLastObjectText(builder));
+
+        builder.Compile("""
+            int target(void) { return 21; }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void ExternGlobalUsedFromLiveFunctionGetsFieldTokenBeforeCodeGen()
+    {
+        MsvcCompile("int g_chibil_external = 41;")
+        .Compile("""
+            extern int g_chibil_external;
+            int main(void) {
+                g_chibil_external = g_chibil_external + 1;
+                return g_chibil_external;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void ExternGlobalDeclarationAfterDefinitionUsesDefinitionField()
+    {
+        Compile("""
+            int g = 42;
+            extern int g;
+            int main(void) { return g; }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void ExternGlobalReferencedOnlyByGlobalInitializerUsesDataRelocation()
+    {
+        Compile("""
+            extern int a;
+            int *b = &a;
+            int main(void) { return *b; }
+            """)
+        .Compile("""
+            int a = 42;
             """)
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);

@@ -212,6 +212,7 @@ public class Obj
     // Static inline function
     public bool IsLive;
     public bool IsRoot;
+    public bool IsAddressTaken;
     public List<string> Refs = new();
 }
 

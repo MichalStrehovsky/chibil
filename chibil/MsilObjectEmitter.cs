@@ -32,6 +32,7 @@ public class MsilObjectEmitter
     private BlobBuilder _nepStream, _nepRelocs;
     private BlobBuilder _ilFixupStream, _ilFixupRelocs;
     private int _bssSize;
+    private int _dataGlobalsStartOffset;
 
     private AssemblyReferenceHandle _mscorlibRef;
     private TypeDefinitionHandle _moduleTypeDef;
@@ -331,13 +332,24 @@ public class MsilObjectEmitter
 
         for (Obj o = prog; o != null; o = o.Next)
         {
-            if (!o.IsDefinition)
-                continue;
+            if (o.IsFunction)
+            {
+                if (o.IsDefinition && o.IsLive)
+                    RegisterFunction(o);
+                if (o.IsLive && o.IsAddressTaken && o.Ty.CallConv != CallConv.Clrcall)
+                    RegisterUnepField(o);
+            }
+            else
+            {
+                if (o.IsDefinition)
+                    RegisterGlobalField(o);
+            }
+        }
 
-            if (!o.IsFunction)
-                RegisterGlobalField(o);
-            else if (o.IsLive)
-                RegisterFunction(o);
+        for (Obj o = prog; o != null; o = o.Next)
+        {
+            if (!o.IsFunction && !o.IsDefinition && o.IsLive)
+                RegisterExternalField(o);
         }
 
         _md.AddModule(0, _md.GetOrAddString(objName), _md.GetOrAddGuid(Guid.NewGuid()), default, default);
@@ -475,17 +487,18 @@ public class MsilObjectEmitter
     public FieldDefinitionHandle GetOrReserveUnepFieldToken(Obj fn)
     {
         Debug.Assert(fn.Ty.CallConv != CallConv.Clrcall);
+        return _unepFields[fn.Name];
+    }
 
-        if (_unepFields.TryGetValue(fn.Name, out FieldDefinitionHandle unepField))
-            return unepField;
-
+    private FieldDefinitionHandle RegisterUnepField(Obj fn)
+    {
         string unepName = _nameMangler.MangleUnmanagedEntryPointName(fn);
 
         var unepFieldSig = new BlobBuilder();
         unepFieldSig.WriteByte(0x06); // FIELD
         unepFieldSig.WriteByte((byte)SignatureTypeCode.IntPtr);
 
-        unepField = _md.AddFieldDefinition(
+        FieldDefinitionHandle unepField = _md.AddFieldDefinition(
             FieldAttributes.Assembly | FieldAttributes.Static | FieldAttributes.HasFieldRVA,
             _md.GetOrAddString(unepName), _md.GetOrAddBlob(unepFieldSig));
         _nextFieldRow++;
@@ -595,6 +608,17 @@ public class MsilObjectEmitter
     }
 
     private FieldDefinitionHandle GetExternalFieldToken(Obj g)
+    {
+        if (_globalFieldsByName.TryGetValue(g.Name, out FieldDefinitionHandle fieldDef))
+        {
+            _fieldDefs[g] = fieldDef;
+            return fieldDef;
+        }
+
+        return _fieldDefs[g];
+    }
+
+    private FieldDefinitionHandle RegisterExternalField(Obj g)
     {
         if (_globalFieldsByName.TryGetValue(g.Name, out FieldDefinitionHandle fieldDef))
         {
@@ -834,6 +858,8 @@ public class MsilObjectEmitter
     /// Must run before IL emission so token ordering is correct.</summary>
     private void EmitGlobalDataBytesAndTokens(Obj prog)
     {
+        _dataGlobalsStartOffset = _dataStream.Count;
+
         // Register all global data symbols
         for (Obj g = prog; g != null; g = g.Next)
         {
@@ -904,7 +930,7 @@ public class MsilObjectEmitter
     {
         // Track cumulative offset through .data to match what we wrote before.
         // Read-only data (string literals) went to .rdata and must be skipped.
-        int dataOffset = 0;
+        int dataOffset = _dataGlobalsStartOffset;
         for (Obj g = prog; g != null; g = g.Next)
         {
             if (g.IsFunction) continue;
