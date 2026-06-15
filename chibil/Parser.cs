@@ -23,6 +23,7 @@ public class Parser
     private Obj _builtinAlloca;
     private int _uniqueId;
     private int _labelCount;
+    private bool _inGvarInitializer;
     private Dictionary<string, bool> _typenameMap;
     private readonly Tokenizer _tokenizer;
     private readonly CompilerOptions _options;
@@ -97,6 +98,30 @@ public class Parser
     private Node NewUlong(long val, Token tok) => new() { Kind = NodeKind.Num, Val = val, Ty = _types.SizeType, Tok = tok };
     private static Node NewVarNode(Obj var, Token tok) => new() { Kind = NodeKind.Var, Var = var, Tok = tok };
     private static Node NewVlaPtr(Obj var, Token tok) => new() { Kind = NodeKind.VlaPtr, Var = var, Tok = tok };
+
+    private void RecordFunctionDesignator(Obj fn, bool directCall)
+    {
+        if (fn == null || !fn.IsFunction) return;
+
+        if (_currentFn != null)
+        {
+            _currentFn.Refs.Add(fn.Name);
+
+            if (!directCall && !_inGvarInitializer)
+                fn.IsAddressTaken = true;
+        }
+        else
+        {
+            fn.IsRoot = true;
+        }
+    }
+
+    private void RecordGlobalDesignator(Obj var)
+    {
+        if (var == null || var.IsLocal || var.IsFunction || _currentFn == null || _inGvarInitializer) return;
+        if (!var.IsDefinition)
+            var.IsLive = true;
+    }
 
     private const int NoLabel = 0;
     private int NewLabelId() => ++_labelCount;
@@ -1111,12 +1136,20 @@ public class Parser
         Node node = Primary(ref tok, tok);
         for (;;)
         {
-            if (Util.Equal(tok, "(")) { node = Funcall(ref tok, tok.Next, node); continue; }
+            if (Util.Equal(tok, "("))
+            {
+                if (node.Kind == NodeKind.Var)
+                    RecordFunctionDesignator(node.Var, directCall: true);
+                node = Funcall(ref tok, tok.Next, node);
+                continue;
+            }
             if (Util.Equal(tok, "[")) { Token s = tok; Node idx = Expr(ref tok, tok.Next); tok = Util.Skip(tok, "]"); node = NewUnary(NodeKind.Deref, NewAdd(node, idx, s), s); continue; }
             if (Util.Equal(tok, ".")) { node = StructRef(node, tok.Next); tok = tok.Next.Next; continue; }
             if (Util.Equal(tok, "->")) { node = NewUnary(NodeKind.Deref, node, tok); node = StructRef(node, tok.Next); tok = tok.Next.Next; continue; }
             if (Util.Equal(tok, "++")) { node = NewIncDec(node, tok, 1); tok = tok.Next; continue; }
             if (Util.Equal(tok, "--")) { node = NewIncDec(node, tok, -1); tok = tok.Next; continue; }
+            if (node.Kind == NodeKind.Var)
+                RecordFunctionDesignator(node.Var, directCall: false);
             rest = tok; return node;
         }
     }
@@ -1177,8 +1210,7 @@ public class Parser
         if (tok.Kind == TokenKind.Ident)
         {
             VarScope sc = FindVar(tok); rest = tok.Next;
-            if (sc != null && sc.Var != null && sc.Var.IsFunction) { if (_currentFn != null) _currentFn.Refs.Add(sc.Var.Name); else sc.Var.IsRoot = true; }
-            if (sc != null) { if (sc.Var != null) return NewVarNode(sc.Var, tok); if (sc.EnumTy != null) return NewNum(sc.EnumVal, tok); }
+            if (sc != null) { if (sc.Var != null) { RecordGlobalDesignator(sc.Var); return NewVarNode(sc.Var, tok); } if (sc.EnumTy != null) return NewNum(sc.EnumVal, tok); }
             if (Util.Equal(tok.Next, "(")) Util.ErrorTok(tok, "implicit declaration of a function");
             Util.ErrorTok(tok, "undefined variable");
         }
@@ -1696,7 +1728,10 @@ public class Parser
 
     private void GvarInitializer(ref Token rest, Token tok, Obj var)
     {
+        bool savedInGvarInitializer = _inGvarInitializer;
+        _inGvarInitializer = true;
         Initializer init = InitializerEntry(ref rest, tok, var.Ty, out var.Ty);
+        _inGvarInitializer = savedInGvarInitializer;
         Relocation head = new();
         byte[] buf = new byte[var.Ty.Size];
         WriteGvarData(head, init, var.Ty, buf, 0);
