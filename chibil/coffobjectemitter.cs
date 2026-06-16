@@ -1366,10 +1366,10 @@ namespace System.Reflection.PortableExecutable
                         OpCode(ILOpCode.Ldloc_s);
                         CodeBuilder.WriteByte((byte)slotIndex);
                     }
-                    else if (slotIndex > 0)
+                    else if (unchecked((uint)slotIndex) <= ushort.MaxValue)
                     {
                         OpCode(ILOpCode.Ldloc);
-                        CodeBuilder.WriteInt32(slotIndex);
+                        CodeBuilder.WriteUInt16((ushort)slotIndex);
                     }
                     else
                     {
@@ -1395,10 +1395,10 @@ namespace System.Reflection.PortableExecutable
                         OpCode(ILOpCode.Stloc_s);
                         CodeBuilder.WriteByte((byte)slotIndex);
                     }
-                    else if (slotIndex > 0)
+                    else if (unchecked((uint)slotIndex) <= ushort.MaxValue)
                     {
                         OpCode(ILOpCode.Stloc);
-                        CodeBuilder.WriteInt32(slotIndex);
+                        CodeBuilder.WriteUInt16((ushort)slotIndex);
                     }
                     else
                     {
@@ -1416,10 +1416,10 @@ namespace System.Reflection.PortableExecutable
                 OpCode(ILOpCode.Ldloca_s);
                 CodeBuilder.WriteByte((byte)slotIndex);
             }
-            else if (slotIndex > 0)
+            else if (unchecked((uint)slotIndex) <= ushort.MaxValue)
             {
                 OpCode(ILOpCode.Ldloca);
-                CodeBuilder.WriteInt32(slotIndex);
+                CodeBuilder.WriteUInt16((ushort)slotIndex);
             }
             else
             {
@@ -1442,10 +1442,10 @@ namespace System.Reflection.PortableExecutable
                         OpCode(ILOpCode.Ldarg_s);
                         CodeBuilder.WriteByte((byte)argumentIndex);
                     }
-                    else if (argumentIndex > 0)
+                    else if (unchecked((uint)argumentIndex) <= ushort.MaxValue)
                     {
                         OpCode(ILOpCode.Ldarg);
-                        CodeBuilder.WriteInt32(argumentIndex);
+                        CodeBuilder.WriteUInt16((ushort)argumentIndex);
                     }
                     else
                     {
@@ -1463,10 +1463,10 @@ namespace System.Reflection.PortableExecutable
                 OpCode(ILOpCode.Ldarga_s);
                 CodeBuilder.WriteByte((byte)argumentIndex);
             }
-            else if (argumentIndex > 0)
+            else if (unchecked((uint)argumentIndex) <= ushort.MaxValue)
             {
                 OpCode(ILOpCode.Ldarga);
-                CodeBuilder.WriteInt32(argumentIndex);
+                CodeBuilder.WriteUInt16((ushort)argumentIndex);
             }
             else
             {
@@ -1481,10 +1481,10 @@ namespace System.Reflection.PortableExecutable
                 OpCode(ILOpCode.Starg_s);
                 CodeBuilder.WriteByte((byte)argumentIndex);
             }
-            else if (argumentIndex > 0)
+            else if (unchecked((uint)argumentIndex) <= ushort.MaxValue)
             {
                 OpCode(ILOpCode.Starg);
-                CodeBuilder.WriteInt32(argumentIndex);
+                CodeBuilder.WriteUInt16((ushort)argumentIndex);
             }
             else
             {
