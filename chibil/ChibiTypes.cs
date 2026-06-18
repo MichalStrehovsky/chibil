@@ -82,6 +82,8 @@ public class Token
     public bool HasSpace;   // True if follows a space character
     public Hideset Hideset;
     public Token Origin;    // If expanded from macro, the original token
+    public Token AttrNext;  // GNU attributes attached by the preprocessor
+    public Token AttrArgs;  // Attribute argument tokens, if any
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -325,9 +327,9 @@ public class VarAttr
     public bool IsTls;
     public int Align;
     /// <summary>
-    /// Calling convention from declspec position (GCC/MinGW compat).
-    /// GCC accepts __stdcall/__cdecl as __attribute__ equivalents in
-    /// declspec position; MSVC rejects this but MinGW headers use it.
+    /// Calling convention attribute from declspec position (GCC/MinGW compat).
+    /// GCC accepts __attribute__((stdcall)) equivalents before the return type;
+    /// MSVC rejects this but MinGW headers use it.
     /// Null = no cc specified; Declarator-position cc overrides this.
     /// </summary>
     public CallConv? PendingCallConv;
