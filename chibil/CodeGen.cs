@@ -102,7 +102,7 @@ public class CodeGen
             for (Obj local = _currentFn.Locals; local != null; local = local.Next)
             {
                 if (_localSlots.ContainsKey(local))
-                    _emit.EncodeType(localsSigBlob, local.Ty);
+                    _emit.EncodeType(localsSigBlob, _types.FlexibleAggregateStorageType(local.Ty));
             }
 
             // Scratch locals

@@ -16,7 +16,7 @@ internal sealed class ManagedAggregateRegistry
     private readonly Dictionary<string, TypeReferenceHandle> _forwardDeclTypeRefs = new();
     private readonly List<AggregateReservation> _pendingTypeDefs = new();
     private readonly Dictionary<string, IReadOnlyList<ReservedAggregateField>> _reservedFields = new();
-    private readonly Dictionary<(string owner, Member member), FieldDefinitionHandle> _memberFields = new();
+    private readonly Dictionary<(string owner, int memberIdx), FieldDefinitionHandle> _memberFields = new();
     private readonly Dictionary<string, TypeDefinitionHandle> _nestedTypeParents = new();
     private bool _materializing;
 
@@ -38,7 +38,7 @@ internal sealed class ManagedAggregateRegistry
         string ownerKey = GetAggregateKey(canonical);
         ReserveFieldsInTypeDefOrder(canonical);
 
-        return _memberFields[(ownerKey, member)];
+        return _memberFields[(ownerKey, member.Idx)];
     }
 
     public TypeDefinitionHandle GetTypeDefinitionHandle(CType ty)
@@ -221,7 +221,7 @@ internal sealed class ManagedAggregateRegistry
             if (field.Members != null)
             {
                 foreach (Member member in field.Members)
-                    _memberFields[(reservation.Key, member)] = fieldHandle;
+                    _memberFields[(reservation.Key, member.Idx)] = fieldHandle;
             }
         }
 

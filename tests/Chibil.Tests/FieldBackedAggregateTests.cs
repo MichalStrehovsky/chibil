@@ -158,6 +158,64 @@ public class FieldBackedAggregateTests : ChibiTestBase
     }
 
     [Fact]
+    public void FieldBackedFlexibleArrayInitializerBehavior()
+    {
+        Compile("""
+            struct Packet {
+                int length;
+                int values[];
+            };
+
+            int main(void) {
+                struct Packet packet = { 3, { 4, 5, 6 } };
+
+                if (packet.length != 3)
+                    return 10;
+                if (sizeof(packet) != 16)
+                    return 15;
+                if (packet.values[0] != 4)
+                    return 20;
+                if (packet.values[1] != 5)
+                    return 30;
+                if (packet.values[2] != 6)
+                    return 40;
+
+                return packet.length + packet.values[0] + packet.values[1] + packet.values[2];
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 18);
+    }
+
+    [Fact]
+    public void FieldBackedGlobalFlexibleArrayInitializerBehavior()
+    {
+        Compile("""
+            struct Packet {
+                int length;
+                int values[];
+            };
+
+            struct Packet packet = { 3, { 4, 5, 6 } };
+
+            int main(void) {
+                if (packet.length != 3)
+                    return 10;
+                if (packet.values[0] != 4)
+                    return 20;
+                if (packet.values[1] != 5)
+                    return 30;
+                if (packet.values[2] != 6)
+                    return 40;
+
+                return packet.length + packet.values[0] + packet.values[1] + packet.values[2];
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 18);
+    }
+
+    [Fact]
     public void FieldBackedMemberAlignmentBehavior()
     {
         const string source = """

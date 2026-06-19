@@ -569,7 +569,7 @@ public class MsilObjectEmitter
     {
         var fieldSig = new BlobBuilder();
         fieldSig.WriteByte(0x06); // FIELD
-        EncodeType(fieldSig, g.Ty);
+        EncodeType(fieldSig, _types.FlexibleAggregateStorageType(g.Ty));
 
         string fieldName;
         if (g.StaticLocalFn != null)
