@@ -123,7 +123,21 @@ public sealed class FieldBackedManagedAggregateModel : ManagedAggregateModel
     }
 
     public override ManagedAggregateMemberAccessKind GetMemberAccessKind(CType owner, Member member) =>
-        ManagedAggregateMemberAccessKind.MetadataField;
+        IsFlexibleArrayMember(owner, member)
+            ? ManagedAggregateMemberAccessKind.OffsetAddress
+            : ManagedAggregateMemberAccessKind.MetadataField;
+
+    // A flexible array member (e.g. `int values[]`) is encoded as an incomplete
+    // array. Emitting it as a metadata field would give it pointer size/alignment,
+    // changing the managed layout and producing a wrong base address via ldflda.
+    // Skip it from field emission and address it by offset instead.
+    private static bool IsFlexibleArrayMember(CType owner, Member member)
+    {
+        CType canonical = owner.Canonicalize();
+        return canonical.IsFlexible &&
+            member.Next == null &&
+            member.Ty.Canonicalize().Kind == TypeKind.Array;
+    }
 
     public override IEnumerable<ManagedAggregateField> GetFields(CType ty)
     {
@@ -138,6 +152,9 @@ public sealed class FieldBackedManagedAggregateModel : ManagedAggregateModel
 
         for (Member mem = canonical.Members; mem != null; mem = mem.Next)
         {
+            if (IsFlexibleArrayMember(canonical, mem))
+                continue;
+
             if (mem.IsBitfield)
             {
                 if (mem.BitWidth == 0)

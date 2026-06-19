@@ -216,6 +216,40 @@ public class FieldBackedAggregateTests : ChibiTestBase
     }
 
     [Fact]
+    public void FieldBackedFlexibleArrayMemberBaseAddress()
+    {
+        // A flexible array member must be addressed by offset, not as a metadata
+        // field. The incomplete array would otherwise get pointer size/alignment
+        // and place the member at the wrong offset (here it follows a single char,
+        // so its natural offset is 4, not the managed pointer-aligned location).
+        Compile("""
+            struct S {
+                char header;
+                int values[];
+            };
+
+            int main(void) {
+                struct S s = { 9, { 4, 5, 6 } };
+
+                char *base = (char *)&s;
+                char *vp = (char *)&s.values[0];
+                if (vp - base != 4)
+                    return 50 + (int)(vp - base);
+                if (s.values[0] != 4)
+                    return 20;
+                if (s.values[1] != 5)
+                    return 30;
+                if (s.values[2] != 6)
+                    return 40;
+
+                return 7;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 7);
+    }
+
+    [Fact]
     public void FieldBackedMemberAlignmentBehavior()
     {
         const string source = """
