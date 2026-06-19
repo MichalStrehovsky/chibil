@@ -606,10 +606,12 @@ public class Parser
         {
             VarAttr attr = new();
             CType basety = Declspec(ref tok, tok, attr);
+            if (_options.UseFieldBackedManagedAggregates && attr.Align != 0)
+                Util.ErrorTok(tok, "field-backed managed aggregates do not support aligned struct members");
             bool first = true;
             if ((basety.Kind == TypeKind.Struct || basety.Kind == TypeKind.Union) && Util.Consume(ref tok, tok, ";"))
             {
-                // Anonymous struct/union member (no tag name) — mark as nested
+                // Tagless struct/union member — record as nested for representation policy.
                 CType c = basety.Canonicalize();
                 if (c.TagName == null) c.IsNestedMember = true;
                 var mem = new Member { Ty = basety, Idx = idx++, Align = attr.Align != 0 ? attr.Align : basety.Align };
@@ -621,9 +623,8 @@ public class Parser
                 first = false;
                 var mem = new Member();
                 mem.Ty = Declarator(ref tok, tok, basety, attr.PendingCallConv);
-                // Mark anonymous struct/union member types (no tag name) as nested.
-                // Named struct types keep their TypeDef since they can be referenced
-                // independently (e.g., struct Inner* ptr).
+                // Mark tagless struct/union member types as nested. The managed
+                // aggregate model decides whether this suppresses a TypeDef.
                 // Look through arrays and pointers to find the base struct/union.
                 {
                     CType baseOfMember = mem.Ty;
@@ -660,8 +661,11 @@ public class Parser
                 if (!first) tok = Util.Skip(tok, ",");
                 first = false;
                 if (Util.Consume(ref tok, tok, "packed")) { ty.IsPacked = true; continue; }
+                Token attrTok = tok;
                 if (Util.Consume(ref tok, tok, "aligned"))
                 {
+                    if (_options.UseFieldBackedManagedAggregates)
+                        Util.ErrorTok(attrTok, "field-backed managed aggregates do not support aligned aggregate types");
                     tok = Util.Skip(tok, "("); ty.Align = (int)ConstExpr(ref tok, tok); tok = Util.Skip(tok, ")"); continue;
                 }
                 Util.ErrorTok(tok, "unknown attribute");

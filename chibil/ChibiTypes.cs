@@ -128,7 +128,7 @@ public class CType
     public Member Members;
     public bool IsFlexible;
     public bool IsPacked;
-    public bool IsNestedMember; // struct/union used only as a member of another struct — no TypeDef
+    public bool IsNestedMember; // tagless struct/union used as a member; representation policy decides TypeDef shape
 
     // Function type
     public CType ReturnTy;
@@ -422,6 +422,7 @@ public class CompilerOptions
     public List<string> IncludePaths = new();
     public bool OptFpic;
     public bool OptFcommon = true;
+    public bool UseFieldBackedManagedAggregates;
     public string BaseFile;
     public DataModel DataModel = DataModel.LLP64;
 }

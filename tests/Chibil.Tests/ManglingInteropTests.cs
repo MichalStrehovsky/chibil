@@ -289,7 +289,7 @@ public class ManglingInteropTests : ChibiTestBase
             struct Point { int x; int y; };
             typedef struct Point PointT;
             int br_tds(PointT a, struct Point b) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Point { int x; int y; };
             int br_tds(struct Point, struct Point);
@@ -325,7 +325,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             struct Point { int x; int y; };
             int br_sfp(struct Point *a, int (*fn)(struct Point *), struct Point *b) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Point { int x; int y; };
             int br_sfp(struct Point*, int (*)(struct Point*), struct Point*);
@@ -363,7 +363,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             struct Point { int x; int y; };
             int st_byval(struct Point p) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Point { int x; int y; };
             int st_byval(struct Point);
@@ -379,7 +379,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             struct Point { int x; int y; };
             int st_ptr(struct Point *p) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Point { int x; int y; };
             int st_ptr(struct Point*);
@@ -396,7 +396,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             struct Point { int x; int y; };
             int st_rep(struct Point a, struct Point b) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Point { int x; int y; };
             int st_rep(struct Point, struct Point);
@@ -412,7 +412,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             union Data { int i; float f; };
             int un_byval(union Data d) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             union Data { int i; float f; };
             int un_byval(union Data);
@@ -428,7 +428,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             union Data { int i; float f; };
             int un_ptr(union Data *d) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             union Data { int i; float f; };
             int un_ptr(union Data*);
@@ -445,7 +445,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             struct Pair { int a; int b; };
             int st_prim(struct Pair p, int x) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Pair { int a; int b; };
             int st_prim(struct Pair, int);
@@ -745,7 +745,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             struct Vec2 { int x; int y; };
             int mx_sp(struct Vec2 v, double *d) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Vec2 { int x; int y; };
             int mx_sp(struct Vec2, double*);
@@ -792,7 +792,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             struct Rec { int v; };
             int mx_sip(struct Rec *a, int *b, struct Rec *c) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Rec { int v; };
             int mx_sip(struct Rec*, int*, struct Rec*);
@@ -855,7 +855,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             struct Point { int x; int y; };
             struct Point ret_st(int a, int b) { struct Point p; p.x = a; p.y = b; return p; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Point { int x; int y; };
             struct Point ret_st(int, int);
@@ -892,7 +892,7 @@ public class ManglingInteropTests : ChibiTestBase
             struct Point ret_st_rep(struct Point a, struct Point b) {
                 struct Point r; r.x = 42; r.y = 0; return r;
             }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Point { int x; int y; };
             struct Point ret_st_rep(struct Point, struct Point);
@@ -1010,7 +1010,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             struct Pair { int a; int b; };
             struct Pair g_pair = { 20, 22 };
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Pair { int a; int b; };
             extern struct Pair g_pair;
@@ -1065,7 +1065,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             typedef struct Point { int x; int y; } Point;
             int td_st(Point p) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Point { int x; int y; };
             int td_st(struct Point);
@@ -1083,7 +1083,7 @@ public class ManglingInteropTests : ChibiTestBase
         Compile("""
             typedef struct { int x; int y; } Foo;
             int td_anon(Foo f) { return 42; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             typedef struct { int x; int y; } Foo;
             int td_anon(Foo);
@@ -1278,7 +1278,7 @@ public class ManglingInteropTests : ChibiTestBase
             struct Point ret_st_p(struct Point p) {
                 struct Point r; r.x = 42; r.y = p.y; return r;
             }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Point { int x; int y; };
             struct Point ret_st_p(struct Point);
@@ -1297,7 +1297,7 @@ public class ManglingInteropTests : ChibiTestBase
             struct Point { int x; int y; };
             struct Point g_pt = { 42, 0 };
             struct Point *ret_stp(void) { return &g_pt; }
-            """)
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             struct Point { int x; int y; };
             struct Point *ret_stp(void);
@@ -1371,5 +1371,3 @@ public class ManglingInteropTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 }
-
-

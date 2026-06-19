@@ -126,6 +126,8 @@ public class Driver
             if (arg == "-S") { _optS = true; continue; }
             if (arg == "-fcommon") { Options.OptFcommon = true; continue; }
             if (arg == "-fno-common") { Options.OptFcommon = false; continue; }
+            if (arg == "-fmanaged-aggregate-fields") { Options.UseFieldBackedManagedAggregates = true; continue; }
+            if (arg == "-fno-managed-aggregate-fields") { Options.UseFieldBackedManagedAggregates = false; continue; }
             if (arg == "-c") { _optC = true; continue; }
             if (arg == "-E") { _optE = true; continue; }
             if (arg.StartsWith("-I")) { Options.IncludePaths.Add(arg[2..]); continue; }
@@ -436,7 +438,16 @@ public class Driver
         byte[] pathHash = SHA256.HashData(Encoding.UTF8.GetBytes(sourceFile));
         string tuHash = BitConverter.ToString(pathHash, 0, 4).Replace("-", "").ToLowerInvariant();
 
-        var codegen = new MsilObjectEmitter(Options, tokenizer, types, new MsvcNameMangler(types, tuHash));
+        ManagedAggregateModel aggregateModel = Options.UseFieldBackedManagedAggregates
+            ? new FieldBackedManagedAggregateModel(types)
+            : new MsvcManagedAggregateModel(types);
+
+        var codegen = new MsilObjectEmitter(
+            Options,
+            tokenizer,
+            types,
+            new MsvcNameMangler(types, tuHash),
+            aggregateModel);
         byte[] objBytes = codegen.Generate(prog, objName, sourceFile);
 
         if (_outputFile == null || _outputFile == "-")

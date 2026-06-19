@@ -395,7 +395,7 @@ public class TypeSystem
     //  Type identity helpers
     // ═══════════════════════════════════════════════════════════════
 
-    /// <summary>Get a stable, collision-free identity for the canonical CType instance (used for struct/union/array dedup).</summary>
+    /// <summary>Get a stable, collision-free identity for the canonical CType instance.</summary>
     public int GetTypeId(CType ty)
     {
         CType canonical = ty.Canonicalize();
