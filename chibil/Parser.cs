@@ -700,6 +700,11 @@ public class Parser
                 // Overwrite existing definition
                 existing.Kind = ty.Kind; existing.Size = ty.Size; existing.Align = ty.Align;
                 existing.Members = ty.Members; existing.IsFlexible = ty.IsFlexible; existing.IsPacked = ty.IsPacked;
+                // Tagless nested members recorded their EnclosingAggregate as the temporary
+                // `ty` instance while being parsed. Make `ty` canonicalize to the surviving
+                // `existing` instance so those references resolve to the canonical enclosing
+                // type, avoiding duplicate TypeDef reservations during object emission.
+                ty.Origin = existing;
                 return existing;
             }
             PushTagScope(tag, ty);

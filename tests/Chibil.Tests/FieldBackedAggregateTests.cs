@@ -334,6 +334,96 @@ public class FieldBackedAggregateTests : ChibiTestBase
     }
 
     [Fact]
+    public void FieldBackedForwardDeclaredTaglessNestedMemberBehavior()
+    {
+        // A tagged aggregate may be forward-declared and then defined later. The
+        // definition is parsed into a temporary type that is merged into the
+        // existing forward-declared instance. Tagless nested members recorded the
+        // temporary type as their EnclosingAggregate, so the merge must keep those
+        // references resolving to the canonical enclosing type; otherwise the
+        // field-backed registry reserves a duplicate TypeDef for the enclosing
+        // aggregate and field materialization fails.
+        Compile("""
+            struct Outer;
+
+            struct Outer {
+                int prefix;
+                struct {
+                    int x;
+                    int y;
+                } anon;
+                int suffix;
+            };
+
+            int main(void) {
+                struct Outer o;
+
+                o.prefix = 1;
+                o.anon.x = 2;
+                o.anon.y = 3;
+                o.suffix = 4;
+
+                return o.prefix + o.anon.x + o.anon.y + o.suffix;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 10);
+    }
+
+    [Fact]
+    public void FieldBackedFlexibleArrayClonePassByValueBehavior()
+    {
+        // A completed flexible-array aggregate initializer produces a clone whose
+        // concrete size exceeds the canonical TypeDef size; it is stored as a raw
+        // byte buffer. Reading the whole clone by value (passing it to a function)
+        // must copy the fixed portion through the correct managed type.
+        Compile("""
+            struct Packet {
+                int length;
+                int values[];
+            };
+
+            int first(struct Packet p) {
+                return p.length;
+            }
+
+            int main(void) {
+                struct Packet packet = { 3, { 4, 5, 6 } };
+                return first(packet) + packet.values[0] + packet.values[2];
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 13);
+    }
+
+    [Fact]
+    public void FieldBackedFlexibleArrayCloneStructMemberBehavior()
+    {
+        // A flexible-array clone is stored as a raw byte buffer, yet its non-flexible
+        // members are accessed through the canonical aggregate TypeDef. Reading a
+        // struct-typed non-flexible member by value must copy the correct bytes.
+        Compile("""
+            struct Inner {
+                int a;
+                int b;
+            };
+
+            struct Packet {
+                struct Inner hdr;
+                int values[];
+            };
+
+            int main(void) {
+                struct Packet packet = { { 7, 8 }, { 4, 5, 6 } };
+                struct Inner copy = packet.hdr;
+                return copy.a + copy.b + packet.values[1];
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 20);
+    }
+
+    [Fact]
     public void FieldBackedTaglessNestedArrayElementBehavior()
     {
         // A fixed-size array whose element type is a tagless nested struct member
