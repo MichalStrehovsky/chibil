@@ -123,6 +123,8 @@ public class TypeSystem
             Name = ty.Name,
             NamePos = ty.NamePos,
             TagName = ty.TagName,
+            TagScopeFunctionName = ty.TagScopeFunctionName,
+            TagScopeIndex = ty.TagScopeIndex,
             ArrayLen = ty.ArrayLen,
             VlaLen = ty.VlaLen,
             VlaSize = ty.VlaSize,
@@ -432,7 +434,11 @@ public class TypeSystem
         // (which Declarator overwrites with the variable/parameter name)
         string tag = GetTagName(ty);
         if (tag != null)
+        {
+            if (TryGetTagScope(ty, out string functionName, out int scopeIndex))
+                return $"{functionName}::{scopeIndex}::{tag}";
             return tag;
+        }
         if (ty.Name != null)
             return Util.GetTokenText(ty.Name);
         // Anonymous struct — use a generated name
@@ -450,5 +456,24 @@ public class TypeSystem
             cur = cur.Origin;
         }
         return null;
+    }
+
+    private static bool TryGetTagScope(CType ty, out string functionName, out int scopeIndex)
+    {
+        CType cur = ty;
+        while (cur != null)
+        {
+            if (cur.TagScopeFunctionName != null)
+            {
+                functionName = cur.TagScopeFunctionName;
+                scopeIndex = cur.TagScopeIndex;
+                return true;
+            }
+            cur = cur.Origin;
+        }
+
+        functionName = null;
+        scopeIndex = 0;
+        return false;
     }
 }

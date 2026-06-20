@@ -83,6 +83,11 @@ public class Parser
 
     private void PushTagScope(Token tok, CType ty)
     {
+        if (_currentFn != null)
+        {
+            ty.TagScopeFunctionName = _currentFn.Name;
+            ty.TagScopeIndex = _scope.ScopeIndex + 1;
+        }
         _scope.Tags[Util.GetTokenText(tok)] = ty;
     }
 

@@ -44,6 +44,35 @@ public class FieldBackedAggregateTests : ChibiTestBase
     }
 
     [Fact]
+    public void FieldBackedScopedStructTagsDoNotCollide()
+    {
+        Compile("""
+            struct S {
+                int x;
+            };
+
+            int main(void) {
+                struct S outer;
+                outer.x = 3;
+
+                {
+                    struct S {
+                        int y;
+                        int z;
+                    };
+                    struct S inner;
+                    inner.y = 4;
+                    inner.z = 5;
+
+                    return outer.x + inner.y + inner.z;
+                }
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 12);
+    }
+
+    [Fact]
     public void FieldBackedUnionAndBitfieldBehavior()
     {
         Compile("""

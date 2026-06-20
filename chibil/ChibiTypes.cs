@@ -116,6 +116,8 @@ public class CType
     public Token Name;
     public Token NamePos;
     public string TagName; // struct/union/enum tag name, preserved across declarator rewrites
+    public string TagScopeFunctionName;
+    public int TagScopeIndex;
 
     // Array
     public int ArrayLen;
