@@ -254,7 +254,7 @@ internal sealed class ManagedAggregateRegistry
             {
                 if (_model.GetRepresentationKind(canonical) == ManagedAggregateRepresentationKind.TypeDefinition)
                 {
-                    TypeDefinitionHandle handle = GetTypeDefinitionHandle(canonical);
+                    GetTypeDefinitionHandle(canonical);
                     if (canonical.IsNestedMember)
                         _nestedTypeParents[GetAggregateKey(canonical)] = ownerHandle;
                     ReserveFieldsInTypeDefOrder(canonical);

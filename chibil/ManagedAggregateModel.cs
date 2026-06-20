@@ -178,7 +178,7 @@ public sealed class FieldBackedManagedAggregateModel : ManagedAggregateModel
                 }
 
                 yield return new ManagedAggregateField(
-                    mem.Name != null ? $"<bitfield storage for {Util.GetTokenText(mem.Name)}>" : $"<bitfield storage {mem.Offset}>",
+                    mem.Name != null ? $"<bitfield storage for {Util.GetTokenText(mem.Name)}>" : $"<bitfield storage {unitKey}>",
                     GetBlittableFieldStorageType(mem.Ty),
                     FieldAttributes.Assembly,
                     canonical.Kind == TypeKind.Union ? mem.Offset : null,
