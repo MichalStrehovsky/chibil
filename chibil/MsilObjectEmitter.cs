@@ -18,8 +18,10 @@ public class MsilObjectEmitter
     private readonly Tokenizer _tokenizer;
     private readonly DataModel _dm;
     private readonly NameMangler _nameMangler;
+    private readonly ManagedAggregateModel _aggregateModel;
 
     private MetadataBuilder _md;
+    private ManagedAggregateRegistry _aggregates;
     private CoffHeaderBuilder _coffHeader;
     private ManagedCoffSymbolTableBuilder _symtab;
     private CodeViewSymbolBuilder _codeviewSymbols;
@@ -44,15 +46,12 @@ public class MsilObjectEmitter
 
     // Metadata row tracking
     private int _nextFieldRow = 1, _nextMethodRow = 1, _nextParamRow = 1;
+    private int _nextTypeDefRow = 2; // starts at 2 since <Module> is row 1
 
     // Function/field registrations
     private readonly Dictionary<Obj, MethodDefinitionHandle> _methodDefs = new();
     private readonly Dictionary<Obj, FieldDefinitionHandle> _fieldDefs = new();
     private readonly Dictionary<string, MemberReferenceHandle> _externalFuncRefs = new();
-    private readonly Dictionary<int, TypeDefinitionHandle> _structTypeDefs = new();
-    private readonly Dictionary<string, TypeDefinitionHandle> _arrayTypeDefs = new();
-    private readonly Dictionary<string, TypeReferenceHandle> _forwardDeclTypeRefs = new();
-    private readonly List<(int typeId, CType type, string name)> _pendingTypeDefs = new();
     private readonly Dictionary<string, FieldDefinitionHandle> _globalFieldsByName = new();
 
     // Bare-name NEP COFF symbols (func name → COFF symbol for the NEP thunk alias)
@@ -79,17 +78,84 @@ public class MsilObjectEmitter
         : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
     private static readonly byte[] MscorlibPkt = { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 };
 
-    public MsilObjectEmitter(CompilerOptions options, Tokenizer tokenizer, TypeSystem types, NameMangler nameMangler)
+    public MsilObjectEmitter(
+        CompilerOptions options,
+        Tokenizer tokenizer,
+        TypeSystem types,
+        NameMangler nameMangler,
+        ManagedAggregateModel aggregateModel)
     {
         _options = options;
         _tokenizer = tokenizer;
         _types = types;
         _dm = options.DataModel;
         _nameMangler = nameMangler;
+        _aggregateModel = aggregateModel;
     }
 
     public StandaloneSignatureHandle AddStandaloneSignature(BlobBuilder blob)
         => _md.AddStandaloneSignature(_md.GetOrAddBlob(blob));
+
+    internal TypeDefinitionHandle ReserveTypeDefinition() =>
+        MetadataTokens.TypeDefinitionHandle(_nextTypeDefRow++);
+
+    internal FieldDefinitionHandle ReserveFieldDefinition() =>
+        MetadataTokens.FieldDefinitionHandle(_nextFieldRow++);
+
+    internal void AddAggregateTypeDefinition(
+        TypeDefinitionHandle predicted,
+        TypeAttributes attributes,
+        string name,
+        FieldDefinitionHandle? fieldList,
+        ushort packingSize,
+        uint size)
+    {
+        var actual = _md.AddTypeDefinition(
+            attributes,
+            default,
+            _md.GetOrAddString(name),
+            GetValueTypeRef(),
+            fieldList ?? MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
+            MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
+
+        Verify(actual, predicted, "TypeDef", name);
+        _md.AddTypeLayout(actual, packingSize, size);
+        AddNativeCppClassAttribute(actual);
+    }
+
+    internal void AddAggregateFieldDefinition(
+        FieldDefinitionHandle predicted,
+        FieldAttributes attributes,
+        string name,
+        BlobBuilder signature,
+        int? offset)
+    {
+        var actual = _md.AddFieldDefinition(
+            attributes,
+            _md.GetOrAddString(name),
+            _md.GetOrAddBlob(signature));
+
+        Verify(actual, predicted, "FieldDef", name);
+        if (offset is int fieldOffset)
+            _md.AddFieldLayout(actual, fieldOffset);
+    }
+
+    internal void AddNestedType(TypeDefinitionHandle nestedType, TypeDefinitionHandle enclosingType) =>
+        _md.AddNestedType(nestedType, enclosingType);
+
+    internal TypeReferenceHandle AddTypeReference(EntityHandle resolutionScope, string @namespace, string name) =>
+        _md.AddTypeReference(
+            resolutionScope,
+            string.IsNullOrEmpty(@namespace) ? default : _md.GetOrAddString(@namespace),
+            _md.GetOrAddString(name));
+
+    private static void Verify<THandle>(THandle actual, THandle predicted, string rowKind, string name)
+        where THandle : struct, IEquatable<THandle>
+    {
+        if (!actual.Equals(predicted))
+            throw new InvalidOperationException(
+                $"{rowKind} handle mismatch for '{name}': predicted {predicted}, got {actual}");
+    }
 
     private TypeReferenceHandle GetLazyTypeRef(string @namespace, string name)
     {
@@ -230,7 +296,7 @@ public class MsilObjectEmitter
                 else
                 {
                     // Fixed-size array → ValueType of array TypeDef
-                    TypeDefinitionHandle arrayTd = GetOrReserveArrayTypeHandle(ty);
+                    EntityHandle arrayTd = _aggregates.GetSignatureTypeHandle(ty);
                     sig.WriteByte((byte)(SignatureTypeCode)0x11);
                     sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(arrayTd));
                 }
@@ -238,23 +304,7 @@ public class MsilObjectEmitter
             case TypeKind.Struct:
             case TypeKind.Union:
                 {
-                    CType canonical = ty.Canonicalize();
-                    if (canonical.IsNestedMember)
-                        throw new InvalidOperationException(
-                            $"Internal error: nested member type '{_types.GetStructName(canonical)}' reached signature encoding");
-                    EntityHandle structHandle = GetStructTypeHandle(ty);
-                    if (structHandle.IsNil)
-                    {
-                        // Forward-declared struct in a signature.
-                        string name = _types.GetStructName(ty);
-                        if (!_forwardDeclTypeRefs.TryGetValue(name, out var typeRef))
-                        {
-                            typeRef = _md.AddTypeReference(default, default, _md.GetOrAddString(name));
-                            _forwardDeclTypeRefs[name] = typeRef;
-                        }
-                        structHandle = typeRef;
-                    }
-
+                    EntityHandle structHandle = _aggregates.GetSignatureTypeHandle(ty);
                     sig.WriteByte((byte)(SignatureTypeCode)0x11);
                     sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(structHandle));
                     break;
@@ -355,68 +405,17 @@ public class MsilObjectEmitter
         _md.AddModule(0, _md.GetOrAddString(objName), _md.GetOrAddGuid(Guid.NewGuid()), default, default);
     }
 
-    // We predict handles based on row position. <Module> is TypeDef row 1.
-    // Struct/array TypeDefs are reserved lazily as signatures and IL tokens need them.
-    private int _nextStructTypeDefRow = 2; // starts at 2 since <Module> is row 1
-
-    private void ReserveTypeDefFromType(CType ty)
-    {
-        if (ty == null) return;
-        CType canonical = ty.Canonicalize();
-
-        switch (canonical.Kind)
-        {
-            case TypeKind.Struct:
-            case TypeKind.Union:
-                GetStructTypeHandle(canonical);
-                break;
-            case TypeKind.Array:
-                if (canonical.ArrayLen >= 0)
-                    GetOrReserveArrayTypeHandle(canonical);
-                break;
-            case TypeKind.Ptr:
-                ReserveTypeDefFromType(canonical.Base);
-                break;
-            case TypeKind.Func:
-                ReserveTypeDefFromType(canonical.ReturnTy);
-                for (CType p = canonical.Params; p != null; p = p.Next)
-                    ReserveTypeDefFromType(p);
-                break;
-        }
-    }
-
     public EntityHandle GetStructTypeHandle(CType ty)
-    {
-        CType canonical = ty.Canonicalize();
-        if (canonical.Members == null || canonical.IsNestedMember)
-            return default;
+        => _aggregates.GetTypeDefinitionHandle(ty);
 
-        int id = _types.GetTypeId(canonical);
-        if (_structTypeDefs.TryGetValue(id, out TypeDefinitionHandle handle))
-            return handle;
+    public ManagedAggregateRepresentationKind GetAggregateRepresentationKind(CType ty) =>
+        _aggregateModel.GetRepresentationKind(ty);
 
-        handle = MetadataTokens.TypeDefinitionHandle(_nextStructTypeDefRow++);
-        _structTypeDefs[id] = handle;
-        _pendingTypeDefs.Add((id, canonical, _types.GetStructName(canonical)));
-        return handle;
-    }
+    public ManagedAggregateMemberAccessKind GetMemberAccessKind(CType owner, Member member) =>
+        _aggregateModel.GetMemberAccessKind(owner, member);
 
-    private TypeDefinitionHandle GetOrReserveArrayTypeHandle(CType ty)
-    {
-        CType canonical = ty.Canonicalize();
-        Debug.Assert(canonical.Kind == TypeKind.Array && canonical.ArrayLen >= 0);
-
-        string arrayName = _nameMangler.MangleArrayTypeName(canonical);
-        if (_arrayTypeDefs.TryGetValue(arrayName, out TypeDefinitionHandle handle))
-            return handle;
-
-        handle = MetadataTokens.TypeDefinitionHandle(_nextStructTypeDefRow++);
-        _arrayTypeDefs[arrayName] = handle;
-        _pendingTypeDefs.Add((0, canonical, arrayName));
-
-        ReserveTypeDefFromType(canonical.Base);
-        return handle;
-    }
+    public FieldDefinitionHandle GetAggregateFieldToken(CType owner, Member member) =>
+        _aggregates.GetFieldToken(owner, member);
 
     private MethodDefinitionHandle RegisterFunction(Obj fn, string[] parameterNames = null)
     {
@@ -570,7 +569,7 @@ public class MsilObjectEmitter
     {
         var fieldSig = new BlobBuilder();
         fieldSig.WriteByte(0x06); // FIELD
-        EncodeType(fieldSig, g.Ty);
+        EncodeType(fieldSig, _types.FlexibleAggregateStorageType(g.Ty));
 
         string fieldName;
         if (g.StaticLocalFn != null)
@@ -641,70 +640,6 @@ public class MsilObjectEmitter
         _fieldDefs[g] = fieldDef;
         _globalFieldsByName[g.Name] = fieldDef;
         return fieldDef;
-    }
-
-    private void MaterializeStructTypeDefs()
-    {
-        foreach (var (typeId, type, name) in _pendingTypeDefs)
-        {
-            TypeDefinitionHandle handle;
-
-            if (type.Kind == TypeKind.Array)
-            {
-                var predicted = _arrayTypeDefs[name];
-                handle = _md.AddTypeDefinition(
-                    TypeAttributes.SequentialLayout | TypeAttributes.Sealed | TypeAttributes.AnsiClass,
-                    default, _md.GetOrAddString(name),
-                    GetValueTypeRef(),
-                    MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
-                    MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
-
-                Debug.Assert(handle == predicted, $"Array TypeDef handle mismatch: predicted {predicted}, got {handle}");
-                _md.AddTypeLayout(handle, 0, (uint)type.Size);
-            }
-            else
-            {
-                var predicted = _structTypeDefs[typeId];
-                // Unions use ExplicitLayout (all members at offset 0);
-                // structs use SequentialLayout
-                var layoutAttr = type.Kind == TypeKind.Union
-                    ? TypeAttributes.ExplicitLayout
-                    : TypeAttributes.SequentialLayout;
-                handle = _md.AddTypeDefinition(
-                    layoutAttr | TypeAttributes.Sealed | TypeAttributes.AnsiClass,
-                    default, _md.GetOrAddString(name),
-                    GetValueTypeRef(),
-                    MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
-                    MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
-
-                Debug.Assert(handle == predicted, $"Struct TypeDef handle mismatch: predicted {predicted}, got {handle}");
-                _md.AddTypeLayout(handle, 0, (uint)type.Size);
-            }
-
-            // NativeCppClassAttribute
-            AddNativeCppClassAttribute(handle);
-
-            // <alignment member> field (on 64-bit targets, structs/unions only — not arrays)
-            if (!Is32 && type.Kind != TypeKind.Array)
-            {
-                var alignFieldSig = new BlobBuilder();
-                alignFieldSig.WriteByte(0x06); // FIELD
-                // Use int64 if any member needs 8-byte alignment, else int32
-                bool needs8 = type.Align >= 8;
-                alignFieldSig.WriteByte(needs8 ? (byte)SignatureTypeCode.Int64 : (byte)SignatureTypeCode.Int32);
-
-                var alignField = _md.AddFieldDefinition(
-                    FieldAttributes.Private,
-                    _md.GetOrAddString("<alignment member>"),
-                    _md.GetOrAddBlob(alignFieldSig));
-                _nextFieldRow++;
-
-                // For ExplicitLayout (unions), set field offset to 0
-                // (MSVC /clr C++ uses offset 0; /clr /BC incorrectly uses 0xFFFFFFFF)
-                if (type.Kind == TypeKind.Union)
-                    _md.AddFieldLayout(alignField, 0);
-            }
-        }
     }
 
     private void AddNativeCppClassAttribute(TypeDefinitionHandle handle)
@@ -994,6 +929,12 @@ public class MsilObjectEmitter
             default,
             _md.GetOrAddBlob(MscorlibHash));
 
+        _aggregates = new ManagedAggregateRegistry(
+            _types,
+            _nameMangler,
+            _aggregateModel,
+            this);
+
         // CodeView debug info
         _codeviewSymbols = new CodeViewSymbolBuilder(_coffHeader);
         _codeviewSymbols.AddObjNameAndCompile3(objName,
@@ -1029,7 +970,7 @@ public class MsilObjectEmitter
 
         EmitCxxPureMSILEntry();
 
-        MaterializeStructTypeDefs();
+        _aggregates.MaterializeAll();
 
         // NEP machinery (creates bare-name symbols for functions)
         EmitNepMachinery(prog);

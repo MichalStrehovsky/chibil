@@ -123,13 +123,15 @@ public class TypeSystem
             Name = ty.Name,
             NamePos = ty.NamePos,
             TagName = ty.TagName,
+            TagScopeFunctionName = ty.TagScopeFunctionName,
+            TagScopeIndex = ty.TagScopeIndex,
             ArrayLen = ty.ArrayLen,
             VlaLen = ty.VlaLen,
             VlaSize = ty.VlaSize,
             Members = ty.Members,
             IsFlexible = ty.IsFlexible,
             IsPacked = ty.IsPacked,
-            IsNestedMember = ty.IsNestedMember,
+            EnclosingAggregate = ty.EnclosingAggregate,
             ReturnTy = ty.ReturnTy,
             Params = ty.Params,
             IsVariadic = ty.IsVariadic,
@@ -160,6 +162,25 @@ public class TypeSystem
         var ty = new CType(TypeKind.Array, @base.Size * len, @base.Align);
         ty.Base = @base;
         ty.ArrayLen = len;
+        return ty;
+    }
+
+    public static bool UsesFlexibleAggregateStorage(CType ty) =>
+        ty.Kind is TypeKind.Struct or TypeKind.Union &&
+        ty.IsFlexible &&
+        ty.Size != ty.Canonicalize().Size;
+
+    public CType FlexibleAggregateStorageType(CType ty)
+    {
+        // CopyStructType clones completed flexible-array aggregates and extends
+        // Size to include the trailing elements. The canonical TypeDef still
+        // describes only the base flexible layout, so storage needs a raw buffer
+        // only when the clone's concrete size differs from the canonical size.
+        if (UsesFlexibleAggregateStorage(ty))
+        {
+            return ArrayOf(TyUchar, ty.Size);
+        }
+
         return ty;
     }
 
@@ -395,7 +416,7 @@ public class TypeSystem
     //  Type identity helpers
     // ═══════════════════════════════════════════════════════════════
 
-    /// <summary>Get a stable, collision-free identity for the canonical CType instance (used for struct/union/array dedup).</summary>
+    /// <summary>Get a stable, collision-free identity for the canonical CType instance.</summary>
     public int GetTypeId(CType ty)
     {
         CType canonical = ty.Canonicalize();
@@ -413,7 +434,11 @@ public class TypeSystem
         // (which Declarator overwrites with the variable/parameter name)
         string tag = GetTagName(ty);
         if (tag != null)
+        {
+            if (TryGetTagScope(ty, out string functionName, out int scopeIndex))
+                return $"{functionName}::{scopeIndex}::{tag}";
             return tag;
+        }
         if (ty.Name != null)
             return Util.GetTokenText(ty.Name);
         // Anonymous struct — use a generated name
@@ -431,5 +456,24 @@ public class TypeSystem
             cur = cur.Origin;
         }
         return null;
+    }
+
+    private static bool TryGetTagScope(CType ty, out string functionName, out int scopeIndex)
+    {
+        CType cur = ty;
+        while (cur != null)
+        {
+            if (cur.TagScopeFunctionName != null)
+            {
+                functionName = cur.TagScopeFunctionName;
+                scopeIndex = cur.TagScopeIndex;
+                return true;
+            }
+            cur = cur.Origin;
+        }
+
+        functionName = null;
+        scopeIndex = 0;
+        return false;
     }
 }

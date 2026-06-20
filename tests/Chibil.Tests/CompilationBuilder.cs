@@ -79,6 +79,9 @@ public sealed class CompilationBuilder : IDisposable
         File.WriteAllText(sourceFile, source);
 
         var args = new List<string>();
+#if FIELD_BACKED_AGGREGATES
+        args.Add("-fmanaged-aggregate-fields");
+#endif
         if (extraArgs != null)
             args.AddRange(extraArgs);
         args.AddRange(["-cc1", "-cc1-input", sourceFile, "-cc1-output", objFile]);

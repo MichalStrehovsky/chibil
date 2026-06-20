@@ -116,6 +116,8 @@ public class CType
     public Token Name;
     public Token NamePos;
     public string TagName; // struct/union/enum tag name, preserved across declarator rewrites
+    public string TagScopeFunctionName;
+    public int TagScopeIndex;
 
     // Array
     public int ArrayLen;
@@ -128,7 +130,10 @@ public class CType
     public Member Members;
     public bool IsFlexible;
     public bool IsPacked;
-    public bool IsNestedMember; // struct/union used only as a member of another struct — no TypeDef
+    // For a nested member aggregate (a tagless struct/union used as a member), the struct/union that
+    // encloses it; null otherwise.
+    public CType EnclosingAggregate;
+    public bool IsNestedMember => EnclosingAggregate != null;
 
     // Function type
     public CType ReturnTy;
@@ -422,6 +427,7 @@ public class CompilerOptions
     public List<string> IncludePaths = new();
     public bool OptFpic;
     public bool OptFcommon = true;
+    public bool UseFieldBackedManagedAggregates;
     public string BaseFile;
     public DataModel DataModel = DataModel.LLP64;
 }

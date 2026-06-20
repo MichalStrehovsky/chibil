@@ -83,6 +83,11 @@ public class Parser
 
     private void PushTagScope(Token tok, CType ty)
     {
+        if (_currentFn != null)
+        {
+            ty.TagScopeFunctionName = _currentFn.Name;
+            ty.TagScopeIndex = _scope.ScopeIndex + 1;
+        }
         _scope.Tags[Util.GetTokenText(tok)] = ty;
     }
 
@@ -606,12 +611,14 @@ public class Parser
         {
             VarAttr attr = new();
             CType basety = Declspec(ref tok, tok, attr);
+            if (_options.UseFieldBackedManagedAggregates && attr.Align != 0)
+                Util.ErrorTok(tok, "field-backed managed aggregates do not support aligned struct members");
             bool first = true;
             if ((basety.Kind == TypeKind.Struct || basety.Kind == TypeKind.Union) && Util.Consume(ref tok, tok, ";"))
             {
-                // Anonymous struct/union member (no tag name) — mark as nested
+                // Tagless struct/union member — record the enclosing aggregate for representation policy.
                 CType c = basety.Canonicalize();
-                if (c.TagName == null) c.IsNestedMember = true;
+                if (c.TagName == null) c.EnclosingAggregate = ty;
                 var mem = new Member { Ty = basety, Idx = idx++, Align = attr.Align != 0 ? attr.Align : basety.Align };
                 cur = cur.Next = mem; continue;
             }
@@ -621,10 +628,9 @@ public class Parser
                 first = false;
                 var mem = new Member();
                 mem.Ty = Declarator(ref tok, tok, basety, attr.PendingCallConv);
-                // Mark anonymous struct/union member types (no tag name) as nested.
-                // Named struct types keep their TypeDef since they can be referenced
-                // independently (e.g., struct Inner* ptr).
-                // Look through arrays and pointers to find the base struct/union.
+                // Mark tagless struct/union member types as nested by recording their
+                // enclosing aggregate. The managed aggregate model decides whether this
+                // suppresses a TypeDef. Look through arrays and pointers to find the base.
                 {
                     CType baseOfMember = mem.Ty;
                     while (baseOfMember.Kind == TypeKind.Array || baseOfMember.Kind == TypeKind.Ptr)
@@ -632,7 +638,7 @@ public class Parser
                     if (baseOfMember.Kind == TypeKind.Struct || baseOfMember.Kind == TypeKind.Union)
                     {
                         CType c = baseOfMember.Canonicalize();
-                        if (c.TagName == null) c.IsNestedMember = true;
+                        if (c.TagName == null) c.EnclosingAggregate = ty;
                     }
                 }
                 mem.Name = mem.Ty.Name; mem.Idx = idx++;
@@ -660,8 +666,11 @@ public class Parser
                 if (!first) tok = Util.Skip(tok, ",");
                 first = false;
                 if (Util.Consume(ref tok, tok, "packed")) { ty.IsPacked = true; continue; }
+                Token attrTok = tok;
                 if (Util.Consume(ref tok, tok, "aligned"))
                 {
+                    if (_options.UseFieldBackedManagedAggregates)
+                        Util.ErrorTok(attrTok, "field-backed managed aggregates do not support aligned aggregate types");
                     tok = Util.Skip(tok, "("); ty.Align = (int)ConstExpr(ref tok, tok); tok = Util.Skip(tok, ")"); continue;
                 }
                 Util.ErrorTok(tok, "unknown attribute");
@@ -696,6 +705,11 @@ public class Parser
                 // Overwrite existing definition
                 existing.Kind = ty.Kind; existing.Size = ty.Size; existing.Align = ty.Align;
                 existing.Members = ty.Members; existing.IsFlexible = ty.IsFlexible; existing.IsPacked = ty.IsPacked;
+                // Tagless nested members recorded their EnclosingAggregate as the temporary
+                // `ty` instance while being parsed. Make `ty` canonicalize to the surviving
+                // `existing` instance so those references resolve to the canonical enclosing
+                // type, avoiding duplicate TypeDef reservations during object emission.
+                ty.Origin = existing;
                 return existing;
             }
             PushTagScope(tag, ty);

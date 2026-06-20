@@ -102,7 +102,7 @@ public class CodeGen
             for (Obj local = _currentFn.Locals; local != null; local = local.Next)
             {
                 if (_localSlots.ContainsKey(local))
-                    _emit.EncodeType(localsSigBlob, local.Ty);
+                    _emit.EncodeType(localsSigBlob, _types.FlexibleAggregateStorageType(local.Ty));
             }
 
             // Scratch locals
@@ -239,20 +239,31 @@ public class CodeGen
                 return;
 
             case NodeKind.Member:
-                GenAddr(node.Lhs);
-                if (node.Member.Offset != 0)
+                switch (_emit.GetMemberAccessKind(node.Lhs.Ty, node.Member))
                 {
-                    EmitConstI4(node.Member.Offset);
-                    _enc.OpCode(ILOpCode.Add); Pop();
+                    case ManagedAggregateMemberAccessKind.OffsetAddress:
+                        GenAddr(node.Lhs);
+                        if (node.Member.Offset != 0)
+                        {
+                            EmitConstI4(node.Member.Offset);
+                            _enc.OpCode(ILOpCode.Add);
+                            Pop();
+                        }
+                        return;
+                    case ManagedAggregateMemberAccessKind.MetadataField:
+                        GenMetadataFieldOwnerAddress(node.Lhs);
+                        _enc.OpCode(ILOpCode.Ldflda);
+                        _enc.Token(_emit.GetAggregateFieldToken(node.Lhs.Ty, node.Member));
+                        return;
+                    default:
+                        throw new UnreachableException();
                 }
-                return;
 
             case NodeKind.FunCall when IsStructOrUnion(node.Ty):
             case NodeKind.Assign when IsStructOrUnion(node.Ty):
             case NodeKind.Cond when IsStructOrUnion(node.Ty):
                 GenExpr(node);
-                var handle = _emit.GetStructTypeHandle(node.Ty);
-                if (handle.IsNil)
+                if (!HasManagedTypeDefinition(node.Ty))
                 {
                     // Nested/flattened struct — GenExpr returned an address.
                     int scratch = GetOrAddScratchLocal(_types.PointerTo(_types.TyVoid));
@@ -294,13 +305,13 @@ public class CodeGen
                 return;
             case TypeKind.Struct or TypeKind.Union:
             {
-                var handle = _emit.GetStructTypeHandle(ty);
-                if (handle.IsNil)
+                if (!HasManagedTypeDefinition(ty))
                 {
                     // No TypeDef (nested/flattened struct) — address stays on stack.
                     // Caller accesses individual members via offset arithmetic.
                     return;
                 }
+                var handle = _emit.GetStructTypeHandle(ty);
                 _enc.OpCode(ILOpCode.Ldobj); _enc.Token(handle);
                 return;
             }
@@ -323,8 +334,7 @@ public class CodeGen
         {
             case TypeKind.Struct or TypeKind.Union:
             {
-                var handle = _emit.GetStructTypeHandle(ty);
-                if (handle.IsNil)
+                if (!HasManagedTypeDefinition(ty))
                 {
                     // No TypeDef (nested/flattened struct) — use cpblk with the safest
                     // unaligned prefix because member addresses may be only byte-aligned.
@@ -334,6 +344,7 @@ public class CodeGen
                     _enc.OpCode(ILOpCode.Cpblk); Pop(3);
                     return;
                 }
+                var handle = _emit.GetStructTypeHandle(ty);
                 _enc.OpCode(ILOpCode.Stobj); _enc.Token(handle);
                 Pop(2);
                 return;
@@ -462,6 +473,35 @@ public class CodeGen
     private static bool IsAggregateType(CType ty) =>
         ty.Kind is TypeKind.Struct or TypeKind.Union or TypeKind.Array;
 
+    private bool HasManagedTypeDefinition(CType ty) =>
+        !TypeSystem.UsesFlexibleAggregateStorage(ty) &&
+        _emit.GetAggregateRepresentationKind(ty) == ManagedAggregateRepresentationKind.TypeDefinition;
+
+    private void GenMetadataFieldOwnerAddress(Node owner)
+    {
+        GenAddr(owner);
+        // Flexible clones are stored as byte buffers; reinterpret them for field ops.
+        if (TypeSystem.UsesFlexibleAggregateStorage(owner.Ty))
+            _enc.OpCode(ILOpCode.Conv_u);
+    }
+
+    private void GenByValueOperand(Node value, CType targetTy)
+    {
+        if (targetTy != null &&
+            IsStructOrUnion(value.Ty) &&
+            IsStructOrUnion(targetTy) &&
+            !HasManagedTypeDefinition(value.Ty) &&
+            HasManagedTypeDefinition(targetTy))
+        {
+            GenAddr(value);
+            _enc.OpCode(ILOpCode.Ldobj);
+            _enc.Token(_emit.GetStructTypeHandle(targetTy));
+            return;
+        }
+
+        GenExpr(value);
+    }
+
     /// <summary>Push a callable function address onto the evaluation stack.</summary>
     private void EmitFunctionAddress(Obj fn)
     {
@@ -540,6 +580,16 @@ public class CodeGen
                 return;
 
             case NodeKind.Member:
+                if (node.Ty.Kind is not (TypeKind.Array or TypeKind.Func or TypeKind.Vla) &&
+                    _emit.GetMemberAccessKind(node.Lhs.Ty, node.Member) == ManagedAggregateMemberAccessKind.MetadataField)
+                {
+                    GenMetadataFieldOwnerAddress(node.Lhs);
+                    _enc.OpCode(ILOpCode.Ldfld);
+                    _enc.Token(_emit.GetAggregateFieldToken(node.Lhs.Ty, node.Member));
+                    if (node.Member.IsBitfield)
+                        ExtractBitfieldValue(node.Member);
+                    return;
+                }
                 GenAddr(node);
                 Load(node.Ty);
                 if (node.Member.IsBitfield)
@@ -735,6 +785,33 @@ public class CodeGen
             return;
         }
 
+        if (node.Lhs.Kind == NodeKind.Member &&
+            _emit.GetMemberAccessKind(node.Lhs.Lhs.Ty, node.Lhs.Member) == ManagedAggregateMemberAccessKind.MetadataField)
+        {
+            GenMetadataFieldOwnerAddress(node.Lhs.Lhs);
+            GenExpr(node.Rhs);
+            if (wantValue)
+            {
+                int assignScratch = GetOrAddScratchLocal(node.Ty);
+                _enc.OpCode(ILOpCode.Dup);
+                Push();
+                _enc.StoreLocal(assignScratch);
+                Pop();
+                _enc.OpCode(ILOpCode.Stfld);
+                _enc.Token(_emit.GetAggregateFieldToken(node.Lhs.Lhs.Ty, node.Lhs.Member));
+                Pop(2);
+                _enc.LoadLocal(assignScratch);
+                Push();
+            }
+            else
+            {
+                _enc.OpCode(ILOpCode.Stfld);
+                _enc.Token(_emit.GetAggregateFieldToken(node.Lhs.Lhs.Ty, node.Lhs.Member));
+                Pop(2);
+            }
+            return;
+        }
+
         if (node.Lhs.Kind == NodeKind.Var && !IsAggregateType(node.Ty))
         {
             GenExpr(node.Rhs);
@@ -758,8 +835,7 @@ public class CodeGen
         }
 
         GenAddr(node.Lhs);
-        if (IsStructOrUnion(node.Ty) &&
-            _emit.GetStructTypeHandle(node.Ty).IsNil)
+        if (IsStructOrUnion(node.Ty) && !HasManagedTypeDefinition(node.Ty))
         {
             if (wantValue)
             {
@@ -821,9 +897,11 @@ public class CodeGen
 
         // Push arguments
         int argCount = 0;
+        CType paramTy = funcTy.Params;
         for (Node arg = node.Args; arg != null; arg = arg.Next)
         {
-            GenExpr(arg);
+            GenByValueOperand(arg, paramTy);
+            paramTy = paramTy?.Next;
             argCount++;
         }
 
@@ -1195,7 +1273,7 @@ public class CodeGen
             case NodeKind.Return:
                 if (node.Lhs != null)
                 {
-                    GenExpr(node.Lhs);
+                    GenByValueOperand(node.Lhs, _currentFn.Ty.ReturnTy);
                     Pop(); // ret consumes
                 }
                 _enc.OpCode(ILOpCode.Ret);
