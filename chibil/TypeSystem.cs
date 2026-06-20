@@ -163,15 +163,18 @@ public class TypeSystem
         return ty;
     }
 
+    public static bool UsesFlexibleAggregateStorage(CType ty) =>
+        ty.Kind is TypeKind.Struct or TypeKind.Union &&
+        ty.IsFlexible &&
+        ty.Size != ty.Canonicalize().Size;
+
     public CType FlexibleAggregateStorageType(CType ty)
     {
         // CopyStructType clones completed flexible-array aggregates and extends
         // Size to include the trailing elements. The canonical TypeDef still
         // describes only the base flexible layout, so storage needs a raw buffer
         // only when the clone's concrete size differs from the canonical size.
-        if (ty.Kind is TypeKind.Struct or TypeKind.Union &&
-            ty.IsFlexible &&
-            ty.Size != ty.Canonicalize().Size)
+        if (UsesFlexibleAggregateStorage(ty))
         {
             return ArrayOf(TyUchar, ty.Size);
         }

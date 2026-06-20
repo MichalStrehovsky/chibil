@@ -239,10 +239,10 @@ public class CodeGen
                 return;
 
             case NodeKind.Member:
-                GenAddr(node.Lhs);
                 switch (_emit.GetMemberAccessKind(node.Lhs.Ty, node.Member))
                 {
                     case ManagedAggregateMemberAccessKind.OffsetAddress:
+                        GenAddr(node.Lhs);
                         if (node.Member.Offset != 0)
                         {
                             EmitConstI4(node.Member.Offset);
@@ -251,6 +251,7 @@ public class CodeGen
                         }
                         return;
                     case ManagedAggregateMemberAccessKind.MetadataField:
+                        GenMetadataFieldOwnerAddress(node.Lhs);
                         _enc.OpCode(ILOpCode.Ldflda);
                         _enc.Token(_emit.GetAggregateFieldToken(node.Lhs.Ty, node.Member));
                         return;
@@ -473,7 +474,33 @@ public class CodeGen
         ty.Kind is TypeKind.Struct or TypeKind.Union or TypeKind.Array;
 
     private bool HasManagedTypeDefinition(CType ty) =>
+        !TypeSystem.UsesFlexibleAggregateStorage(ty) &&
         _emit.GetAggregateRepresentationKind(ty) == ManagedAggregateRepresentationKind.TypeDefinition;
+
+    private void GenMetadataFieldOwnerAddress(Node owner)
+    {
+        GenAddr(owner);
+        // Flexible clones are stored as byte buffers; reinterpret them for field ops.
+        if (TypeSystem.UsesFlexibleAggregateStorage(owner.Ty))
+            _enc.OpCode(ILOpCode.Conv_u);
+    }
+
+    private void GenByValueOperand(Node value, CType targetTy)
+    {
+        if (targetTy != null &&
+            IsStructOrUnion(value.Ty) &&
+            IsStructOrUnion(targetTy) &&
+            !HasManagedTypeDefinition(value.Ty) &&
+            HasManagedTypeDefinition(targetTy))
+        {
+            GenAddr(value);
+            _enc.OpCode(ILOpCode.Ldobj);
+            _enc.Token(_emit.GetStructTypeHandle(targetTy));
+            return;
+        }
+
+        GenExpr(value);
+    }
 
     /// <summary>Push a callable function address onto the evaluation stack.</summary>
     private void EmitFunctionAddress(Obj fn)
@@ -556,7 +583,7 @@ public class CodeGen
                 if (node.Ty.Kind is not (TypeKind.Array or TypeKind.Func or TypeKind.Vla) &&
                     _emit.GetMemberAccessKind(node.Lhs.Ty, node.Member) == ManagedAggregateMemberAccessKind.MetadataField)
                 {
-                    GenAddr(node.Lhs);
+                    GenMetadataFieldOwnerAddress(node.Lhs);
                     _enc.OpCode(ILOpCode.Ldfld);
                     _enc.Token(_emit.GetAggregateFieldToken(node.Lhs.Ty, node.Member));
                     if (node.Member.IsBitfield)
@@ -761,7 +788,7 @@ public class CodeGen
         if (node.Lhs.Kind == NodeKind.Member &&
             _emit.GetMemberAccessKind(node.Lhs.Lhs.Ty, node.Lhs.Member) == ManagedAggregateMemberAccessKind.MetadataField)
         {
-            GenAddr(node.Lhs.Lhs);
+            GenMetadataFieldOwnerAddress(node.Lhs.Lhs);
             GenExpr(node.Rhs);
             if (wantValue)
             {
@@ -870,9 +897,11 @@ public class CodeGen
 
         // Push arguments
         int argCount = 0;
+        CType paramTy = funcTy.Params;
         for (Node arg = node.Args; arg != null; arg = arg.Next)
         {
-            GenExpr(arg);
+            GenByValueOperand(arg, paramTy);
+            paramTy = paramTy?.Next;
             argCount++;
         }
 
@@ -1244,7 +1273,7 @@ public class CodeGen
             case NodeKind.Return:
                 if (node.Lhs != null)
                 {
-                    GenExpr(node.Lhs);
+                    GenByValueOperand(node.Lhs, _currentFn.Ty.ReturnTy);
                     Pop(); // ret consumes
                 }
                 _enc.OpCode(ILOpCode.Ret);

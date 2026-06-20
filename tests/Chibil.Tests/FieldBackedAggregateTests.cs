@@ -424,6 +424,37 @@ public class FieldBackedAggregateTests : ChibiTestBase
     }
 
     [Fact]
+    public void FieldBackedFlexibleArrayCloneAssignmentCopiesTrailingStorage()
+    {
+        Compile("""
+            struct Packet {
+                int length;
+                int values[];
+            };
+
+            int main(void) {
+                struct Packet packet = { 3, { 4, 5, 6 } };
+                typeof(packet) copy;
+
+                copy = packet;
+
+                if (copy.length != 3)
+                    return 10;
+                if (copy.values[0] != 4)
+                    return 20;
+                if (copy.values[1] != 5)
+                    return 30;
+                if (copy.values[2] != 6)
+                    return 40;
+
+                return copy.length + copy.values[0] + copy.values[1] + copy.values[2];
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 18);
+    }
+
+    [Fact]
     public void FieldBackedTaglessNestedArrayElementBehavior()
     {
         // A fixed-size array whose element type is a tagless nested struct member
