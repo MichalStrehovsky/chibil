@@ -153,6 +153,13 @@ internal sealed class ManagedAggregateRegistry
         if (_structTypeDefs.TryGetValue(id, out TypeDefinitionHandle handle))
             return handle;
 
+        // An enclosing class must precede the classes it encloses in the TypeDef table.
+        if (canonical.EnclosingAggregate is CType enclosing &&
+            _model.GetRepresentationKind(enclosing.Canonicalize()) == ManagedAggregateRepresentationKind.TypeDefinition)
+        {
+            GetTypeDefinitionHandle(enclosing);
+        }
+
         handle = ReserveAggregateTypeDefinition();
         string key = GetAggregateKey(canonical);
         _structTypeDefs[id] = handle;
@@ -297,7 +304,8 @@ internal sealed class ManagedAggregateRegistry
         {
             case TypeKind.Struct:
             case TypeKind.Union:
-                GetTypeDefinitionHandle(canonical);
+                if (_model.GetRepresentationKind(canonical) == ManagedAggregateRepresentationKind.TypeDefinition)
+                    GetTypeDefinitionHandle(canonical);
                 break;
             case TypeKind.Array:
                 if (canonical.ArrayLen >= 0)

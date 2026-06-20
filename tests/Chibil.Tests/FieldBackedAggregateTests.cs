@@ -332,4 +332,37 @@ public class FieldBackedAggregateTests : ChibiTestBase
         .RunAndCheck(exitCode: 6);
 #endif
     }
+
+    [Fact]
+    public void FieldBackedTaglessNestedArrayElementBehavior()
+    {
+        // A fixed-size array whose element type is a tagless nested struct member
+        // is represented AddressOnly under the MSVC model (no TypeDef). Reserving
+        // the array TypeDef (here forced by naming the member's array type via
+        // typeof) must not try to materialize a TypeDef for the tagless element.
+        Compile("""
+            struct Outer {
+                struct {
+                    int x;
+                } arr[2];
+            };
+
+            int main(void) {
+                struct Outer outer;
+                typeof(outer.arr) copy;
+
+                copy[0].x = 5;
+                copy[1].x = 9;
+
+                if (copy[0].x != 5)
+                    return 10;
+                if (copy[1].x != 9)
+                    return 20;
+
+                return copy[0].x + copy[1].x;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 14);
+    }
 }

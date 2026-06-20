@@ -128,7 +128,10 @@ public class CType
     public Member Members;
     public bool IsFlexible;
     public bool IsPacked;
-    public bool IsNestedMember; // tagless struct/union used as a member; representation policy decides TypeDef shape
+    // For a nested member aggregate (a tagless struct/union used as a member), the struct/union that
+    // encloses it; null otherwise.
+    public CType EnclosingAggregate;
+    public bool IsNestedMember => EnclosingAggregate != null;
 
     // Function type
     public CType ReturnTy;

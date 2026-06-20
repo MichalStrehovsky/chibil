@@ -611,9 +611,9 @@ public class Parser
             bool first = true;
             if ((basety.Kind == TypeKind.Struct || basety.Kind == TypeKind.Union) && Util.Consume(ref tok, tok, ";"))
             {
-                // Tagless struct/union member — record as nested for representation policy.
+                // Tagless struct/union member — record the enclosing aggregate for representation policy.
                 CType c = basety.Canonicalize();
-                if (c.TagName == null) c.IsNestedMember = true;
+                if (c.TagName == null) c.EnclosingAggregate = ty;
                 var mem = new Member { Ty = basety, Idx = idx++, Align = attr.Align != 0 ? attr.Align : basety.Align };
                 cur = cur.Next = mem; continue;
             }
@@ -623,9 +623,9 @@ public class Parser
                 first = false;
                 var mem = new Member();
                 mem.Ty = Declarator(ref tok, tok, basety, attr.PendingCallConv);
-                // Mark tagless struct/union member types as nested. The managed
-                // aggregate model decides whether this suppresses a TypeDef.
-                // Look through arrays and pointers to find the base struct/union.
+                // Mark tagless struct/union member types as nested by recording their
+                // enclosing aggregate. The managed aggregate model decides whether this
+                // suppresses a TypeDef. Look through arrays and pointers to find the base.
                 {
                     CType baseOfMember = mem.Ty;
                     while (baseOfMember.Kind == TypeKind.Array || baseOfMember.Kind == TypeKind.Ptr)
@@ -633,7 +633,7 @@ public class Parser
                     if (baseOfMember.Kind == TypeKind.Struct || baseOfMember.Kind == TypeKind.Union)
                     {
                         CType c = baseOfMember.Canonicalize();
-                        if (c.TagName == null) c.IsNestedMember = true;
+                        if (c.TagName == null) c.EnclosingAggregate = ty;
                     }
                 }
                 mem.Name = mem.Ty.Name; mem.Idx = idx++;
