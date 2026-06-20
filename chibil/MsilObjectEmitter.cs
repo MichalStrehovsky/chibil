@@ -19,6 +19,7 @@ public class MsilObjectEmitter
     private readonly DataModel _dm;
     private readonly NameMangler _nameMangler;
     private readonly ManagedAggregateModel _aggregateModel;
+    private readonly BclBinder _binder;
 
     private MetadataBuilder _md;
     private ManagedAggregateRegistry _aggregates;
@@ -36,13 +37,7 @@ public class MsilObjectEmitter
     private int _bssSize;
     private int _dataGlobalsStartOffset;
 
-    private AssemblyReferenceHandle _mscorlibRef;
     private TypeDefinitionHandle _moduleTypeDef;
-
-    // Lazy TypeRef handles (created on first use), keyed by type name (without namespace)
-    private readonly Dictionary<string, TypeReferenceHandle> _lazyTypeRefs = new();
-    // Lazy MemberRef handles (created on first use), keyed by "TypeName.MemberName"
-    private readonly Dictionary<string, MemberReferenceHandle> _lazyMemberRefs = new();
 
     // Metadata row tracking
     private int _nextFieldRow = 1, _nextMethodRow = 1, _nextParamRow = 1;
@@ -67,16 +62,10 @@ public class MsilObjectEmitter
 
     // Architecture helpers derived from DataModel
     private int PtrSize => _dm.PointerSize;
-    private bool Is32 => _dm.PointerSize == 4;
+    internal bool Is32 => _dm.PointerSize == 4;
     private string SymPrefix => Is32 ? "_" : "";
     private Machine TargetMachine => Is32 ? Machine.I386 : Machine.Amd64; // LP64: add ARM64
     private CodeViewMachine CvMachine => Is32 ? CodeViewMachine.I386 : CodeViewMachine.Amd64;
-
-    // Mscorlib hashes
-    private byte[] MscorlibHash => Is32
-        ? new byte[] { 0x32, 0xCD, 0x81, 0x47, 0x47, 0x14, 0x67, 0x52, 0xE5, 0x5E, 0x2B, 0xF7, 0xEC, 0x50, 0x8A, 0x87, 0x55, 0xC8, 0xB9, 0x5C }
-        : new byte[] { 0x28, 0xDC, 0x37, 0x8B, 0x8E, 0x25, 0x7A, 0xAC, 0xDD, 0x91, 0x4D, 0xF4, 0x16, 0x57, 0x67, 0x49, 0x13, 0xC1, 0x99, 0xCE };
-    private static readonly byte[] MscorlibPkt = { 0xB7, 0x7A, 0x5C, 0x56, 0x19, 0x34, 0xE0, 0x89 };
 
     public MsilObjectEmitter(
         CompilerOptions options,
@@ -91,7 +80,10 @@ public class MsilObjectEmitter
         _dm = options.DataModel;
         _nameMangler = nameMangler;
         _aggregateModel = aggregateModel;
+        _binder = new BclBinder(this);
     }
+
+    internal BclBinder Binder => _binder;
 
     public StandaloneSignatureHandle AddStandaloneSignature(BlobBuilder blob)
         => _md.AddStandaloneSignature(_md.GetOrAddBlob(blob));
@@ -114,7 +106,7 @@ public class MsilObjectEmitter
             attributes,
             default,
             _md.GetOrAddString(name),
-            GetValueTypeRef(),
+            _binder.GetValueTypeRef(),
             fieldList ?? MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
             MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
 
@@ -149,44 +141,27 @@ public class MsilObjectEmitter
             string.IsNullOrEmpty(@namespace) ? default : _md.GetOrAddString(@namespace),
             _md.GetOrAddString(name));
 
+    internal MemberReferenceHandle AddMemberReference(EntityHandle parent, string name, byte[] signature) =>
+        _md.AddMemberReference(
+            parent,
+            _md.GetOrAddString(name),
+            _md.GetOrAddBlob(signature));
+
+    internal AssemblyReferenceHandle AddAssemblyReference(string name, Version version, byte[] publicKeyToken) =>
+        _md.AddAssemblyReference(
+            _md.GetOrAddString(name),
+            version,
+            default,
+            publicKeyToken is null ? default : _md.GetOrAddBlob(publicKeyToken),
+            default,
+            default);
+
     private static void Verify<THandle>(THandle actual, THandle predicted, string rowKind, string name)
         where THandle : struct, IEquatable<THandle>
     {
         if (!actual.Equals(predicted))
             throw new InvalidOperationException(
                 $"{rowKind} handle mismatch for '{name}': predicted {predicted}, got {actual}");
-    }
-
-    private TypeReferenceHandle GetLazyTypeRef(string @namespace, string name)
-    {
-        if (!_lazyTypeRefs.TryGetValue(name, out var handle))
-        {
-            handle = _md.AddTypeReference(_mscorlibRef,
-                _md.GetOrAddString(@namespace),
-                _md.GetOrAddString(name));
-            _lazyTypeRefs[name] = handle;
-        }
-        return handle;
-    }
-
-    private TypeReferenceHandle GetCallConvCdeclRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "CallConvCdecl");
-    private TypeReferenceHandle GetCallConvStdcallRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "CallConvStdcall");
-    private TypeReferenceHandle GetIsSignUnspecifiedByteRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "IsSignUnspecifiedByte");
-    private TypeReferenceHandle GetIsConstRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "IsConst");
-    private TypeReferenceHandle GetIsVolatileRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "IsVolatile");
-    private TypeReferenceHandle GetIsLongRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "IsLong");
-    private TypeReferenceHandle GetNativeCppClassAttrRef() => GetLazyTypeRef("System.Runtime.CompilerServices", "NativeCppClassAttribute");
-    private TypeReferenceHandle GetValueTypeRef() => GetLazyTypeRef("System", "ValueType");
-    public TypeReferenceHandle GetInterlockedRef() => GetLazyTypeRef("System.Threading", "Interlocked");
-
-    public MemberReferenceHandle GetLazyMemberRef(string key, EntityHandle parent, string memberName, Func<BlobBuilder> buildSignature)
-    {
-        if (!_lazyMemberRefs.TryGetValue(key, out var handle))
-        {
-            handle = _md.AddMemberReference(parent, _md.GetOrAddString(memberName), _md.GetOrAddBlob(buildSignature()));
-            _lazyMemberRefs[key] = handle;
-        }
-        return handle;
     }
 
     /// <summary>
@@ -200,12 +175,12 @@ public class MsilObjectEmitter
         if (ty.IsConst)
         {
             sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsConstRef()));
+            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(_binder.GetIsConstRef()));
         }
         if (ty.IsVolatile)
         {
             sig.WriteByte((byte)SignatureTypeCode.RequiredModifier);
-            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsVolatileRef()));
+            sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(_binder.GetIsVolatileRef()));
         }
 
         switch (ty.Kind)
@@ -229,7 +204,7 @@ public class MsilObjectEmitter
                     // to int8 with the modopt marker. The modopt is harmless for
                     // signed char and required for plain char.
                     sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsSignUnspecifiedByteRef()));
+                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(_binder.GetIsSignUnspecifiedByteRef()));
                     sig.WriteByte((byte)SignatureTypeCode.SByte);
                 }
                 break;
@@ -249,7 +224,7 @@ public class MsilObjectEmitter
                 if (_dm.LongSize == 4)
                 {
                     sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsLongRef()));
+                    sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(_binder.GetIsLongRef()));
                     sig.WriteByte(ty.IsUnsigned ? (byte)SignatureTypeCode.UInt32 : (byte)SignatureTypeCode.Int32);
                 }
                 else
@@ -270,7 +245,7 @@ public class MsilObjectEmitter
             case TypeKind.LDouble:
                 // long double → modopt(IsLong) float64 (both LP64 and LLP64)
                 sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
-                sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(GetIsLongRef()));
+                sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(_binder.GetIsLongRef()));
                 sig.WriteByte((byte)SignatureTypeCode.Double);
                 break;
             case TypeKind.Ptr:
@@ -362,8 +337,8 @@ public class MsilObjectEmitter
             sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
             sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(funcTy.CallConv switch
             {
-                CallConv.Cdecl => GetCallConvCdeclRef(),
-                CallConv.Stdcall => GetCallConvStdcallRef(),
+                CallConv.Cdecl => _binder.GetCallConvCdeclRef(),
+                CallConv.Stdcall => _binder.GetCallConvStdcallRef(),
                 _ => throw new UnreachableException()
             }
             ));
@@ -548,19 +523,8 @@ public class MsilObjectEmitter
         attrBlob.WriteSerializedString(mangledName);
         attrBlob.WriteUInt16(0x0000); // NumNamed
 
-        // TypeRef for DecoratedNameAttribute
-        var decoratedNameRef = GetLazyTypeRef("System.Runtime.CompilerServices", "DecoratedNameAttribute");
-
         // MemberRef for .ctor(string)
-        var ctorRef = GetLazyMemberRef("DecoratedNameAttribute..ctor", decoratedNameRef, ".ctor", () =>
-        {
-            var ctorSig = new BlobBuilder();
-            ctorSig.WriteByte(0x20); // HASTHIS
-            ctorSig.WriteCompressedInteger(1); // 1 param
-            ctorSig.WriteByte((byte)SignatureTypeCode.Void); // return void
-            ctorSig.WriteByte((byte)SignatureTypeCode.String); // param: string
-            return ctorSig;
-        });
+        var ctorRef = _binder.GetDecoratedNameCtorRef();
 
         _md.AddCustomAttribute(target, ctorRef, _md.GetOrAddBlob(attrBlob));
     }
@@ -644,17 +608,8 @@ public class MsilObjectEmitter
 
     private void AddNativeCppClassAttribute(TypeDefinitionHandle handle)
     {
-        var attrRef = GetNativeCppClassAttrRef();
-
         // MemberRef for .ctor()
-        var ctorRef = GetLazyMemberRef("NativeCppClassAttribute..ctor", attrRef, ".ctor", () =>
-        {
-            var ctorSig = new BlobBuilder();
-            ctorSig.WriteByte(0x20); // HASTHIS
-            ctorSig.WriteCompressedInteger(0);
-            ctorSig.WriteByte((byte)SignatureTypeCode.Void);
-            return ctorSig;
-        });
+        var ctorRef = _binder.GetNativeCppClassCtorRef();
 
         var attrBlob = new BlobBuilder();
         attrBlob.WriteUInt16(0x0001); // Prolog
@@ -919,15 +874,6 @@ public class MsilObjectEmitter
         _ilFixupStream = new BlobBuilder();
         _ilFixupRelocs = new BlobBuilder();
         _bssSize = 0;
-
-        // AssemblyRef: mscorlib
-        _mscorlibRef = _md.AddAssemblyReference(
-            _md.GetOrAddString("mscorlib"),
-            new Version(4, 0, 0, 0),
-            default,
-            _md.GetOrAddBlob(MscorlibPkt),
-            default,
-            _md.GetOrAddBlob(MscorlibHash));
 
         _aggregates = new ManagedAggregateRegistry(
             _types,

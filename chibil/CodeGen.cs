@@ -942,19 +942,7 @@ public class CodeGen
         Load(node.CasOld.Ty.Base);
 
         // Call Interlocked.CompareExchange(ref int, int, int)
-        var interlocked = _emit.GetInterlockedRef();
-        var cxchgRef = _emit.GetLazyMemberRef("Interlocked.CompareExchange", interlocked, "CompareExchange", () =>
-        {
-            var sig = new BlobBuilder();
-            sig.WriteByte(0x00); // DEFAULT
-            sig.WriteCompressedInteger(3);
-            sig.WriteByte((byte)SignatureTypeCode.Int32); // return
-            sig.WriteByte((byte)SignatureTypeCode.Pointer);
-            sig.WriteByte((byte)SignatureTypeCode.Int32); // ref param
-            sig.WriteByte((byte)SignatureTypeCode.Int32);
-            sig.WriteByte((byte)SignatureTypeCode.Int32);
-            return sig;
-        });
+        var cxchgRef = _emit.Binder.GetCompareExchangeInt32Ref();
         _enc.Call(cxchgRef);
         Pop(2); // 3 args → 1 result
 
@@ -970,18 +958,7 @@ public class CodeGen
         GenExpr(node.Lhs); // address
         GenExpr(node.Rhs); // new value
 
-        var interlocked = _emit.GetInterlockedRef();
-        var xchgRef = _emit.GetLazyMemberRef("Interlocked.Exchange", interlocked, "Exchange", () =>
-        {
-            var sig = new BlobBuilder();
-            sig.WriteByte(0x00);
-            sig.WriteCompressedInteger(2);
-            sig.WriteByte((byte)SignatureTypeCode.Int32);
-            sig.WriteByte((byte)SignatureTypeCode.Pointer);
-            sig.WriteByte((byte)SignatureTypeCode.Int32);
-            sig.WriteByte((byte)SignatureTypeCode.Int32);
-            return sig;
-        });
+        var xchgRef = _emit.Binder.GetExchangeInt32Ref();
         _enc.Call(xchgRef);
         Pop(); // 2 args → 1 result
     }
