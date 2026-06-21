@@ -21,8 +21,6 @@ public class CodeGen
     private readonly int _scratchLocalBase;
     private int _maxStack, _stackDepth;
     private readonly LabelHandle[] _labels;
-    private string _lastDebugFileName;
-    private int _lastDebugLineNo;
 
     private void Push() { _stackDepth++; if (_stackDepth > _maxStack) _maxStack = _stackDepth; }
     private void Push(int n) { _stackDepth += n; if (_stackDepth > _maxStack) _maxStack = _stackDepth; }
@@ -80,14 +78,7 @@ public class CodeGen
 
         tok = GetDebugToken(tok);
         if (tok.File != null)
-        {
-            if (tok.FileName == _lastDebugFileName && tok.LineNo == _lastDebugLineNo)
-                return;
-
-            _lastDebugFileName = tok.FileName;
-            _lastDebugLineNo = tok.LineNo;
             _enc.MarkLineNumber(_emit.GetCodeViewFile(tok), tok.LineNo);
-        }
     }
 
     private CompiledMethod Emit()
