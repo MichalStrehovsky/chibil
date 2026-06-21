@@ -13,7 +13,6 @@ public class CodeGen
 {
     private readonly TypeSystem _types;
     private readonly MsilObjectEmitter _emit;
-    private readonly CodeViewFileHandle _cvFile;
     private RelocatableInstructionEncoder _enc;
     private readonly Obj _currentFn;
     private readonly Dictionary<Obj, int> _localSlots;
@@ -22,18 +21,19 @@ public class CodeGen
     private readonly int _scratchLocalBase;
     private int _maxStack, _stackDepth;
     private readonly LabelHandle[] _labels;
+    private string _lastDebugFileName;
+    private int _lastDebugLineNo;
 
     private void Push() { _stackDepth++; if (_stackDepth > _maxStack) _maxStack = _stackDepth; }
     private void Push(int n) { _stackDepth += n; if (_stackDepth > _maxStack) _maxStack = _stackDepth; }
     private void Pop() { Debug.Assert(_stackDepth > 0, "stack underflow"); _stackDepth--; }
     private void Pop(int n) { Debug.Assert(_stackDepth >= n, "stack underflow"); _stackDepth -= n; }
 
-    public CodeGen(TypeSystem types, MsilObjectEmitter emit, Obj fn, CodeViewFileHandle cvFile)
+    public CodeGen(TypeSystem types, MsilObjectEmitter emit, Obj fn)
     {
         _types = types;
         _emit = emit;
         _currentFn = fn;
-        _cvFile = cvFile;
         _enc = new RelocatableInstructionEncoder(
             new BlobBuilder(), new MethodRelocationBuilder(),
             new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
@@ -61,9 +61,33 @@ public class CodeGen
         _scratchLocalBase = localIdx;
     }
 
-    public static CompiledMethod EmitFunction(TypeSystem types, MsilObjectEmitter emit, Obj fn, CodeViewFileHandle cvFile)
+    public static CompiledMethod EmitFunction(TypeSystem types, MsilObjectEmitter emit, Obj fn)
     {
-        return new CodeGen(types, emit, fn, cvFile).Emit();
+        return new CodeGen(types, emit, fn).Emit();
+    }
+
+    private static Token GetDebugToken(Token tok)
+    {
+        while (tok.Origin != null)
+            tok = tok.Origin;
+        return tok;
+    }
+
+    private void MarkLineNumber(Token tok)
+    {
+        if (tok == null)
+            return;
+
+        tok = GetDebugToken(tok);
+        if (tok.File != null)
+        {
+            if (tok.FileName == _lastDebugFileName && tok.LineNo == _lastDebugLineNo)
+                return;
+
+            _lastDebugFileName = tok.FileName;
+            _lastDebugLineNo = tok.LineNo;
+            _enc.MarkLineNumber(_emit.GetCodeViewFile(tok), tok.LineNo);
+        }
     }
 
     private CompiledMethod Emit()
@@ -525,9 +549,7 @@ public class CodeGen
 
     private void GenExpr(Node node)
     {
-        // Mark line number for debug info
-        if (node.Tok?.File != null)
-            _enc.MarkLineNumber(_cvFile, node.Tok.LineNo);
+        MarkLineNumber(node.Tok);
 
         switch (node.Kind)
         {
@@ -1123,8 +1145,7 @@ public class CodeGen
 
     private void GenStmt(Node node)
     {
-        if (node.Tok?.File != null)
-            _enc.MarkLineNumber(_cvFile, node.Tok.LineNo);
+        MarkLineNumber(node.Tok);
 
         switch (node.Kind)
         {

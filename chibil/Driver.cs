@@ -448,7 +448,7 @@ public class Driver
             types,
             new MsvcNameMangler(types, tuHash),
             aggregateModel);
-        byte[] objBytes = codegen.Generate(prog, objName, sourceFile);
+        byte[] objBytes = codegen.Generate(prog, objName);
 
         if (_outputFile == null || _outputFile == "-")
         {
