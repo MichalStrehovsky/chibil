@@ -26,7 +26,7 @@ public class MsilObjectEmitter
     private CoffHeaderBuilder _coffHeader;
     private ManagedCoffSymbolTableBuilder _symtab;
     private CodeViewSymbolBuilder _codeviewSymbols;
-    private CodeViewFileHandle _cvFile;
+    private readonly Dictionary<string, CodeViewFileHandle> _codeViewFiles = new(StringComparer.Ordinal);
     private RelocatableMethodBodyStreamEncoder _bodyEncoder;
 
     private BlobBuilder _ilStreamBuilder, _ilRelocBuilder;
@@ -618,13 +618,37 @@ public class MsilObjectEmitter
         _md.AddCustomAttribute(handle, ctorRef, _md.GetOrAddBlob(attrBlob));
     }
 
+    internal CodeViewFileHandle GetCodeViewFile(Token tok)
+    {
+        string fileName = tok.FileName
+            ?? throw new InvalidOperationException("Token is missing a CodeView file name.");
+
+        if (_codeViewFiles.TryGetValue(fileName, out CodeViewFileHandle handle))
+            return handle;
+
+        // #line can remap the debugger-visible name without changing the
+        // physical tokenized file; don't attach a checksum for a different file.
+        if (fileName == tok.File.Name && File.Exists(tok.File.Name))
+        {
+            byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(tok.File.Name));
+            handle = _codeviewSymbols.GetOrAddFile(fileName, CodeViewChecksumType.SHA256, sourceHash);
+        }
+        else
+        {
+            handle = _codeviewSymbols.GetOrAddFile(fileName, CodeViewChecksumType.None, Array.Empty<byte>());
+        }
+
+        _codeViewFiles.Add(fileName, handle);
+        return handle;
+    }
+
     private void EmitFunctions(Obj prog)
     {
         for (Obj fn = prog; fn != null; fn = fn.Next)
         {
             if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
 
-            CompiledMethod body = CodeGen.EmitFunction(_types, this, fn, _cvFile);
+            CompiledMethod body = CodeGen.EmitFunction(_types, this, fn);
 
             // Finalize method body
             var methodDef = _methodDefs[fn];
@@ -858,7 +882,7 @@ public class MsilObjectEmitter
         }
     }
 
-    public byte[] Generate(Obj prog, string objName, string sourceFile)
+    public byte[] Generate(Obj prog, string objName)
     {
         _md = new MetadataBuilder();
         _coffHeader = new CoffHeaderBuilder(TargetMachine, 0);
@@ -890,17 +914,6 @@ public class MsilObjectEmitter
             beMajor: 19, beMinor: 50, beBuild: 35730,
             "chibil C compiler",
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
-
-        // Source file registration
-        if (File.Exists(sourceFile))
-        {
-            byte[] sourceHash = SHA256.HashData(File.ReadAllBytes(sourceFile));
-            _cvFile = _codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
-        }
-        else
-        {
-            _cvFile = _codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.None, Array.Empty<byte>());
-        }
 
         _bodyEncoder = new RelocatableMethodBodyStreamEncoder(
             _ilStreamBuilder, _ilRelocBuilder, _symtab, _coffHeader, _codeviewSymbols);

@@ -34,6 +34,12 @@ namespace System.Reflection.PortableExecutable
 
         public void AddLineNumber(CodeViewFileHandle file, int codeOffset, int lineNumber)
         {
+            if (_entries.Count > 0 && _entries[^1].CodeOffset == codeOffset)
+            {
+                _entries[^1] = new LineNumberEntry(file, codeOffset, lineNumber);
+                return;
+            }
+
             _entries.Add(new LineNumberEntry(file, codeOffset, lineNumber));
         }
 
