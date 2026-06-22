@@ -185,14 +185,10 @@ public class StructFuncptrClrcallTest
         var coffHeader = new CoffHeaderBuilder(machine, 0);
         var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
 
-        var ilStreamBuilder = new BlobBuilder();
-        var ilRelocBuilder = new BlobBuilder();
-        var dataStreamBuilder = new BlobBuilder();
-        var dataRelocBuilder = new BlobBuilder();
-        var nepStreamBuilder = new BlobBuilder();
-        var nepRelocBuilder = new BlobBuilder();
-        var ilFixupStreamBuilder = new BlobBuilder();
-        var ilFixupRelocBuilder = new BlobBuilder();
+        var ilSection = new CoffSectionWithContentBuilder(".text$mn", SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.ContainsCode | SectionCharacteristics.Align4Bytes);
+        var dataSection = new CoffSectionWithContentBuilder(".data", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes);
+        var nepSection = new CoffSectionWithContentBuilder(".nep", SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes);
+        var ilFixupSection = new CoffSectionWithContentBuilder(".rdata$ilfixup", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
 
         // No __unep@ data slots — __clrcall functions use ldftn directly.
 
@@ -212,7 +208,7 @@ public class StructFuncptrClrcallTest
         CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
 
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
-            ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
+            ilSection, symtab, coffHeader, codeviewSymbols);
 
         // ─── Emit IL for double_it ────────────────────────────────────────
         {
@@ -326,24 +322,23 @@ public class StructFuncptrClrcallTest
 
         // ─── IJW machinery for double_it and invoke only ─────────────────
         // __clrcall main does NOT get a NEP thunk.
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(doubleMethod), "double_it", "?double_it@@$$J0YMHH@Z");
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(invokeMethod), "invoke", $"?invoke@@$$J0YMHP{e}AU_Handler@@@Z");
 
         // No __unep@ ADDR relocs — __clrcall functions don't have
         // unmanaged entry-point declaration fields.
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
-        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder,
-            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
-            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
-            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
+        var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
+        if (ilSection.Content.Count > 0) sections.Add(ilSection);
+        if (dataSection.Content.Count > 0) sections.Add(dataSection);
+        if (ilFixupSection.Content.Count > 0) sections.Add(ilFixupSection);
+        if (nepSection.Content.Count > 0) sections.Add(nepSection);
+        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols, sections);
 
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);

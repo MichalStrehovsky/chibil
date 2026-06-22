@@ -15,7 +15,7 @@ public sealed partial class MetadataCopier
     public void EmitFieldData(
         ManagedCoffSymbolTableBuilder symtab,
         PEReader peReader,
-        BlobBuilder dataStream)
+        CoffSectionWithContentBuilder dataSection)
     {
         for (int inputRow = 1; inputRow <= _reader.GetTableRowCount(TableIndex.Field); inputRow++)
         {
@@ -28,17 +28,17 @@ public sealed partial class MetadataCopier
 
             int size = GetFieldDataSize(fd);
             int alignment = GetFieldDataAlignment(fd, size);
-            while ((dataStream.Count & (alignment - 1)) != 0) dataStream.WriteByte(0);
-            int offset = dataStream.Count;
+            while ((dataSection.Content.Count & (alignment - 1)) != 0) dataSection.Content.WriteByte(0);
+            int offset = dataSection.Content.Count;
 
             int rva = fd.GetRelativeVirtualAddress();
             var section = peReader.GetSectionData(rva);
             var srcReader = section.GetReader();
             byte[] bytes = srcReader.ReadBytes(size);
-            dataStream.WriteBytes(bytes);
+            dataSection.Content.WriteBytes(bytes);
 
             string name = _reader.GetString(fd.Name);
-            symtab.AddDataClrToken(name, outH, LogicalSection.Data, offset, out _);
+            symtab.AddDataClrToken(name, outH, dataSection, offset, out _);
         }
     }
 

@@ -74,58 +74,58 @@ internal static class ClrIjw
     /// hides them when comparing against MSVC reference objects.
     /// </remarks>
     public static CoffSymbolHandle EmitNepMachinery(
-        Machine machine, bool is32, int ptrSize, string symPrefix,
+        Machine machine, int ptrSize, string symPrefix,
         CoffHeaderBuilder coffHeader, ManagedCoffSymbolTableBuilder symtab,
-        BlobBuilder dataStream, BlobBuilder dataRelocs,
-        BlobBuilder nepStream, BlobBuilder nepRelocs,
-        BlobBuilder ilFixupStream, BlobBuilder ilFixupRelocs,
+        CoffSectionWithContentBuilder dataSectionBuilder,
+        CoffSectionWithContentBuilder nepSectionBuilder,
+        CoffSectionWithContentBuilder ilFixupSectionBuilder,
         int methodToken, string bareName, string mangledSuffix)
     {
         // (1) __mep@?fn slot in .data, zero-initialized. The linker stamps
         //     the MethodDef token bytes here via the TOKEN reloc below.
-        int slotOffset = dataStream.Count;
-        for (int i = 0; i < ptrSize; i++) dataStream.WriteByte(0);
+        int slotOffset = dataSectionBuilder.Content.Count;
+        for (int i = 0; i < ptrSize; i++) dataSectionBuilder.Content.WriteByte(0);
 
-        var mepDataSym = symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, LogicalSection.Data, slotOffset);
+        var mepDataSym = symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, dataSectionBuilder, slotOffset);
 
         var tokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(methodToken.ToString("X8"));
-        new CoffRelocationEncoder(coffHeader, dataRelocs).AddTokenRelocation(slotOffset, tokenSym);
+        new CoffRelocationEncoder(coffHeader, dataSectionBuilder.Relocations).AddTokenRelocation(slotOffset, tokenSym);
 
         // (2) NEP thunk in .nep, single indirect jump through the __mep@?fn slot.
-        int thunkOffset = nepStream.Count;
+        int thunkOffset = nepSectionBuilder.Content.Count;
         if (machine == Machine.Arm64)
         {
             // ADRP X9, page-of-slot   ; 09 00 00 90   (placeholder, linker patches via PAGEBASE_REL21)
             // LDR  X9, [X9, #off]     ; 29 01 40 F9   (placeholder, linker patches via PAGEOFFSET_12L)
             // BR   X9                 ; 20 01 1F D6
-            nepStream.WriteBytes(new byte[] { 0x09, 0x00, 0x00, 0x90, 0x29, 0x01, 0x40, 0xF9, 0x20, 0x01, 0x1F, 0xD6 });
-            nepRelocs.WriteInt32(thunkOffset + 0);
-            nepRelocs.WriteInt32(mepDataSym._value);
-            nepRelocs.WriteUInt16(0x0004);                                  // IMAGE_REL_ARM64_PAGEBASE_REL21
-            nepRelocs.WriteInt32(thunkOffset + 4);
-            nepRelocs.WriteInt32(mepDataSym._value);
-            nepRelocs.WriteUInt16(0x0007);                                  // IMAGE_REL_ARM64_PAGEOFFSET_12L
+            nepSectionBuilder.Content.WriteBytes(new byte[] { 0x09, 0x00, 0x00, 0x90, 0x29, 0x01, 0x40, 0xF9, 0x20, 0x01, 0x1F, 0xD6 });
+            nepSectionBuilder.Relocations.WriteInt32(thunkOffset + 0);
+            nepSectionBuilder.Relocations.WriteInt32(mepDataSym._value);
+            nepSectionBuilder.Relocations.WriteUInt16(0x0004);                                  // IMAGE_REL_ARM64_PAGEBASE_REL21
+            nepSectionBuilder.Relocations.WriteInt32(thunkOffset + 4);
+            nepSectionBuilder.Relocations.WriteInt32(mepDataSym._value);
+            nepSectionBuilder.Relocations.WriteUInt16(0x0007);                                  // IMAGE_REL_ARM64_PAGEOFFSET_12L
         }
         else
         {
             // FF 25 [4-byte operand placeholder] — linker fills the operand via the reloc.
-            nepStream.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
-            nepRelocs.WriteInt32(thunkOffset + 2);
-            nepRelocs.WriteInt32(mepDataSym._value);
-            nepRelocs.WriteUInt16(is32 ? (ushort)0x0006 : (ushort)0x0004);  // I386 DIR32 / AMD64 REL32
+            nepSectionBuilder.Content.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
+            nepSectionBuilder.Relocations.WriteInt32(thunkOffset + 2);
+            nepSectionBuilder.Relocations.WriteInt32(mepDataSym._value);
+            nepSectionBuilder.Relocations.WriteUInt16(machine == Machine.I386 ? (ushort)0x0006 : (ushort)0x0004);  // I386 DIR32 / AMD64 REL32
         }
 
         // (3) Bare-name COFF alias for the thunk (e.g. `foo` / `_foo`).
         //     Externally linked — other translation units reference C functions
         //     by this bare name, and `__unep@?fn` slots ADDR-reloc against it.
-        var bareSym = symtab.AddExternalDataSymbol(symPrefix + bareName, LogicalSection.Nep, thunkOffset);
+        var bareSym = symtab.AddExternalDataSymbol(symPrefix + bareName, nepSectionBuilder, thunkOffset);
 
         // (4) One 8-byte ILFixup entry pointing at the slot.
-        int ilfixupOffset = ilFixupStream.Count;
-        ilFixupStream.WriteInt32(0);                                        // RVA placeholder (ADDR32NB reloc below)
-        ilFixupStream.WriteInt16(1);                                        // Count
-        ilFixupStream.WriteInt16(is32 ? (short)0x0009 : (short)0x000A);     // COR_VTABLE_*BIT | FROM_UNMANAGED_RETAIN_APPDOMAIN
-        new CoffRelocationEncoder(coffHeader, ilFixupRelocs).AddImageRelativeRelocation(ilfixupOffset, mepDataSym);
+        int ilfixupOffset = ilFixupSectionBuilder.Content.Count;
+        ilFixupSectionBuilder.Content.WriteInt32(0);                                        // RVA placeholder (ADDR32NB reloc below)
+        ilFixupSectionBuilder.Content.WriteInt16(1);                                        // Count
+        ilFixupSectionBuilder.Content.WriteInt16(ptrSize == 4 ? (short)0x0009 : (short)0x000A);     // COR_VTABLE_*BIT | FROM_UNMANAGED_RETAIN_APPDOMAIN
+        new CoffRelocationEncoder(coffHeader, ilFixupSectionBuilder.Relocations).AddImageRelativeRelocation(ilfixupOffset, mepDataSym);
 
         return bareSym;
     }

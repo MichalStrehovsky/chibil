@@ -1502,7 +1502,12 @@ static class ObjDumper
                 if (fid == offFile)
                 {
                     string typeName = chkType switch { 1 => "MD5", 2 => "SHA1", 3 => "SHA256", _ => $"0x{chkType:X2}" };
-                    checksumStr = $" [{typeName}: {Convert.ToHexString(chkData)}]";
+                    // Only surface the checksum algorithm, not the hash bytes:
+                    // the bytes depend on the local .c file's exact contents
+                    // (line endings differ between the committed MSVC reference
+                    // and the freshly emitted object), which makes the byte
+                    // comparison brittle and machine/checkout-specific.
+                    checksumStr = $" [{typeName}]";
                     break;
                 }
             }
