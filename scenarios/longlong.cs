@@ -249,14 +249,10 @@ public class LonglongTest
         // ─── COFF structure ───────────────────────────────────────────────
         var coffHeader = new CoffHeaderBuilder(machine, 0);
         var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
-        var ilStreamBuilder = new BlobBuilder();
-        var ilRelocBuilder = new BlobBuilder();
-        var dataStreamBuilder = new BlobBuilder();
-        var dataRelocBuilder = new BlobBuilder();
-        var nepStreamBuilder = new BlobBuilder();
-        var nepRelocBuilder = new BlobBuilder();
-        var ilFixupStreamBuilder = new BlobBuilder();
-        var ilFixupRelocBuilder = new BlobBuilder();
+        var ilSection = new CoffSectionWithContentBuilder(".text$mn", SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.ContainsCode | SectionCharacteristics.Align4Bytes);
+        var dataSection = new CoffSectionWithContentBuilder(".data", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes);
+        var nepSection = new CoffSectionWithContentBuilder(".nep", SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes);
+        var ilFixupSection = new CoffSectionWithContentBuilder(".rdata$ilfixup", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
 
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
         codeviewSymbols.AddObjNameAndCompile3("longlong.obj",
@@ -271,7 +267,7 @@ public class LonglongTest
         CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
 
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
-            ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
+            ilSection, symtab, coffHeader, codeviewSymbols);
 
         // ─── Helper: emit simple 6-byte body (ldarg.0, ldarg.1, op, stloc.0, ldloc.0, ret) ──
         void EmitSimpleBinOp(MethodDefinitionHandle method, string coffName, ILOpCode op,
@@ -404,53 +400,44 @@ public class LonglongTest
         }
 
         // ─── IJW machinery for exported methods ───────────────────────────
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(llAddMethod), "ll_add", "?ll_add@@$$J0YA_J_J0@Z");
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(llMulMethod), "ll_mul", "?ll_mul@@$$J0YA_J_J0@Z");
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(llDivMethod), "ll_div", "?ll_div@@$$J0YA_J_J0@Z");
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(llShlMethod), "ll_shl", "?ll_shl@@$$J0YA_J_JH@Z");
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(llShrMethod), "ll_shr", "?ll_shr@@$$J0YA_J_JH@Z");
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(ullShrMethod), "ull_shr", "?ull_shr@@$$J0YA_K_KH@Z");
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(llCompareMethod), "ll_compare", "?ll_compare@@$$J0YAH_J0@Z");
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(intToLlMethod), "int_to_ll", "?int_to_ll@@$$J0YA_JH@Z");
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(llToIntMethod), "ll_to_int", "?ll_to_int@@$$J0YAH_J@Z");
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
-        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder,
-            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
-            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
-            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
+        var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
+        if (ilSection.Content.Count > 0) sections.Add(ilSection);
+        if (dataSection.Content.Count > 0) sections.Add(dataSection);
+        if (ilFixupSection.Content.Count > 0) sections.Add(ilFixupSection);
+        if (nepSection.Content.Count > 0) sections.Add(nepSection);
+        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols, sections);
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
         return output.ToArray();

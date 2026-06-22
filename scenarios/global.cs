@@ -151,14 +151,10 @@ public class GlobalTest
         var coffHeader = new CoffHeaderBuilder(machine, 0);
         var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
 
-        var ilStreamBuilder = new BlobBuilder();
-        var ilRelocBuilder = new BlobBuilder();
-        var dataStreamBuilder = new BlobBuilder();
-        var dataRelocBuilder = new BlobBuilder();
-        var ilFixupStreamBuilder = new BlobBuilder();
-        var ilFixupRelocBuilder = new BlobBuilder();
-        var nepStreamBuilder = new BlobBuilder();
-        var nepRelocBuilder = new BlobBuilder();
+        var ilSection = new CoffSectionWithContentBuilder(".text$mn", SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.ContainsCode | SectionCharacteristics.Align4Bytes);
+        var dataSection = new CoffSectionWithContentBuilder(".data", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes);
+        var nepSection = new CoffSectionWithContentBuilder(".nep", SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes);
+        var ilFixupSection = new CoffSectionWithContentBuilder(".rdata$ilfixup", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
 
         // ─── .data layout ────────────────────────────────────────────────
         //   +0x00  g_initialized   = 42                         (4 bytes; padded to 8 on 64-bit)
@@ -168,16 +164,16 @@ public class GlobalTest
         int gInitOffset = 0;
         int gArrayOffset = 8;
 
-        dataStreamBuilder.WriteInt32(42);                              // g_initialized = 42
-        dataStreamBuilder.WriteInt32(0);                               // pad to 8 bytes (g_array is 8-byte aligned)
-        dataStreamBuilder.WriteInt32(1);                               // g_array[0]
-        dataStreamBuilder.WriteInt32(2);                               // g_array[1]
-        dataStreamBuilder.WriteInt32(3);                               // g_array[2]
-        dataStreamBuilder.WriteInt32(4);                               // g_array[3]
+        dataSection.Content.WriteInt32(42);                              // g_initialized = 42
+        dataSection.Content.WriteInt32(0);                               // pad to 8 bytes (g_array is 8-byte aligned)
+        dataSection.Content.WriteInt32(1);                               // g_array[0]
+        dataSection.Content.WriteInt32(2);                               // g_array[1]
+        dataSection.Content.WriteInt32(3);                               // g_array[2]
+        dataSection.Content.WriteInt32(4);                               // g_array[3]
 
         // Pre-register data field COFF symbols BEFORE emitting IL.
-        symtab.AddDataClrToken(symPrefix + "g_initialized", fieldGInit,  LogicalSection.Data, gInitOffset,  out _);
-        symtab.AddDataClrToken(symPrefix + "g_array",       fieldGArray, LogicalSection.Data, gArrayOffset, out _);
+        symtab.AddDataClrToken(symPrefix + "g_initialized", fieldGInit,  dataSection, gInitOffset,  out _);
+        symtab.AddDataClrToken(symPrefix + "g_array",       fieldGArray, dataSection, gArrayOffset, out _);
         // g_uninitialized: common symbol, 4-byte int
         symtab.AddCommonDataClrToken(symPrefix + "g_uninitialized", fieldGUninit, 4, out _);
 
@@ -196,7 +192,7 @@ public class GlobalTest
         CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
 
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
-            ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
+            ilSection, symtab, coffHeader, codeviewSymbols);
 
         // ─── Emit IL for main ────────────────────────────────────────────
         // C: g_uninitialized = 10; sum = g_initialized + g_uninitialized;
@@ -279,76 +275,23 @@ public class GlobalTest
         }
 
         // ─── IJW machinery for main (NEP thunk + __mep@ slot + ilfixup) ─
-        EmitNepMachinery(
-            machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder,
-            nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             methodToken: MetadataTokens.GetToken(mainMethod),
             bareName: "main",
             mangledSuffix: "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ──────────────────────────────────────
-        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder,
-            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
-            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
-            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
+        var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
+        if (ilSection.Content.Count > 0) sections.Add(ilSection);
+        if (dataSection.Content.Count > 0) sections.Add(dataSection);
+        if (ilFixupSection.Content.Count > 0) sections.Add(ilFixupSection);
+        if (nepSection.Content.Count > 0) sections.Add(nepSection);
+        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols, sections);
 
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
         return output.ToArray();
     }
 
-    /// <summary>
-    /// Emits the minimal /clr IJW machinery for a single managed function: a
-    /// <c>__mep@?fn</c> data slot stamped with a TOKEN reloc to the method's
-    /// MethodDef CLR-token symbol, a single indirect-jump <c>.nep</c> thunk
-    /// that targets the slot, a bare-name COFF alias for the thunk, and a
-    /// single <c>.rdata$ilfixup</c> entry that tells the CLR loader to
-    /// resolve the token in the slot into a from-unmanaged stub address.
-    /// </summary>
-    static void EmitNepMachinery(
-        Machine machine, bool is32, int ptrSize, string symPrefix,
-        CoffHeaderBuilder coffHeader, ManagedCoffSymbolTableBuilder symtab,
-        BlobBuilder dataStream, BlobBuilder dataRelocs,
-        BlobBuilder nepStream, BlobBuilder nepRelocs,
-        BlobBuilder ilFixupStream, BlobBuilder ilFixupRelocs,
-        int methodToken, string bareName, string mangledSuffix)
-    {
-        int slotOffset = dataStream.Count;
-        for (int i = 0; i < ptrSize; i++) dataStream.WriteByte(0);
-
-        var mepDataSym = symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, LogicalSection.Data, slotOffset);
-
-        var tokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(methodToken.ToString("X8"));
-        new CoffRelocationEncoder(coffHeader, dataRelocs).AddTokenRelocation(slotOffset, tokenSym);
-
-        int thunkOffset = nepStream.Count;
-        if (machine == Machine.Arm64)
-        {
-            nepStream.WriteBytes(new byte[] { 0x09, 0x00, 0x00, 0x90, 0x29, 0x01, 0x40, 0xF9, 0x20, 0x01, 0x1F, 0xD6 });
-            nepRelocs.WriteInt32(thunkOffset + 0);
-            nepRelocs.WriteInt32(mepDataSym._value);
-            nepRelocs.WriteUInt16(0x0004);
-            nepRelocs.WriteInt32(thunkOffset + 4);
-            nepRelocs.WriteInt32(mepDataSym._value);
-            nepRelocs.WriteUInt16(0x0007);
-        }
-        else
-        {
-            nepStream.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
-            nepRelocs.WriteInt32(thunkOffset + 2);
-            nepRelocs.WriteInt32(mepDataSym._value);
-            nepRelocs.WriteUInt16(is32 ? (ushort)0x0006 : (ushort)0x0004);
-        }
-
-        symtab.AddExternalDataSymbol(symPrefix + bareName, LogicalSection.Nep, thunkOffset);
-
-        int ilfixupOffset = ilFixupStream.Count;
-        ilFixupStream.WriteInt32(0);
-        ilFixupStream.WriteInt16(1);
-        ilFixupStream.WriteInt16(is32 ? (short)0x0009 : (short)0x000A);
-        new CoffRelocationEncoder(coffHeader, ilFixupRelocs).AddImageRelativeRelocation(ilfixupOffset, mepDataSym);
-    }
 }

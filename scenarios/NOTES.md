@@ -117,10 +117,11 @@ where `<hash>` is a translation-unit hash. The field carries flags
 themselves live in `.bss` (uninitialized C linkage internal): the
 section has `IMAGE_SCN_CNT_UNINITIALIZED_DATA`, `SizeOfRawData = 4`,
 and `PointerToRawData = 0` — no file bytes, the loader zero-fills at
-image load. chibil supports this via `LogicalSection.Bss` plus the
-`bssSize` parameter on `ManagedCoffBuilder` (`AddDataClrToken(...,
-LogicalSection.Bss, 0)` binds the field's CLR-token alias to the
-section). This differs from external uninitialized globals (e.g.
+image load. chibil supports this via an `UninitializedCoffSectionBuilder`
+for `.bss` (with its `Size` set to the total uninitialized bytes); the
+section is added to the `ManagedCoffBuilder` section list and
+`AddDataClrToken(..., bssSection, 0)` binds the field's CLR-token alias
+to the section. This differs from external uninitialized globals (e.g.
 `int g_uninitialized;` in `global.c`), which use a common symbol
 (Sect=0 External, Value=size).
 

@@ -156,14 +156,10 @@ public class BitfieldTest
         var coffHeader = new CoffHeaderBuilder(machine, 0);
         var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
 
-        var ilStreamBuilder = new BlobBuilder();
-        var ilRelocBuilder = new BlobBuilder();
-        var dataStreamBuilder = new BlobBuilder();
-        var dataRelocBuilder = new BlobBuilder();
-        var nepStreamBuilder = new BlobBuilder();
-        var nepRelocBuilder = new BlobBuilder();
-        var ilFixupStreamBuilder = new BlobBuilder();
-        var ilFixupRelocBuilder = new BlobBuilder();
+        var ilSection = new CoffSectionWithContentBuilder(".text$mn", SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.ContainsCode | SectionCharacteristics.Align4Bytes);
+        var dataSection = new CoffSectionWithContentBuilder(".data", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes);
+        var nepSection = new CoffSectionWithContentBuilder(".nep", SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes);
+        var ilFixupSection = new CoffSectionWithContentBuilder(".rdata$ilfixup", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
 
         // ─── CodeView debug info ──────────────────────────────────────────
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
@@ -181,7 +177,7 @@ public class BitfieldTest
         CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
 
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
-            ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
+            ilSection, symtab, coffHeader, codeviewSymbols);
 
         // ─── Emit IL for bitfield_test ────────────────────────────────────
         {
@@ -294,21 +290,20 @@ public class BitfieldTest
                 debugName: "main");
         }
 
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(bitfieldTestMethod), "bitfield_test", "?bitfield_test@@$$J0YAHXZ");
-        ClrIjw.EmitNepMachinery(machine, is32, ptrSize, symPrefix, coffHeader, symtab,
-            dataStreamBuilder, dataRelocBuilder, nepStreamBuilder, nepRelocBuilder,
-            ilFixupStreamBuilder, ilFixupRelocBuilder,
+        ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
+            dataSection, nepSection, ilFixupSection,
             MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
-        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder,
-            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
-            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
-            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
+        var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
+        if (ilSection.Content.Count > 0) sections.Add(ilSection);
+        if (dataSection.Content.Count > 0) sections.Add(dataSection);
+        if (ilFixupSection.Content.Count > 0) sections.Add(ilFixupSection);
+        if (nepSection.Content.Count > 0) sections.Add(nepSection);
+        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols, sections);
 
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);

@@ -194,14 +194,10 @@ public class GlobalAdvancedTest
         var coffHeader = new CoffHeaderBuilder(machine, 0);
         var symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
 
-        var ilStreamBuilder = new BlobBuilder();
-        var ilRelocBuilder = new BlobBuilder();
-        var dataStreamBuilder = new BlobBuilder();
-        var dataRelocBuilder = new BlobBuilder();
-        var ilFixupStreamBuilder = new BlobBuilder();
-        var ilFixupRelocBuilder = new BlobBuilder();
-        var nepStreamBuilder = new BlobBuilder();
-        var nepRelocBuilder = new BlobBuilder();
+        var ilSection = new CoffSectionWithContentBuilder(".text$mn", SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.ContainsCode | SectionCharacteristics.Align4Bytes);
+        var dataSection = new CoffSectionWithContentBuilder(".data", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes);
+        var nepSection = new CoffSectionWithContentBuilder(".nep", SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes);
+        var ilFixupSection = new CoffSectionWithContentBuilder(".rdata$ilfixup", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
 
         // ─── .data layout ────────────────────────────────────────────────
         //   +0x00            hello[8]   "Hello!\0\0"               (8 bytes value)
@@ -215,33 +211,33 @@ public class GlobalAdvancedTest
         int mepGetOffset = 8 + 2 * ptrSize;
         int mepMainOffset = 8 + 3 * ptrSize;
 
-        dataStreamBuilder.WriteBytes(new byte[] { 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x21, 0x00, 0x00 });    // hello
+        dataSection.Content.WriteBytes(new byte[] { 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x21, 0x00, 0x00 });    // hello
         if (is32)
         {
-            dataStreamBuilder.WriteInt32(1);   // e: addend 1
-            dataStreamBuilder.WriteInt32(0);   // m: addend 0
-            dataStreamBuilder.WriteInt32(0);   // __mep@?get  (linker stamps MethodDef token via TOKEN reloc)
-            dataStreamBuilder.WriteInt32(0);   // __mep@?main (linker stamps MethodDef token via TOKEN reloc)
+            dataSection.Content.WriteInt32(1);   // e: addend 1
+            dataSection.Content.WriteInt32(0);   // m: addend 0
+            dataSection.Content.WriteInt32(0);   // __mep@?get  (linker stamps MethodDef token via TOKEN reloc)
+            dataSection.Content.WriteInt32(0);   // __mep@?main (linker stamps MethodDef token via TOKEN reloc)
         }
         else
         {
-            dataStreamBuilder.WriteInt64(1);
-            dataStreamBuilder.WriteInt64(0);
-            dataStreamBuilder.WriteInt64(0);
-            dataStreamBuilder.WriteInt64(0);
+            dataSection.Content.WriteInt64(1);
+            dataSection.Content.WriteInt64(0);
+            dataSection.Content.WriteInt64(0);
+            dataSection.Content.WriteInt64(0);
         }
 
         // Pre-register data field COFF symbols BEFORE emitting IL that references them.
-        symtab.AddDataClrToken(symPrefix + "hello", fieldHello, LogicalSection.Data, helloOffset, out _);
-        symtab.AddDataClrToken(symPrefix + "e",     fieldE,     LogicalSection.Data, eOffset,     out _);
-        symtab.AddDataClrToken(symPrefix + "m",     fieldM,     LogicalSection.Data, mOffset,     out _);
+        symtab.AddDataClrToken(symPrefix + "hello", fieldHello, dataSection, helloOffset, out _);
+        symtab.AddDataClrToken(symPrefix + "e",     fieldE,     dataSection, eOffset,     out _);
+        symtab.AddDataClrToken(symPrefix + "m",     fieldM,     dataSection, mOffset,     out _);
 
         // __mep@?get and __mep@?main are COFF-only data symbols (no FieldDef) at the
         // .data slots that the .nep thunks indirect through. The CLR fills these
         // slots with from-unmanaged stub addresses at load time, driven by the
         // ilfixup entries below.
-        var mepGetDataSym  = symtab.AddExternalDataSymbol("__mep@?get@@$$J0YAHXZ",  LogicalSection.Data, mepGetOffset);
-        var mepMainDataSym = symtab.AddExternalDataSymbol("__mep@?main@@$$J0YAHXZ", LogicalSection.Data, mepMainOffset);
+        var mepGetDataSym  = symtab.AddExternalDataSymbol("__mep@?get@@$$J0YAHXZ",  dataSection, mepGetOffset);
+        var mepMainDataSym = symtab.AddExternalDataSymbol("__mep@?main@@$$J0YAHXZ", dataSection, mepMainOffset);
 
         // ─── .nep layout ─────────────────────────────────────────────────
         // One indirect-jump thunk per method (no double-thunk-avoidance optimization).
@@ -259,26 +255,26 @@ public class GlobalAdvancedTest
                 // ADRP X9, page-of-mep      ; encoded: 09 00 00 90 (placeholder; linker patches)
                 // LDR X9, [X9, #pageoff]    ; encoded: 29 01 40 F9 (placeholder)
                 // BR X9                     ; encoded: 20 01 1F D6
-                nepStreamBuilder.WriteBytes(new byte[] { 0x09, 0x00, 0x00, 0x90, 0x29, 0x01, 0x40, 0xF9, 0x20, 0x01, 0x1F, 0xD6 });
+                nepSection.Content.WriteBytes(new byte[] { 0x09, 0x00, 0x00, 0x90, 0x29, 0x01, 0x40, 0xF9, 0x20, 0x01, 0x1F, 0xD6 });
                 // IMAGE_REL_ARM64_PAGEBASE_REL21 = 0x0004 (at thunkOff+0)
-                nepRelocBuilder.WriteInt32(thunkOff + 0);
-                nepRelocBuilder.WriteInt32(mepDataSym._value);
-                nepRelocBuilder.WriteUInt16(0x0004);
+                nepSection.Relocations.WriteInt32(thunkOff + 0);
+                nepSection.Relocations.WriteInt32(mepDataSym._value);
+                nepSection.Relocations.WriteUInt16(0x0004);
                 // IMAGE_REL_ARM64_PAGEOFFSET_12L = 0x0007 (at thunkOff+4)
-                nepRelocBuilder.WriteInt32(thunkOff + 4);
-                nepRelocBuilder.WriteInt32(mepDataSym._value);
-                nepRelocBuilder.WriteUInt16(0x0007);
+                nepSection.Relocations.WriteInt32(thunkOff + 4);
+                nepSection.Relocations.WriteInt32(mepDataSym._value);
+                nepSection.Relocations.WriteUInt16(0x0007);
             }
             else
             {
                 // FF 25 [4-byte operand placeholder] — the linker fills the operand via the reloc.
-                nepStreamBuilder.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
-                nepRelocBuilder.WriteInt32(thunkOff + 2);
-                nepRelocBuilder.WriteInt32(mepDataSym._value);
+                nepSection.Content.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
+                nepSection.Relocations.WriteInt32(thunkOff + 2);
+                nepSection.Relocations.WriteInt32(mepDataSym._value);
                 if (is32)
-                    nepRelocBuilder.WriteUInt16(0x0006);  // IMAGE_REL_I386_DIR32
+                    nepSection.Relocations.WriteUInt16(0x0006);  // IMAGE_REL_I386_DIR32
                 else
-                    nepRelocBuilder.WriteUInt16(0x0004);  // IMAGE_REL_AMD64_REL32
+                    nepSection.Relocations.WriteUInt16(0x0004);  // IMAGE_REL_AMD64_REL32
             }
         }
 
@@ -289,14 +285,14 @@ public class GlobalAdvancedTest
         // C-mangled names (`_get`/`get` etc.), External-linkage, so that native callers
         // (and unmanaged calli through `m`) bind to the thunk rather than the managed
         // IL body. We emit them as Static aliases pointing at the thunk in .nep.
-        var getNepSymbol  = symtab.AddDataSymbol(symPrefix + "get",  LogicalSection.Nep, getThunkOffset);
-        var mainNepSymbol = symtab.AddDataSymbol(symPrefix + "main", LogicalSection.Nep, mainThunkOffset);
+        var getNepSymbol  = symtab.AddDataSymbol(symPrefix + "get",  nepSection, getThunkOffset);
+        var mainNepSymbol = symtab.AddDataSymbol(symPrefix + "main", nepSection, mainThunkOffset);
 
         // ─── Emit .data relocations ──────────────────────────────────────
         // e   →  hello (ADDR with addend=1 already in slot data)
         // m   →  bare-name get (ADDR; resolves to NEP thunk at link time)
-        var helloSymbol = symtab.AddDataSymbol(symPrefix + "hello", LogicalSection.Data, helloOffset);
-        var dataRelocs = new CoffRelocationEncoder(coffHeader, dataRelocBuilder);
+        var helloSymbol = symtab.AddDataSymbol(symPrefix + "hello", dataSection, helloOffset);
+        var dataRelocs = new CoffRelocationEncoder(coffHeader, dataSection.Relocations);
         dataRelocs.AddAddressRelocation(eOffset, helloSymbol);
         dataRelocs.AddAddressRelocation(mOffset, getNepSymbol);
 
@@ -315,7 +311,7 @@ public class GlobalAdvancedTest
         CodeViewFileHandle cvFile = codeviewSymbols.GetOrAddFile(sourceFile, CodeViewChecksumType.SHA256, sourceHash);
 
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
-            ilStreamBuilder, ilRelocBuilder, symtab, coffHeader, codeviewSymbols);
+            ilSection, symtab, coffHeader, codeviewSymbols);
 
         // ─── Emit IL for get ─────────────────────────────────────────────
         {
@@ -382,8 +378,8 @@ public class GlobalAdvancedTest
         int mainMethodToken = MetadataTokens.GetToken(mainMethod);
         var getTokenSym  = symtab.GetOrAddUndefinedClrTokenSymbol(getMethodToken.ToString("X8"));
         var mainTokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(mainMethodToken.ToString("X8"));
-        new CoffRelocationEncoder(coffHeader, dataRelocBuilder).AddTokenRelocation(mepGetOffset,  getTokenSym);
-        new CoffRelocationEncoder(coffHeader, dataRelocBuilder).AddTokenRelocation(mepMainOffset, mainTokenSym);
+        new CoffRelocationEncoder(coffHeader, dataSection.Relocations).AddTokenRelocation(mepGetOffset,  getTokenSym);
+        new CoffRelocationEncoder(coffHeader, dataSection.Relocations).AddTokenRelocation(mepMainOffset, mainTokenSym);
 
         // ─── .rdata$ilfixup entries ──────────────────────────────────────
         // One 8-byte entry per __mep@?fn slot, telling the CLR to read the MethodDef
@@ -391,22 +387,23 @@ public class GlobalAdvancedTest
         // at load time. The NEP thunk's indirect JMP then lands on that stub.
         short ilFixupType = (short)(is32 ? 0x0009 : 0x000A);
 
-        ilFixupStreamBuilder.WriteInt32(0);                       // RVA placeholder (linker patches via reloc)
-        ilFixupStreamBuilder.WriteInt16(1);                       // Count
-        ilFixupStreamBuilder.WriteInt16(ilFixupType);
-        new CoffRelocationEncoder(coffHeader, ilFixupRelocBuilder).AddImageRelativeRelocation(0, mepGetDataSym);
+        ilFixupSection.Content.WriteInt32(0);                       // RVA placeholder (linker patches via reloc)
+        ilFixupSection.Content.WriteInt16(1);                       // Count
+        ilFixupSection.Content.WriteInt16(ilFixupType);
+        new CoffRelocationEncoder(coffHeader, ilFixupSection.Relocations).AddImageRelativeRelocation(0, mepGetDataSym);
 
-        ilFixupStreamBuilder.WriteInt32(0);
-        ilFixupStreamBuilder.WriteInt16(1);
-        ilFixupStreamBuilder.WriteInt16(ilFixupType);
-        new CoffRelocationEncoder(coffHeader, ilFixupRelocBuilder).AddImageRelativeRelocation(8, mepMainDataSym);
+        ilFixupSection.Content.WriteInt32(0);
+        ilFixupSection.Content.WriteInt16(1);
+        ilFixupSection.Content.WriteInt16(ilFixupType);
+        new CoffRelocationEncoder(coffHeader, ilFixupSection.Relocations).AddImageRelativeRelocation(8, mepMainDataSym);
 
         // ─── Build COFF & Serialize ──────────────────────────────────────
-        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols,
-            ilStreamBuilder, ilRelocBuilder,
-            dataStream: dataStreamBuilder, dataRelocs: dataRelocBuilder,
-            ilFixupStream: ilFixupStreamBuilder, ilFixupRelocs: ilFixupRelocBuilder,
-            nepStream: nepStreamBuilder, nepRelocs: nepRelocBuilder);
+        var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
+        if (ilSection.Content.Count > 0) sections.Add(ilSection);
+        if (dataSection.Content.Count > 0) sections.Add(dataSection);
+        if (ilFixupSection.Content.Count > 0) sections.Add(ilFixupSection);
+        if (nepSection.Content.Count > 0) sections.Add(nepSection);
+        var coffBuilder = new ManagedCoffBuilder(coffHeader, new MetadataRootBuilder(md), symtab, codeviewSymbols, sections);
 
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
