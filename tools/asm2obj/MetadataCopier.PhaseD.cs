@@ -19,6 +19,7 @@ public sealed partial class MetadataCopier
 
     public void EmitMethodBodies(
         ManagedCoffSymbolTableBuilder symtab,
+        CoffSectionBuilder ilSection,
         RelocatableMethodBodyStreamEncoder bodyEncoder,
         PEReader peReader)
     {
@@ -60,7 +61,7 @@ public sealed partial class MetadataCopier
             _outputMethodDecoratedNames[outRow] = decoratedName;
             _outputMethodBareNames[outRow] = ComputeBareName(inputRow);
 
-            symtab.PreRegisterFunctionClrToken(decoratedName, outputH);
+            symtab.PreRegisterFunctionClrToken(ilSection, decoratedName, outputH);
         }
 
         // ─── Register external CLR tokens for MemberRefs that need native

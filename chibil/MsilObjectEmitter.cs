@@ -29,12 +29,12 @@ public class MsilObjectEmitter
     private readonly Dictionary<string, CodeViewFileHandle> _codeViewFiles = new(StringComparer.Ordinal);
     private RelocatableMethodBodyStreamEncoder _bodyEncoder;
 
-    private BlobBuilder _ilStreamBuilder, _ilRelocBuilder;
-    private BlobBuilder _dataStream, _dataRelocs;
-    private BlobBuilder _rdataStream;
-    private BlobBuilder _nepStream, _nepRelocs;
-    private BlobBuilder _ilFixupStream, _ilFixupRelocs;
-    private int _bssSize;
+    private CoffSectionWithContentBuilder _ilSection;
+    private CoffSectionWithContentBuilder _dataSection;
+    private CoffSectionWithContentBuilder _rdataSection;
+    private CoffSectionWithContentBuilder _nepSection;
+    private CoffSectionWithContentBuilder _ilFixupSection;
+    private UninitializedCoffSectionBuilder _bssSection;
     private int _dataGlobalsStartOffset;
 
     private TypeDefinitionHandle _moduleTypeDef;
@@ -431,7 +431,7 @@ public class MsilObjectEmitter
 
         // Pre-register COFF symbol
         string mangledName = _nameMangler.MangleFunctionName(fn);
-        _symtab.PreRegisterFunctionClrToken(mangledName, methodDef);
+        _symtab.PreRegisterFunctionClrToken(_ilSection, mangledName, methodDef);
 
         // If this is main, register __CxxPureMSILEntry
         if (fn.Name == "main")
@@ -478,12 +478,12 @@ public class MsilObjectEmitter
         _nextFieldRow++;
         _md.AddFieldRelativeVirtualAddress(unepField, 0);
 
-        int slotOffset = _dataStream.Count;
-        for (int i = 0; i < PtrSize; i++) _dataStream.WriteByte(0);
+        int slotOffset = _dataSection.Content.Count;
+        for (int i = 0; i < PtrSize; i++) _dataSection.Content.WriteByte(0);
 
         _unepFields[fn.Name] = unepField;
         _unepSlotOffsets[fn.Name] = slotOffset;
-        _symtab.AddDataClrToken(unepName, unepField, LogicalSection.Data, slotOffset, out _);
+        _symtab.AddDataClrToken(unepName, unepField, _dataSection, slotOffset, out _);
 
         return unepField;
     }
@@ -732,7 +732,7 @@ public class MsilObjectEmitter
 
             // Create an undefined external bare-name symbol — linker resolves from defining TU
             var externBareSym = _symtab.AddUndefinedExternalSymbol(SymPrefix + funcName, CoffSymbolType.Null);
-            new CoffRelocationEncoder(_coffHeader, _dataRelocs)
+            new CoffRelocationEncoder(_coffHeader, _dataSection.Relocations)
                 .AddAddressRelocation(slotOffset, externBareSym);
         }
     }
@@ -743,11 +743,11 @@ public class MsilObjectEmitter
     private CoffSymbolHandle EmitNepForMethod(int methodToken, string bareName, string mangledSuffix)
     {
         var bareSym = ClrIjw.EmitNepMachinery(
-            TargetMachine, Is32, PtrSize, SymPrefix,
+            TargetMachine, PtrSize, SymPrefix,
             _coffHeader, _symtab,
-            _dataStream, _dataRelocs,
-            _nepStream, _nepRelocs,
-            _ilFixupStream, _ilFixupRelocs,
+            _dataSection,
+            _nepSection,
+            _ilFixupSection,
             methodToken, bareName, mangledSuffix);
         _nepBareNameSymbols[bareName] = bareSym;
         return bareSym;
@@ -758,7 +758,7 @@ public class MsilObjectEmitter
         if (!_unepSlotOffsets.TryGetValue(fn.Name, out int slotOffset)) return;
 
         // ADDR relocation to the bare-name NEP thunk symbol
-        new CoffRelocationEncoder(_coffHeader, _dataRelocs)
+        new CoffRelocationEncoder(_coffHeader, _dataSection.Relocations)
             .AddAddressRelocation(slotOffset, bareSym);
     }
 
@@ -772,7 +772,7 @@ public class MsilObjectEmitter
     /// Must run before IL emission so token ordering is correct.</summary>
     private void EmitGlobalDataBytesAndTokens(Obj prog)
     {
-        _dataGlobalsStartOffset = _dataStream.Count;
+        _dataGlobalsStartOffset = _dataSection.Content.Count;
 
         // Register all global data symbols
         for (Obj g = prog; g != null; g = g.Next)
@@ -784,14 +784,13 @@ public class MsilObjectEmitter
             if (g.InitData != null)
             {
                 bool isReadOnly = IsReadOnlyData(g);
-                var stream = isReadOnly ? _rdataStream : _dataStream;
-                var section = isReadOnly ? LogicalSection.RData : LogicalSection.Data;
+                var section = isReadOnly ? _rdataSection : _dataSection;
 
                 // Pad to required alignment
-                int aligned = Util.AlignTo(stream.Count, g.Align);
-                while (stream.Count < aligned) stream.WriteByte(0);
+                int aligned = Util.AlignTo(section.Content.Count, g.Align);
+                while (section.Content.Count < aligned) section.Content.WriteByte(0);
 
-                int offset = stream.Count;
+                int offset = section.Content.Count;
 
                 // Copy InitData, writing addends at relocation offsets
                 byte[] data = (byte[])g.InitData.Clone();
@@ -800,7 +799,7 @@ public class MsilObjectEmitter
                     if (rel.Addend != 0)
                         Util.WriteBuf(data, rel.Offset, rel.Addend, PtrSize);
                 }
-                stream.WriteBytes(data);
+                section.Content.WriteBytes(data);
 
                 var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, section, offset, out _,
                     isExternal: !g.IsStatic && !g.IsLocal);
@@ -811,9 +810,9 @@ public class MsilObjectEmitter
                 if (g.IsStatic)
                 {
                     // Static tentative → BSS with Static storage class (internal linkage)
-                    int bssOffset = _bssSize;
-                    _bssSize = Util.AlignTo(_bssSize + g.Ty.Size, g.Align);
-                    var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Bss, bssOffset, out _,
+                    int bssOffset = _bssSection.Size;
+                    _bssSection.Size = Util.AlignTo(_bssSection.Size + g.Ty.Size, g.Align);
+                    var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, _bssSection, bssOffset, out _,
                         isExternal: false);
                     _dataCoffSymbols[g.Name] = coffSym;
                 }
@@ -826,9 +825,9 @@ public class MsilObjectEmitter
             }
             else
             {
-                int bssOffset = _bssSize;
-                _bssSize = Util.AlignTo(_bssSize + g.Ty.Size, g.Align);
-                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, LogicalSection.Bss, bssOffset, out _,
+                int bssOffset = _bssSection.Size;
+                _bssSection.Size = Util.AlignTo(_bssSection.Size + g.Ty.Size, g.Align);
+                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, _bssSection, bssOffset, out _,
                     isExternal: !g.IsStatic && !g.IsLocal);
                 _dataCoffSymbols[g.Name] = coffSym;
             }
@@ -876,7 +875,7 @@ public class MsilObjectEmitter
                         SymPrefix + targetName, CoffSymbolType.Null);
                 }
 
-                new CoffRelocationEncoder(_coffHeader, _dataRelocs)
+                new CoffRelocationEncoder(_coffHeader, _dataSection.Relocations)
                     .AddAddressRelocation(offset + rel.Offset, targetSym);
             }
         }
@@ -888,16 +887,12 @@ public class MsilObjectEmitter
         _coffHeader = new CoffHeaderBuilder(TargetMachine, 0);
         _symtab = new ManagedCoffSymbolTableBuilder(ObjectFeatures.None);
 
-        _ilStreamBuilder = new BlobBuilder();
-        _ilRelocBuilder = new BlobBuilder();
-        _dataStream = new BlobBuilder();
-        _dataRelocs = new BlobBuilder();
-        _rdataStream = new BlobBuilder();
-        _nepStream = new BlobBuilder();
-        _nepRelocs = new BlobBuilder();
-        _ilFixupStream = new BlobBuilder();
-        _ilFixupRelocs = new BlobBuilder();
-        _bssSize = 0;
+        _ilSection = new CoffSectionWithContentBuilder(".text$mn", SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.ContainsCode | SectionCharacteristics.Align4Bytes);
+        _dataSection = new CoffSectionWithContentBuilder(".data", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes);
+        _rdataSection = new CoffSectionWithContentBuilder(".rdata", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
+        _nepSection = new CoffSectionWithContentBuilder(".nep", SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes);
+        _ilFixupSection = new CoffSectionWithContentBuilder(".rdata$ilfixup", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
+        _bssSection = new UninitializedCoffSectionBuilder(".bss", SectionCharacteristics.ContainsUninitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes);
 
         _aggregates = new ManagedAggregateRegistry(
             _types,
@@ -916,7 +911,7 @@ public class MsilObjectEmitter
             compileFlags: CodeViewCompileFlags.ManagedPresent | CodeViewCompileFlags.SecurityChecks);
 
         _bodyEncoder = new RelocatableMethodBodyStreamEncoder(
-            _ilStreamBuilder, _ilRelocBuilder, _symtab, _coffHeader, _codeviewSymbols);
+            _ilSection, _symtab, _coffHeader, _codeviewSymbols);
 
         // Metadata
         RegisterMetadata(prog, objName);
@@ -937,14 +932,19 @@ public class MsilObjectEmitter
         // Global data relocations — AFTER NEP so bare-name symbols exist
         EmitGlobalDataRelocations(prog);
 
-        // Build COFF and serialize
+        // Build COFF and serialize. Sections are only emitted when they carry
+        // content, matching MSVC /clr reference objects (which omit even
+        // .text$mn for translation units that define no functions).
+        var sections = new List<CoffSectionBuilder>();
+        if (_ilSection.Content.Count > 0) sections.Add(_ilSection);
+        if (_dataSection.Content.Count > 0) sections.Add(_dataSection);
+        if (_rdataSection.Content.Count > 0) sections.Add(_rdataSection);
+        if (_ilFixupSection.Content.Count > 0) sections.Add(_ilFixupSection);
+        if (_nepSection.Content.Count > 0) sections.Add(_nepSection);
+        if (_bssSection.Size > 0) sections.Add(_bssSection);
+
         var coffBuilder = new ManagedCoffBuilder(_coffHeader, new MetadataRootBuilder(_md), _symtab, _codeviewSymbols,
-            _ilStreamBuilder, _ilRelocBuilder,
-            dataStream: _dataStream, dataRelocs: _dataRelocs,
-            rdataStream: _rdataStream,
-            ilFixupStream: _ilFixupStream, ilFixupRelocs: _ilFixupRelocs,
-            nepStream: _nepStream, nepRelocs: _nepRelocs,
-            bssSize: _bssSize);
+            sections);
 
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);

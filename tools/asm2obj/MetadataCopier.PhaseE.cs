@@ -13,9 +13,9 @@ public sealed partial class MetadataCopier
         Machine machine,
         CoffHeaderBuilder coffHeader,
         ManagedCoffSymbolTableBuilder symtab,
-        BlobBuilder dataStream, BlobBuilder dataRelocs,
-        BlobBuilder nepStream, BlobBuilder nepRelocs,
-        BlobBuilder ilFixupStream, BlobBuilder ilFixupRelocs)
+        CoffSectionWithContentBuilder dataSection,
+        CoffSectionWithContentBuilder nepSection,
+        CoffSectionWithContentBuilder ilFixupSection)
     {
         for (int inputRow = 1; inputRow < _methodInfo.Length; inputRow++)
         {
@@ -31,11 +31,9 @@ public sealed partial class MetadataCopier
             string bareName = _outputMethodBareNames[outRow];
 
             ClrIjw.EmitNepMachinery(
-                machine, _is32, _ptrSize, _symPrefix,
+                machine, _ptrSize, _symPrefix,
                 coffHeader, symtab,
-                dataStream, dataRelocs,
-                nepStream, nepRelocs,
-                ilFixupStream, ilFixupRelocs,
+                dataSection, nepSection, ilFixupSection,
                 methodToken, bareName, mangled);
         }
     }

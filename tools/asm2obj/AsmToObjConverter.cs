@@ -26,26 +26,20 @@ public static class AsmToObjConverter
         copier.ClassifyAndPlan();
         copier.PopulateTables();
 
-        var ilStream = new BlobBuilder();
-        var ilRelocs = new BlobBuilder();
-        var dataStream = new BlobBuilder();
-        var dataRelocs = new BlobBuilder();
-        var nepStream = new BlobBuilder();
-        var nepRelocs = new BlobBuilder();
-        var ilFixupStream = new BlobBuilder();
-        var ilFixupRelocs = new BlobBuilder();
+        var ilSection = new CoffSectionWithContentBuilder(".text$mn", SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.ContainsCode | SectionCharacteristics.Align4Bytes);
+        var dataSection = new CoffSectionWithContentBuilder(".data", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes);
+        var nepSection = new CoffSectionWithContentBuilder(".nep", SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes);
+        var ilFixupSection = new CoffSectionWithContentBuilder(".rdata$ilfixup", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
 
         var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
-            ilStream, ilRelocs, symtab, coffHeader, codeViewSymbolBuilder: null);
+            ilSection, symtab, coffHeader, codeViewSymbolBuilder: null);
 
-        copier.EmitFieldData(symtab, peReader, dataStream);
-        copier.EmitMethodBodies(symtab, bodyEncoder, peReader);
+        copier.EmitFieldData(symtab, peReader, dataSection);
+        copier.EmitMethodBodies(symtab, ilSection, bodyEncoder, peReader);
 
         copier.EmitNepThunks(
             machine, coffHeader, symtab,
-            dataStream, dataRelocs,
-            nepStream, nepRelocs,
-            ilFixupStream, ilFixupRelocs);
+            dataSection, nepSection, ilFixupSection);
 
         // Module row: emitted last so its name reflects the requested -o filename.
         outputMd.AddModule(0,
@@ -53,12 +47,17 @@ public static class AsmToObjConverter
             outputMd.GetOrAddGuid(Guid.NewGuid()),
             default, default);
 
+        // Only emit sections that carry content, matching MSVC /clr reference
+        // objects (which omit empty sections, including .text$mn).
+        var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
+        if (ilSection.Content.Count > 0) sections.Add(ilSection);
+        if (dataSection.Content.Count > 0) sections.Add(dataSection);
+        if (ilFixupSection.Content.Count > 0) sections.Add(ilFixupSection);
+        if (nepSection.Content.Count > 0) sections.Add(nepSection);
+
         var coffBuilder = new ManagedCoffBuilder(
             coffHeader, new MetadataRootBuilder(outputMd), symtab, codeViewSymbols: null,
-            ilStream, ilRelocs,
-            dataStream: dataStream, dataRelocs: dataRelocs,
-            ilFixupStream: ilFixupStream, ilFixupRelocs: ilFixupRelocs,
-            nepStream: nepStream, nepRelocs: nepRelocs);
+            sections);
 
         var output = new BlobBuilder();
         coffBuilder.Serialize(output);
