@@ -1701,6 +1701,7 @@ namespace System.Reflection.PortableExecutable
         }
 
         private Dictionary<string, int> _stringTableEntries = new Dictionary<string, int>(StringComparer.Ordinal);
+        protected readonly List<(Blob lengthPatch, Blob relocationCountPatch, CoffSectionBuilder section)> _sectionAuxFixups = new List<(Blob, Blob, CoffSectionBuilder)>();
 
         /// <summary>
         /// Gets or adds a string to the COFF string table and returns its offset
@@ -1718,15 +1719,8 @@ namespace System.Reflection.PortableExecutable
             return offset;
         }
 
-        protected CoffSymbolHandle GetOrAddCoffSymbol(string name, uint value, CoffSectionBuilder section, CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols)
+        protected void WriteSymbolName(string name)
         {
-            if (_coffSymbols.TryGetValue(name, out CoffSymbolHandle result))
-            {
-                return result;
-            }
-
-            result = new CoffSymbolHandle(Count);
-
             if (name.Length <= 8)
             {
                 CoffBuilder.WritePaddedName(_coffSymbolTableBuilder, name);
@@ -1736,7 +1730,13 @@ namespace System.Reflection.PortableExecutable
                 _coffSymbolTableBuilder.WriteUInt32(0);
                 _coffSymbolTableBuilder.WriteInt32(GetOrAddStringTableEntry(name));
             }
+        }
 
+        protected CoffSymbolHandle WriteCoffSymbol(string name, uint value, CoffSectionBuilder section, CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols)
+        {
+            CoffSymbolHandle result = new CoffSymbolHandle(Count);
+
+            WriteSymbolName(name);
             _coffSymbolTableBuilder.WriteUInt32(value);
 
             Blob sectionPatch = _coffSymbolTableBuilder.ReserveBytes(2);
@@ -1746,13 +1746,78 @@ namespace System.Reflection.PortableExecutable
             _coffSymbolTableBuilder.WriteByte((byte)storageClass);
             _coffSymbolTableBuilder.WriteByte(numberOfAuxSymbols);
 
+            return result;
+        }
+
+        protected CoffSymbolHandle GetOrAddCoffSymbol(string name, uint value, CoffSectionBuilder section, CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols)
+        {
+            if (_coffSymbols.TryGetValue(name, out CoffSymbolHandle result))
+            {
+                return result;
+            }
+
+            result = WriteCoffSymbol(name, value, section, type, storageClass, numberOfAuxSymbols);
             _coffSymbols.Add(name, result);
 
             return result;
         }
 
-        public virtual void Serialize(BlobBuilder builder, IReadOnlyDictionary<CoffSectionBuilder, int> sectionMap)
+        public CoffSymbolHandle AddComdatSectionSymbol(CoffSectionBuilder section)
         {
+            if (!section.ComdatSelection.HasValue)
+                throw new ArgumentException("Section is not a COMDAT section.", nameof(section));
+
+            CoffSymbolHandle sectionSymbol = WriteCoffSymbol(
+                section.Name,
+                0,
+                section,
+                CoffSymbolType.Null,
+                CoffSymbolStorageClass.Static,
+                numberOfAuxSymbols: 1);
+
+            Blob lengthPatch = _coffSymbolTableBuilder.ReserveBytes(4);
+            Blob relocationCountPatch = _coffSymbolTableBuilder.ReserveBytes(2);
+            _coffSymbolTableBuilder.WriteUInt16(0); // NumberOfLinenumbers
+            _coffSymbolTableBuilder.WriteUInt32(0); // CheckSum
+
+            if (section.ComdatSelection.Value == CoffComdatSelection.Associative)
+            {
+                Blob associatedSectionPatch = _coffSymbolTableBuilder.ReserveBytes(2);
+                _sectionFixups.Add((associatedSectionPatch, section.ComdatAssociatedSection));
+            }
+            else
+            {
+                _coffSymbolTableBuilder.WriteUInt16(0);
+            }
+
+            _coffSymbolTableBuilder.WriteByte((byte)section.ComdatSelection.Value);
+            _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 3);
+            _sectionAuxFixups.Add((lengthPatch, relocationCountPatch, section));
+
+            return sectionSymbol;
+        }
+
+        public readonly struct SectionSerializationInfo
+        {
+            public int Length { get; }
+            public int RelocationCount { get; }
+
+            public SectionSerializationInfo(int length, int relocationCount)
+                => (Length, RelocationCount) = (length, relocationCount);
+        }
+
+        public virtual void Serialize(
+            BlobBuilder builder,
+            IReadOnlyDictionary<CoffSectionBuilder, int> sectionMap,
+            IReadOnlyDictionary<CoffSectionBuilder, SectionSerializationInfo> sectionSerializationInfo)
+        {
+            foreach (var (lengthPatch, relocationCountPatch, section) in _sectionAuxFixups)
+            {
+                SectionSerializationInfo info = sectionSerializationInfo[section];
+                new BlobWriter(lengthPatch).WriteUInt32((uint)info.Length);
+                new BlobWriter(relocationCountPatch).WriteUInt16(checked((ushort)info.RelocationCount));
+            }
+
             foreach (var (patch, section) in _sectionFixups)
             {
                 var writer = new BlobWriter(patch);
@@ -1826,13 +1891,7 @@ namespace System.Reflection.PortableExecutable
 
             result = new CoffSymbolHandle(Count);
 
-            if (name.Length <= 8)
-                CoffBuilder.WritePaddedName(_coffSymbolTableBuilder, name);
-            else
-            {
-                _coffSymbolTableBuilder.WriteUInt32(0);
-                _coffSymbolTableBuilder.WriteInt32(GetOrAddStringTableEntry(name));
-            }
+            WriteSymbolName(name);
 
             // Reserve value field for later patching
             valuePatch = _coffSymbolTableBuilder.ReserveBytes(4);
@@ -2021,13 +2080,37 @@ namespace System.Reflection.PortableExecutable
         }
     }
 
+    public enum CoffComdatSelection : byte
+    {
+        NoDuplicates = 1,
+        Any = 2,
+        SameSize = 3,
+        ExactMatch = 4,
+        Associative = 5,
+        Largest = 6,
+    }
+
     public abstract class CoffSectionBuilder
     {
         public string Name { get; }
         public SectionCharacteristics Characteristics { get; }
+        public CoffComdatSelection? ComdatSelection { get; }
+        public CoffSectionBuilder ComdatAssociatedSection { get; }
 
-        public CoffSectionBuilder(string name, SectionCharacteristics characteristics)
-            => (Name, Characteristics) = (name, characteristics);
+        public CoffSectionBuilder(
+            string name,
+            SectionCharacteristics characteristics,
+            CoffComdatSelection? comdatSelection = null,
+            CoffSectionBuilder comdatAssociatedSection = null)
+        {
+            if (comdatSelection == CoffComdatSelection.Associative && comdatAssociatedSection == null)
+                throw new ArgumentException("Associative COMDAT sections require an associated section.", nameof(comdatAssociatedSection));
+
+            Name = name;
+            Characteristics = characteristics;
+            ComdatSelection = comdatSelection;
+            ComdatAssociatedSection = comdatAssociatedSection;
+        }
 
         public abstract BlobBuilder SerializeContent(SectionLocation location);
         public virtual BlobBuilder SerializeRelocations(SectionLocation location) => null;
@@ -2035,11 +2118,20 @@ namespace System.Reflection.PortableExecutable
 
     public class CoffSectionWithContentBuilder : CoffSectionBuilder
     {
+        private const SectionCharacteristics LinkerComdat = (SectionCharacteristics)0x00001000;
+
         public BlobBuilder Content { get; set; } = new BlobBuilder();
         public BlobBuilder Relocations { get; set; } = new BlobBuilder();
 
         public CoffSectionWithContentBuilder(string name, SectionCharacteristics characteristics)
             : base(name, characteristics) { }
+
+        public CoffSectionWithContentBuilder(
+            string name,
+            SectionCharacteristics characteristics,
+            CoffComdatSelection selection,
+            CoffSectionBuilder associatedSection = null)
+            : base(name, characteristics | LinkerComdat, selection, associatedSection) { }
 
         public override BlobBuilder SerializeContent(SectionLocation location) => Content;
         public override BlobBuilder SerializeRelocations(SectionLocation location) => Relocations;
@@ -2129,6 +2221,8 @@ namespace System.Reflection.PortableExecutable
             // Define and serialize sections in two steps.
             // We need to know about all sections before serializing them.
             var serializedSections = SerializeSections();
+            if (serializedSections.Length > ushort.MaxValue)
+                throw new InvalidOperationException($"COFF object has {serializedSections.Length} sections; bigobj output is not supported.");
 
             Blob stampFixup;
             Blob symTableFixup;
@@ -2150,7 +2244,19 @@ namespace System.Reflection.PortableExecutable
             var symTableFixupWriter = new BlobWriter(symTableFixup);
             symTableFixupWriter.WriteInt32(builder.Count);
 
-            SymbolTableBuilder?.Serialize(builder, _sectionToIndex);
+            if (SymbolTableBuilder != null)
+            {
+                var sectionSerializationInfo = new Dictionary<CoffSectionBuilder, CoffSymbolTableBuilder.SectionSerializationInfo>(serializedSections.Length);
+                for (int i = 0; i < serializedSections.Length; i++)
+                {
+                    var section = serializedSections[i];
+                    sectionSerializationInfo.Add(_sections[i], new CoffSymbolTableBuilder.SectionSerializationInfo(
+                        section.Builder.Count > 0 ? section.SizeOfRawData : 0,
+                        section.Relocations != null ? section.Relocations.Count / 10 : 0));
+                }
+
+                SymbolTableBuilder.Serialize(builder, _sectionToIndex, sectionSerializationInfo);
+            }
 
             var contentId = IdProvider(builder.GetBlobs());
 
@@ -2231,7 +2337,7 @@ namespace System.Reflection.PortableExecutable
             builder.WriteUInt16((ushort)(Header.Machine == 0 ? Machine.I386 : Header.Machine));
 
             // NumberOfSections
-            builder.WriteUInt16((ushort)sections.Length);
+            builder.WriteUInt16(checked((ushort)sections.Length));
 
             // TimeDateStamp:
             stampFixup = builder.ReserveBytes(sizeof(uint));

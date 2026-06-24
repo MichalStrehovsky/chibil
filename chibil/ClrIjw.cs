@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
@@ -126,6 +127,78 @@ internal static class ClrIjw
         ilFixupSectionBuilder.Content.WriteInt16(1);                                        // Count
         ilFixupSectionBuilder.Content.WriteInt16(ptrSize == 4 ? (short)0x0009 : (short)0x000A);     // COR_VTABLE_*BIT | FROM_UNMANAGED_RETAIN_APPDOMAIN
         new CoffRelocationEncoder(coffHeader, ilFixupSectionBuilder.Relocations).AddImageRelativeRelocation(ilfixupOffset, mepDataSym);
+
+        return bareSym;
+    }
+
+    /// <summary>
+    /// Emits the minimal IJW machinery using MSVC-like per-function COMDAT
+    /// sections: one pick-any <c>__mep@?fn</c> data slot, one no-duplicates
+    /// <c>.nep</c> thunk keyed by the bare C symbol, and one associative
+    /// <c>.rdata$ilfixup</c> entry tied to the <c>__mep@</c> slot section.
+    /// </summary>
+    public static CoffSymbolHandle EmitComdatNepMachinery(
+        Machine machine, int ptrSize, string symPrefix,
+        CoffHeaderBuilder coffHeader, ManagedCoffSymbolTableBuilder symtab,
+        ICollection<CoffSectionBuilder> sections,
+        int methodToken, string bareName, string mangledSuffix)
+    {
+        SectionCharacteristics pointerAlign = ptrSize == 8
+            ? SectionCharacteristics.Align8Bytes
+            : SectionCharacteristics.Align4Bytes;
+
+        var dataSection = new CoffSectionWithContentBuilder(
+            ".data",
+            SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | pointerAlign,
+            CoffComdatSelection.Any);
+        sections.Add(dataSection);
+
+        for (int i = 0; i < ptrSize; i++) dataSection.Content.WriteByte(0);
+        symtab.AddComdatSectionSymbol(dataSection);
+        var mepDataSym = symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, dataSection, 0);
+
+        var tokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(methodToken.ToString("X8"));
+        new CoffRelocationEncoder(coffHeader, dataSection.Relocations).AddTokenRelocation(0, tokenSym);
+
+        var nepSection = new CoffSectionWithContentBuilder(
+            ".nep",
+            SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes,
+            CoffComdatSelection.NoDuplicates);
+        sections.Add(nepSection);
+
+        if (machine == Machine.Arm64)
+        {
+            nepSection.Content.WriteBytes(new byte[] { 0x09, 0x00, 0x00, 0x90, 0x29, 0x01, 0x40, 0xF9, 0x20, 0x01, 0x1F, 0xD6 });
+            nepSection.Relocations.WriteInt32(0);
+            nepSection.Relocations.WriteInt32(mepDataSym._value);
+            nepSection.Relocations.WriteUInt16(0x0004);
+            nepSection.Relocations.WriteInt32(4);
+            nepSection.Relocations.WriteInt32(mepDataSym._value);
+            nepSection.Relocations.WriteUInt16(0x0007);
+        }
+        else
+        {
+            nepSection.Content.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
+            nepSection.Relocations.WriteInt32(2);
+            nepSection.Relocations.WriteInt32(mepDataSym._value);
+            nepSection.Relocations.WriteUInt16(machine == Machine.I386 ? (ushort)0x0006 : (ushort)0x0004);
+        }
+
+        symtab.AddComdatSectionSymbol(nepSection);
+        var bareSym = symtab.AddExternalDataSymbol(symPrefix + bareName, nepSection, 0);
+
+        var ilfixupSection = new CoffSectionWithContentBuilder(
+            ".rdata$ilfixup",
+            SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes,
+            CoffComdatSelection.Associative,
+            dataSection);
+        sections.Add(ilfixupSection);
+
+        ilfixupSection.Content.WriteInt32(0);
+        ilfixupSection.Content.WriteInt16(1);
+        ilfixupSection.Content.WriteInt16(ptrSize == 4 ? (short)0x0009 : (short)0x000A);
+        new CoffRelocationEncoder(coffHeader, ilfixupSection.Relocations).AddImageRelativeRelocation(0, mepDataSym);
+        symtab.AddComdatSectionSymbol(ilfixupSection);
 
         return bareSym;
     }

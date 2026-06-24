@@ -32,8 +32,7 @@ public class MsilObjectEmitter
     private CoffSectionWithContentBuilder _ilSection;
     private CoffSectionWithContentBuilder _dataSection;
     private CoffSectionWithContentBuilder _rdataSection;
-    private CoffSectionWithContentBuilder _nepSection;
-    private CoffSectionWithContentBuilder _ilFixupSection;
+    private List<CoffSectionBuilder> _comdatSections;
     private UninitializedCoffSectionBuilder _bssSection;
     private int _dataGlobalsStartOffset;
 
@@ -53,7 +52,7 @@ public class MsilObjectEmitter
     private readonly Dictionary<string, CoffSymbolHandle> _nepBareNameSymbols = new();
 
     // __unep@ fields for address-taken cdecl functions
-    private readonly Dictionary<string, FieldDefinitionHandle> _unepFields = new();
+    private readonly Dictionary<string, UnepSlot> _unepSlots = new();
 
     // __CxxPureMSILEntry state
     private Obj _mainObj;
@@ -66,6 +65,9 @@ public class MsilObjectEmitter
     private string SymPrefix => Is32 ? "_" : "";
     private Machine TargetMachine => Is32 ? Machine.I386 : Machine.Amd64; // LP64: add ARM64
     private CodeViewMachine CvMachine => Is32 ? CodeViewMachine.I386 : CodeViewMachine.Amd64;
+    private SectionCharacteristics PointerDataAlignment => PtrSize == 8
+        ? SectionCharacteristics.Align8Bytes
+        : SectionCharacteristics.Align4Bytes;
 
     public MsilObjectEmitter(
         CompilerOptions options,
@@ -461,7 +463,7 @@ public class MsilObjectEmitter
     public FieldDefinitionHandle GetOrReserveUnepFieldToken(Obj fn)
     {
         Debug.Assert(fn.Ty.CallConv != CallConv.Clrcall);
-        return _unepFields[fn.Name];
+        return _unepSlots[fn.Name].Field;
     }
 
     private FieldDefinitionHandle RegisterUnepField(Obj fn)
@@ -478,12 +480,17 @@ public class MsilObjectEmitter
         _nextFieldRow++;
         _md.AddFieldRelativeVirtualAddress(unepField, 0);
 
-        int slotOffset = _dataSection.Content.Count;
-        for (int i = 0; i < PtrSize; i++) _dataSection.Content.WriteByte(0);
+        var unepSection = new CoffSectionWithContentBuilder(
+            ".rdata",
+            SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | PointerDataAlignment,
+            CoffComdatSelection.Any);
+        _comdatSections.Add(unepSection);
 
-        _unepFields[fn.Name] = unepField;
-        _unepSlotOffsets[fn.Name] = slotOffset;
-        _symtab.AddDataClrToken(unepName, unepField, _dataSection, slotOffset, out _);
+        for (int i = 0; i < PtrSize; i++) unepSection.Content.WriteByte(0);
+
+        _unepSlots[fn.Name] = new UnepSlot(unepField, unepSection);
+        _symtab.AddComdatSectionSymbol(unepSection);
+        _symtab.AddDataClrToken(unepName, unepField, unepSection, 0, out _, isExternal: true);
 
         return unepField;
     }
@@ -718,22 +725,21 @@ public class MsilObjectEmitter
             if (fn.IsStatic && !_nepBareNameSymbols.ContainsKey(fn.Name))
                 _nepBareNameSymbols[fn.Name] = bareSym;
 
-            if (fn.Ty.CallConv != CallConv.Clrcall && _unepFields.ContainsKey(fn.Name))
+            if (fn.Ty.CallConv != CallConv.Clrcall && _unepSlots.ContainsKey(fn.Name))
             {
                 EmitUnepSlot(fn, bareSym);
             }
         }
 
         // Emit ADDR relocs for extern __unep@ fields (not defined in this TU)
-        foreach (var (funcName, _) in _unepFields)
+        foreach (var (funcName, unepSlot) in _unepSlots)
         {
             if (_nepBareNameSymbols.ContainsKey(funcName)) continue; // already handled by local NEP
-            if (!_unepSlotOffsets.TryGetValue(funcName, out int slotOffset)) continue;
 
             // Create an undefined external bare-name symbol — linker resolves from defining TU
             var externBareSym = _symtab.AddUndefinedExternalSymbol(SymPrefix + funcName, CoffSymbolType.Null);
-            new CoffRelocationEncoder(_coffHeader, _dataSection.Relocations)
-                .AddAddressRelocation(slotOffset, externBareSym);
+            new CoffRelocationEncoder(_coffHeader, unepSlot.Section.Relocations)
+                .AddAddressRelocation(0, externBareSym);
         }
     }
 
@@ -742,12 +748,10 @@ public class MsilObjectEmitter
     /// </summary>
     private CoffSymbolHandle EmitNepForMethod(int methodToken, string bareName, string mangledSuffix)
     {
-        var bareSym = ClrIjw.EmitNepMachinery(
+        var bareSym = ClrIjw.EmitComdatNepMachinery(
             TargetMachine, PtrSize, SymPrefix,
             _coffHeader, _symtab,
-            _dataSection,
-            _nepSection,
-            _ilFixupSection,
+            _comdatSections,
             methodToken, bareName, mangledSuffix);
         _nepBareNameSymbols[bareName] = bareSym;
         return bareSym;
@@ -755,15 +759,14 @@ public class MsilObjectEmitter
 
     private void EmitUnepSlot(Obj fn, CoffSymbolHandle bareSym)
     {
-        if (!_unepSlotOffsets.TryGetValue(fn.Name, out int slotOffset)) return;
+        if (!_unepSlots.TryGetValue(fn.Name, out var unepSlot)) return;
 
         // ADDR relocation to the bare-name NEP thunk symbol
-        new CoffRelocationEncoder(_coffHeader, _dataSection.Relocations)
-            .AddAddressRelocation(slotOffset, bareSym);
+        new CoffRelocationEncoder(_coffHeader, unepSlot.Section.Relocations)
+            .AddAddressRelocation(0, bareSym);
     }
 
-    /// <summary>Maps __unep@ field name → pre-allocated offset in .data for the slot.</summary>
-    private readonly Dictionary<string, int> _unepSlotOffsets = new();
+    private readonly record struct UnepSlot(FieldDefinitionHandle Field, CoffSectionWithContentBuilder Section);
 
     /// <summary>Maps global Obj name → COFF data symbol handle for relocation targeting.</summary>
     private readonly Dictionary<string, CoffSymbolHandle> _dataCoffSymbols = new();
@@ -890,8 +893,7 @@ public class MsilObjectEmitter
         _ilSection = new CoffSectionWithContentBuilder(".text$mn", SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.ContainsCode | SectionCharacteristics.Align4Bytes);
         _dataSection = new CoffSectionWithContentBuilder(".data", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes);
         _rdataSection = new CoffSectionWithContentBuilder(".rdata", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
-        _nepSection = new CoffSectionWithContentBuilder(".nep", SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes);
-        _ilFixupSection = new CoffSectionWithContentBuilder(".rdata$ilfixup", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
+        _comdatSections = new List<CoffSectionBuilder>();
         _bssSection = new UninitializedCoffSectionBuilder(".bss", SectionCharacteristics.ContainsUninitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.MemWrite | SectionCharacteristics.Align4Bytes);
 
         _aggregates = new ManagedAggregateRegistry(
@@ -939,8 +941,7 @@ public class MsilObjectEmitter
         if (_ilSection.Content.Count > 0) sections.Add(_ilSection);
         if (_dataSection.Content.Count > 0) sections.Add(_dataSection);
         if (_rdataSection.Content.Count > 0) sections.Add(_rdataSection);
-        if (_ilFixupSection.Content.Count > 0) sections.Add(_ilFixupSection);
-        if (_nepSection.Content.Count > 0) sections.Add(_nepSection);
+        sections.AddRange(_comdatSections);
         if (_bssSection.Size > 0) sections.Add(_bssSection);
 
         var coffBuilder = new ManagedCoffBuilder(_coffHeader, new MetadataRootBuilder(_md), _symtab, _codeviewSymbols,
