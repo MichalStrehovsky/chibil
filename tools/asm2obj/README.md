@@ -112,6 +112,8 @@ These inputs cause asm2obj to fail with a clear `NotSupportedException`:
   4.x reference assembly pack) or chibil's own mscorlib facade.
 - `[CompilerGlobalScope]` on a type with nested types, instance members,
   interface implementations, or generic parameters.
+- Metadata tokens that still name a flattened `[CompilerGlobalScope]` type
+  (for example `typeof(TheGlobalScopeType)`).
 - `ForwardRef` on a method that *has* a body.
 - `HasFieldRVA` fields whose type is neither a primitive nor a value
   type with an explicit `ClassLayout` size (asm2obj cannot determine

@@ -51,6 +51,10 @@ public sealed partial class MetadataCopier
             {
                 ValidateFlattenable(handle, td);
                 _typeInfo[row].Disposition = TypeDisposition.Flatten;
+                TokenMap.SetTypeDefUnmappedReason(
+                    handle,
+                    $"asm2obj cannot convert metadata references to [CompilerGlobalScope] type '{GetTypeDefFullName(handle)}' " +
+                    $"because the type is flattened into <Module>. Avoid typeof({name}), signatures, or other metadata tokens that name the flattened type.");
             }
             else
             {

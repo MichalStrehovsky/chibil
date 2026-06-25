@@ -13,8 +13,8 @@
 //
 // Note: the module is obtained via Assembly.GetExecutingAssembly().ManifestModule
 // rather than typeof(Probe).Module. asm2obj hoists a [CompilerGlobalScope] class's
-// methods onto <Module>, which leaves a `typeof(Probe)` ldtoken dangling and
-// corrupts the merged metadata at link time.
+// methods onto <Module> and rejects metadata tokens that still name the original
+// flattened type.
 
 using System;
 using System.Reflection;
