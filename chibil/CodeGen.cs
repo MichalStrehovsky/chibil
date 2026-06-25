@@ -184,8 +184,24 @@ public class CodeGen
                 for (Node n = node.Body; n != null; n = n.Next)
                     GenStmt(n);
                 return;
-            case NodeKind.Cast when node.Ty.Kind == TypeKind.Void:
+            // Pure operations whose result is discarded: peel into the operands
+            // instead of computing the value and popping it. This eliminates the
+            // dead `+ (-addend)` correction and cast that postfix `x++`/`x--`
+            // appends when the produced value is unused. `conv.*` are pure, so
+            // any cast (not just casts to void) can be peeled. Side-effecting or
+            // potentially-trapping operators (calls, assigns, &&/||/?:, /, %) are
+            // intentionally excluded and fall through to compute-then-pop.
+            case NodeKind.Cast:
+            case NodeKind.Neg:
+            case NodeKind.BitNot:
                 GenExprDiscard(node.Lhs);
+                return;
+            case NodeKind.Add:
+            case NodeKind.Sub:
+                GenExprDiscard(node.Lhs);
+                GenExprDiscard(node.Rhs);
+                return;
+            case NodeKind.Num:
                 return;
         }
 
