@@ -289,7 +289,7 @@ public static class Util
         return result;
     }
 
-    private static uint[] _jamCrcTable = BuildJamCrcTable();
+    private static readonly uint[] _jamCrcTable = BuildJamCrcTable();
 
     /// <summary>
     /// JamCRC-32: standard CRC-32 (reflected, polynomial 0xEDB88320, initial value
