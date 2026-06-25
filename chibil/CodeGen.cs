@@ -21,6 +21,7 @@ public class CodeGen
     private readonly int _scratchLocalBase;
     private int _maxStack, _stackDepth;
     private readonly LabelHandle[] _labels;
+    private int _lastTerminalOffset = -1;
 
     private void Push() { _stackDepth++; if (_stackDepth > _maxStack) _maxStack = _stackDepth; }
     private void Push(int n) { _stackDepth += n; if (_stackDepth > _maxStack) _maxStack = _stackDepth; }
@@ -87,22 +88,25 @@ public class CodeGen
         GenStmt(_currentFn.Body);
 
         CType returnTy = _currentFn.Ty.ReturnTy;
-        if (returnTy.Kind != TypeKind.Void)
+        if (!IsCurrentOffsetTerminal())
         {
-            if (IsStructOrUnion(returnTy))
+            if (returnTy.Kind != TypeKind.Void)
             {
-                // For struct return, push a zeroed struct.
-                int scratch = GetOrAddScratchLocal(returnTy);
-                _enc.LoadLocalAddress(scratch); Push();
-                _enc.OpCode(ILOpCode.Initobj); _enc.Token(_emit.GetStructTypeHandle(returnTy)); Pop();
-                _enc.LoadLocal(scratch); Push();
+                if (IsStructOrUnion(returnTy))
+                {
+                    // For struct return, push a zeroed struct.
+                    int scratch = GetOrAddScratchLocal(returnTy);
+                    _enc.LoadLocalAddress(scratch); Push();
+                    _enc.OpCode(ILOpCode.Initobj); _enc.Token(_emit.GetStructTypeHandle(returnTy)); Pop();
+                    _enc.LoadLocal(scratch); Push();
+                }
+                else
+                {
+                    EmitTypedZero(returnTy);
+                }
             }
-            else
-            {
-                EmitTypedZero(returnTy);
-            }
+            EmitRet();
         }
-        _enc.OpCode(ILOpCode.Ret);
 
         // Build locals signature
         int totalLocals = _scratchLocalBase + _scratchLocals.Count;
@@ -142,6 +146,28 @@ public class CodeGen
     }
 
     private LabelHandle GetLabel(int label) => _labels[label - 1];
+
+    private bool IsCurrentOffsetTerminal() => _lastTerminalOffset == _enc.Offset;
+
+    private void EmitRet()
+    {
+        _enc.OpCode(ILOpCode.Ret);
+        _lastTerminalOffset = _enc.Offset;
+    }
+
+    private void EmitBranch(ILOpCode opcode, LabelHandle label)
+    {
+        _enc.Branch(opcode, label);
+        if (opcode is ILOpCode.Br or ILOpCode.Br_s)
+            _lastTerminalOffset = _enc.Offset;
+    }
+
+    private void MarkLabel(LabelHandle label)
+    {
+        _enc.MarkLabel(label);
+        if (IsCurrentOffsetTerminal())
+            _lastTerminalOffset = -1;
+    }
 
     private void GenExprDiscard(Node node)
     {
@@ -432,7 +458,7 @@ public class CodeGen
     {
         if (TypeSystem.IsFlonum(conditionType))
             EmitNonZero(conditionType);
-        _enc.Branch(opcode, label);
+        EmitBranch(opcode, label);
         Pop();
     }
 
@@ -1142,15 +1168,27 @@ public class CodeGen
         {
             case NodeKind.If:
             {
-                var elseLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
+                if (node.Els == null)
+                {
+                    GenExpr(node.Cond);
+                    EmitBranch(ILOpCode.Brfalse, endLabel, node.Cond.Ty);
+                    GenStmt(node.Then);
+                    MarkLabel(endLabel);
+                    return;
+                }
+
+                var elseLabel = _enc.DefineLabel();
                 GenExpr(node.Cond);
                 EmitBranch(ILOpCode.Brfalse, elseLabel, node.Cond.Ty);
                 GenStmt(node.Then);
-                _enc.Branch(ILOpCode.Br, endLabel);
-                _enc.MarkLabel(elseLabel);
-                if (node.Els != null) GenStmt(node.Els);
-                _enc.MarkLabel(endLabel);
+                bool emittedEndBranch = !IsCurrentOffsetTerminal();
+                if (emittedEndBranch)
+                    EmitBranch(ILOpCode.Br, endLabel);
+                MarkLabel(elseLabel);
+                GenStmt(node.Els);
+                if (emittedEndBranch)
+                    MarkLabel(endLabel);
                 return;
             }
 
@@ -1161,22 +1199,22 @@ public class CodeGen
                 var brkLabel = GetLabel(node.BrkLabelId);
 
                 if (node.Init != null) GenStmt(node.Init);
-                _enc.MarkLabel(beginLabel);
+                MarkLabel(beginLabel);
                 if (node.Cond != null)
                 {
                     GenExpr(node.Cond);
                     EmitBranch(ILOpCode.Brfalse, brkLabel, node.Cond.Ty);
                 }
                 GenStmt(node.Then);
-                _enc.MarkLabel(contLabel);
+                MarkLabel(contLabel);
                 if (node.Inc != null)
                 {
                     int incDepth = _stackDepth;
                     GenExprDiscard(node.Inc);
                     Debug.Assert(_stackDepth == incDepth);
                 }
-                _enc.Branch(ILOpCode.Br, beginLabel);
-                _enc.MarkLabel(brkLabel);
+                EmitBranch(ILOpCode.Br, beginLabel);
+                MarkLabel(brkLabel);
                 return;
             }
 
@@ -1186,12 +1224,12 @@ public class CodeGen
                 var contLabel = GetLabel(node.ContLabelId);
                 var brkLabel = GetLabel(node.BrkLabelId);
 
-                _enc.MarkLabel(beginLabel);
+                MarkLabel(beginLabel);
                 GenStmt(node.Then);
-                _enc.MarkLabel(contLabel);
+                MarkLabel(contLabel);
                 GenExpr(node.Cond);
                 EmitBranch(ILOpCode.Brtrue, beginLabel, node.Cond.Ty);
-                _enc.MarkLabel(brkLabel);
+                MarkLabel(brkLabel);
                 return;
             }
 
@@ -1212,7 +1250,7 @@ public class CodeGen
                     {
                         _enc.LoadLocal(condScratch); Push();
                         if (is64) EmitConstI8(c.Begin); else EmitConstI4(c.Begin);
-                        _enc.Branch(ILOpCode.Beq, caseLabel); Pop(2);
+                        EmitBranch(ILOpCode.Beq, caseLabel); Pop(2);
                     }
                     else
                     {
@@ -1221,27 +1259,27 @@ public class CodeGen
                         if (is64) EmitConstI8(c.Begin); else EmitConstI4(c.Begin);
                         _enc.OpCode(ILOpCode.Sub); Pop();
                         if (is64) EmitConstI8(c.End - c.Begin); else EmitConstI4(c.End - c.Begin);
-                        _enc.Branch(ILOpCode.Ble_un, caseLabel); Pop(2);
+                        EmitBranch(ILOpCode.Ble_un, caseLabel); Pop(2);
                     }
                 }
 
                 if (node.DefaultCase != null)
                 {
                     var defaultLabel = GetLabel(node.DefaultCase.LabelId);
-                    _enc.Branch(ILOpCode.Br, defaultLabel);
+                    EmitBranch(ILOpCode.Br, defaultLabel);
                 }
                 else
                 {
-                    _enc.Branch(ILOpCode.Br, brkLabel);
+                    EmitBranch(ILOpCode.Br, brkLabel);
                 }
 
                 GenStmt(node.Then);
-                _enc.MarkLabel(brkLabel);
+                MarkLabel(brkLabel);
                 return;
             }
 
             case NodeKind.Case:
-                _enc.MarkLabel(GetLabel(node.LabelId));
+                MarkLabel(GetLabel(node.LabelId));
                 GenStmt(node.Lhs);
                 return;
 
@@ -1251,11 +1289,11 @@ public class CodeGen
                 return;
 
             case NodeKind.Goto:
-                _enc.Branch(ILOpCode.Br, GetLabel(node.LabelId));
+                EmitBranch(ILOpCode.Br, GetLabel(node.LabelId));
                 return;
 
             case NodeKind.Label:
-                _enc.MarkLabel(GetLabel(node.LabelId));
+                MarkLabel(GetLabel(node.LabelId));
                 GenStmt(node.Lhs);
                 return;
 
@@ -1265,7 +1303,7 @@ public class CodeGen
                     GenByValueOperand(node.Lhs, _currentFn.Ty.ReturnTy);
                     Pop(); // ret consumes
                 }
-                _enc.OpCode(ILOpCode.Ret);
+                EmitRet();
                 return;
 
             case NodeKind.ExprStmt:
