@@ -34,7 +34,6 @@ public class MsilObjectEmitter
     private CoffSectionWithContentBuilder _rdataSection;
     private List<CoffSectionBuilder> _comdatSections;
     private UninitializedCoffSectionBuilder _bssSection;
-    private int _dataGlobalsStartOffset;
 
     private TypeDefinitionHandle _moduleTypeDef;
 
@@ -58,6 +57,7 @@ public class MsilObjectEmitter
     private Obj _mainObj;
     private MethodDefinitionHandle _cxxPureMsilEntry;
     private string _cxxPureMsilEntryMangledName;
+    private Obj _cxxPureMsilEntryObj;
 
     // Architecture helpers derived from DataModel
     private int PtrSize => _dm.PointerSize;
@@ -65,9 +65,6 @@ public class MsilObjectEmitter
     private string SymPrefix => Is32 ? "_" : "";
     private Machine TargetMachine => Is32 ? Machine.I386 : Machine.Amd64; // LP64: add ARM64
     private CodeViewMachine CvMachine => Is32 ? CodeViewMachine.I386 : CodeViewMachine.Amd64;
-    private SectionCharacteristics PointerDataAlignment => PtrSize == 8
-        ? SectionCharacteristics.Align8Bytes
-        : SectionCharacteristics.Align4Bytes;
 
     public MsilObjectEmitter(
         CompilerOptions options,
@@ -433,7 +430,29 @@ public class MsilObjectEmitter
 
         // Pre-register COFF symbol
         string mangledName = _nameMangler.MangleFunctionName(fn);
-        _symtab.PreRegisterFunctionClrToken(_ilSection, mangledName, methodDef);
+
+        // -ffunction-sections: give each function its own COMDAT .text$mn. The
+        // section-definition symbol must precede the function symbol in the symbol
+        // table, and the pre-registration binds the function symbol to this section,
+        // so both must happen here (before IL emission).
+        CoffSectionBuilder textSection = _ilSection;
+        if (_options.OptFunctionSections)
+        {
+            var fnSection = new CoffSectionWithContentBuilder(
+                ".text$mn",
+                SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute |
+                    SectionCharacteristics.ContainsCode | SectionCharacteristics.Align16Bytes,
+                CoffComdatSelection.NoDuplicates);
+            var cv = new CodeViewSymbolBuilder(_coffHeader);
+            var debugSection = new CodeViewSectionBuilder(cv, fnSection);
+            _comdatSections.Add(fnSection);
+            _comdatSections.Add(debugSection);
+            _functionSections[fn] = new FunctionComdatSections(fnSection, cv);
+            _symtab.AddComdatSectionSymbol(fnSection);
+            _symtab.AddComdatSectionSymbol(debugSection);
+            textSection = fnSection;
+        }
+        _symtab.PreRegisterFunctionClrToken(textSection, mangledName, methodDef);
 
         // If this is main, register __CxxPureMSILEntry
         if (fn.Name == "main")
@@ -447,6 +466,7 @@ public class MsilObjectEmitter
             ty.Params.Next.Next = _types.PointerTo(_types.PointerTo(_types.TyChar));
 
             var entryFn = new Obj { Name = "__CxxPureMSILEntry", Ty = ty };
+            _cxxPureMsilEntryObj = entryFn;
             _cxxPureMsilEntry = RegisterFunction(entryFn, ["argc", "argv", "envp"]);
             _cxxPureMsilEntryMangledName = _nameMangler.MangleFunctionName(entryFn);
         }
@@ -482,11 +502,11 @@ public class MsilObjectEmitter
 
         var unepSection = new CoffSectionWithContentBuilder(
             ".rdata",
-            SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | PointerDataAlignment,
+            SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | CoffSectionBuilder.AlignmentCharacteristics(PtrSize),
             CoffComdatSelection.Any);
         _comdatSections.Add(unepSection);
 
-        for (int i = 0; i < PtrSize; i++) unepSection.Content.WriteByte(0);
+        unepSection.Content.WriteBytes(0, PtrSize);
 
         _unepSlots[fn.Name] = new UnepSlot(unepField, unepSection);
         _symtab.AddComdatSectionSymbol(unepSection);
@@ -543,7 +563,13 @@ public class MsilObjectEmitter
         EncodeType(fieldSig, _types.FlexibleAggregateStorageType(g.Ty));
 
         string fieldName;
-        if (g.StaticLocalFn != null)
+        if (g.IsStringLiteral && _options.OptDataSections)
+        {
+            // Pooled string literal: the field/symbol name is the content-derived
+            // ??_C@ name the parser already assigned.
+            fieldName = g.Name;
+        }
+        else if (g.StaticLocalFn != null)
         {
             fieldName = _nameMangler.MangleStaticLocalName(g);
         }
@@ -649,6 +675,14 @@ public class MsilObjectEmitter
         return handle;
     }
 
+    /// <summary>Pick the method-body encoder for a function: its own per-function
+    /// COMDAT section under -ffunction-sections, otherwise the shared `.text$mn`.</summary>
+    private RelocatableMethodBodyStreamEncoder GetBodyEncoder(Obj fn)
+        => _options.OptFunctionSections
+            ? new RelocatableMethodBodyStreamEncoder(
+                _functionSections[fn].Text, _symtab, _coffHeader, _functionSections[fn].CodeView)
+            : _bodyEncoder;
+
     private void EmitFunctions(Obj prog)
     {
         for (Obj fn = prog; fn != null; fn = fn.Next)
@@ -661,7 +695,7 @@ public class MsilObjectEmitter
             var methodDef = _methodDefs[fn];
             string mangledName = _nameMangler.MangleFunctionName(fn);
 
-            _bodyEncoder.AddMethodBody(methodDef, mangledName, body.Instructions,
+            GetBodyEncoder(fn).AddMethodBody(methodDef, mangledName, body.Instructions,
                 body.MaxStack, body.LocalVariables, attributes: MethodBodyAttributes.InitLocals,
                 debugName: fn.Name,
                 localSlots: body.LocalDebugInfo);
@@ -703,7 +737,7 @@ public class MsilObjectEmitter
 
         enc.OpCode(ILOpCode.Ret);
 
-        _bodyEncoder.AddMethodBody(_cxxPureMsilEntry, _cxxPureMsilEntryMangledName, enc,
+        GetBodyEncoder(_cxxPureMsilEntryObj).AddMethodBody(_cxxPureMsilEntry, _cxxPureMsilEntryMangledName, enc,
             maxStack: Math.Max(mainParamCount, 1), localVariablesSignature: default, attributes: MethodBodyAttributes.InitLocals,
             debugName: "__CxxPureMSILEntry");
     }
@@ -768,15 +802,27 @@ public class MsilObjectEmitter
 
     private readonly record struct UnepSlot(FieldDefinitionHandle Field, CoffSectionWithContentBuilder Section);
 
+    private readonly record struct FunctionComdatSections(
+        CoffSectionWithContentBuilder Text,
+        CodeViewSymbolBuilder CodeView);
+
     /// <summary>Maps global Obj name → COFF data symbol handle for relocation targeting.</summary>
     private readonly Dictionary<string, CoffSymbolHandle> _dataCoffSymbols = new();
+
+    /// <summary>When -ffunction-sections is on, each function body lives in its own
+    /// COMDAT `.text$mn` with an associative `.debug$S` COMDAT. The module-wide
+    /// `_codeviewSymbols` keeps S_OBJNAME/S_COMPILE3 and the shared file/string tables.</summary>
+    private readonly Dictionary<Obj, FunctionComdatSections> _functionSections = new();
+
+    /// <summary>Records where each initialized global's bytes were written, so the
+    /// relocation pass can target the correct (possibly per-item COMDAT) section and
+    /// offset instead of recomputing a cumulative merged-.data offset.</summary>
+    private readonly Dictionary<Obj, (CoffSectionWithContentBuilder Section, int Offset)> _dataPlacement = new();
 
     /// <summary>Write data bytes and register COFF data token symbols.
     /// Must run before IL emission so token ordering is correct.</summary>
     private void EmitGlobalDataBytesAndTokens(Obj prog)
     {
-        _dataGlobalsStartOffset = _dataSection.Content.Count;
-
         // Register all global data symbols
         for (Obj g = prog; g != null; g = g.Next)
         {
@@ -784,16 +830,68 @@ public class MsilObjectEmitter
             if (!g.IsDefinition) continue;
             if (!_fieldDefs.TryGetValue(g, out var fieldDef)) continue;
 
-            if (g.InitData != null)
+            // Pool string literals into their own read-only COMDAT under
+            // -fdata-sections (MSVC /GF behavior, matching clang); otherwise they go
+            // to the merged read-only section like before.
+            bool pooledString = g.IsStringLiteral && _options.OptDataSections;
+            bool useComdat = _options.OptDataSections;
+            // A pooled string is initialized data even when its bytes are all zero
+            // (e.g. ""), so it must not be diverted to the zero-init .bss path.
+            bool allZero = !g.IsStringLiteral && g.InitData != null && g.Rel == null &&
+                Array.TrueForAll(g.InitData, b => b == 0);
+
+            if (allZero && useComdat)
             {
-                bool isReadOnly = IsReadOnlyData(g);
-                var section = isReadOnly ? _rdataSection : _dataSection;
+                var bss = new UninitializedCoffSectionBuilder(
+                    ".bss",
+                    SectionCharacteristics.ContainsUninitializedData | SectionCharacteristics.MemRead |
+                        SectionCharacteristics.MemWrite | CoffSectionBuilder.AlignmentCharacteristics(g.Align),
+                    CoffComdatSelection.Any);
+                bss.Size = g.Ty.Size;
+                _comdatSections.Add(bss);
+                _symtab.AddComdatSectionSymbol(bss);
+                var zeroSym = _symtab.AddDataClrToken(g.Name, fieldDef, bss, 0, out _, isExternal: !g.IsStatic && !g.IsLocal);
+                _dataCoffSymbols[g.Name] = zeroSym;
+            }
+            else if (g.InitData != null && !allZero)
+            {
+                bool isExternal = pooledString || (!g.IsStatic && !g.IsLocal);
+                CoffSectionWithContentBuilder section;
+                int offset;
 
-                // Pad to required alignment
-                int aligned = Util.AlignTo(section.Content.Count, g.Align);
-                while (section.Content.Count < aligned) section.Content.WriteByte(0);
+                if (useComdat)
+                {
+                    // String literals fold across TUs (selection Any); other data
+                    // items are unique per TU (NoDuplicates). Strings and const data
+                    // are read-only (.rdata); everything else is writable (.data).
+                    // For arrays the const qualifier sits on the element type, so
+                    // walk through array nesting to the element before checking
+                    // (matching MSVC, which puts const arrays in .rdata under /Gw).
+                    CType elemTy = g.Ty;
+                    while (elemTy.Kind == TypeKind.Array)
+                        elemTy = elemTy.Base;
+                    bool isReadOnly = pooledString || elemTy.IsConst;
+                    var selection = pooledString
+                        ? CoffComdatSelection.Any
+                        : CoffComdatSelection.NoDuplicates;
+                    section = new CoffSectionWithContentBuilder(
+                        isReadOnly ? ".rdata" : ".data",
+                        SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead |
+                            (isReadOnly ? 0 : SectionCharacteristics.MemWrite) | CoffSectionBuilder.AlignmentCharacteristics(g.Align),
+                        selection);
+                    _comdatSections.Add(section);
+                    _symtab.AddComdatSectionSymbol(section);
+                    offset = 0;
+                }
+                else
+                {
+                    section = IsReadOnlyData(g) ? _rdataSection : _dataSection;
 
-                int offset = section.Content.Count;
+                    // Pad to required alignment
+                    section.Content.Align(g.Align);
+
+                    offset = section.Content.Count;
+                }
 
                 // Copy InitData, writing addends at relocation offsets
                 byte[] data = (byte[])g.InitData.Clone();
@@ -805,33 +903,22 @@ public class MsilObjectEmitter
                 section.Content.WriteBytes(data);
 
                 var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, section, offset, out _,
-                    isExternal: !g.IsStatic && !g.IsLocal);
+                    isExternal);
                 _dataCoffSymbols[g.Name] = coffSym;
+                _dataPlacement[g] = (section, offset);
             }
-            else if (g.IsTentative)
+            else if (g.IsTentative && !g.IsStatic)
             {
-                if (g.IsStatic)
-                {
-                    // Static tentative → BSS with Static storage class (internal linkage)
-                    int bssOffset = _bssSection.Size;
-                    _bssSection.Size = Util.AlignTo(_bssSection.Size + g.Ty.Size, g.Align);
-                    var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, _bssSection, bssOffset, out _,
-                        isExternal: false);
-                    _dataCoffSymbols[g.Name] = coffSym;
-                }
-                else
-                {
-                    // External tentative → common symbol (linker allocates)
-                    var coffSym = _symtab.AddCommonDataClrToken(g.Name, fieldDef, g.Ty.Size, out _);
-                    _dataCoffSymbols[g.Name] = coffSym;
-                }
+                // External tentative → common symbol (linker allocates)
+                var coffSym = _symtab.AddCommonDataClrToken(g.Name, fieldDef, g.Ty.Size, out _);
+                _dataCoffSymbols[g.Name] = coffSym;
             }
             else
             {
-                int bssOffset = _bssSection.Size;
-                _bssSection.Size = Util.AlignTo(_bssSection.Size + g.Ty.Size, g.Align);
+                int bssOffset = AllocateMergedBss(g);
+                bool isExternal = !g.IsTentative && !g.IsStatic && !g.IsLocal;
                 var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, _bssSection, bssOffset, out _,
-                    isExternal: !g.IsStatic && !g.IsLocal);
+                    isExternal);
                 _dataCoffSymbols[g.Name] = coffSym;
             }
         }
@@ -840,23 +927,26 @@ public class MsilObjectEmitter
 
     private static bool IsReadOnlyData(Obj g) => g.IsStringLiteral;
 
+    private int AllocateMergedBss(Obj g)
+    {
+        int offset = Util.AlignTo(_bssSection.Size, g.Align);
+        _bssSection.Size = offset + g.Ty.Size;
+        return offset;
+    }
+
     /// <summary>Write data relocations. Runs after NEP emission so
     /// bare-name symbols are available as relocation targets.</summary>
     private void EmitGlobalDataRelocations(Obj prog)
     {
-        // Track cumulative offset through .data to match what we wrote before.
-        // Read-only data (string literals) went to .rdata and must be skipped.
-        int dataOffset = _dataGlobalsStartOffset;
         for (Obj g = prog; g != null; g = g.Next)
         {
             if (g.IsFunction) continue;
             if (!g.IsDefinition) continue;
             if (!_fieldDefs.ContainsKey(g)) continue;
             if (g.InitData == null) continue;
-            if (IsReadOnlyData(g)) continue;
+            if (g.Rel == null) continue;
 
-            int offset = Util.AlignTo(dataOffset, g.Align);
-            dataOffset = offset + g.InitData.Length;
+            var placement = _dataPlacement[g];
 
             for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
             {
@@ -878,8 +968,8 @@ public class MsilObjectEmitter
                         SymPrefix + targetName, CoffSymbolType.Null);
                 }
 
-                new CoffRelocationEncoder(_coffHeader, _dataSection.Relocations)
-                    .AddAddressRelocation(offset + rel.Offset, targetSym);
+                new CoffRelocationEncoder(_coffHeader, placement.Section.Relocations)
+                    .AddAddressRelocation(placement.Offset + rel.Offset, targetSym);
             }
         }
     }

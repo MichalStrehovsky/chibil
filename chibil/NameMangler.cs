@@ -20,4 +20,6 @@ public abstract class NameMangler
     public abstract string MangleStaticGlobalName(string name);
 
     public abstract string GenerateAnonymousGlobalName();
+
+    public abstract string MangleStringLiteralName(byte[] bytes, int elementSize);
 }

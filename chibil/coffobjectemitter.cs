@@ -149,15 +149,22 @@ namespace System.Reflection.PortableExecutable
         public CodeViewSymbolBuilder(CoffHeaderBuilder headerBuilder)
         {
             _coffHeaderBuilder = headerBuilder;
-            // Convention: string table starts with an empty string at offset 0
-            _stringTable.WriteByte(0);
-            _stringTableIndex.Add("", 0);
         }
 
         private int GetOrAddString(string s)
         {
             if (_stringTableIndex.TryGetValue(s, out int result))
                 return result;
+
+            // CodeView string tables reserve offset 0 for the empty string.
+            // Add it lazily so sections with no string references omit the subsection.
+            if (_stringTable.Count == 0)
+            {
+                _stringTable.WriteByte(0);
+                _stringTableIndex.Add("", 0);
+                if (s.Length == 0)
+                    return 0;
+            }
 
             result = _stringTable.Count;
             _stringTable.WriteUTF8(s);
@@ -2097,6 +2104,24 @@ namespace System.Reflection.PortableExecutable
         public CoffComdatSelection? ComdatSelection { get; }
         public CoffSectionBuilder ComdatAssociatedSection { get; }
 
+        /// <summary>Map a byte alignment to the COFF section-characteristics alignment
+        /// flag (Align1Bytes = 1&lt;&lt;20 .. Align8192Bytes = 14&lt;&lt;20). The alignment
+        /// must be a power of two no greater than 8192 — the largest value the 4-bit
+        /// COFF alignment field can encode.</summary>
+        public static SectionCharacteristics AlignmentCharacteristics(int align)
+        {
+            if (align < 1 || (align & (align - 1)) != 0)
+                throw new ArgumentOutOfRangeException(nameof(align), align,
+                    "Section alignment must be a positive power of two.");
+            if (align > 8192)
+                throw new ArgumentOutOfRangeException(nameof(align), align,
+                    "Section alignment exceeds the maximum COFF-encodable alignment (8192).");
+
+            int log2 = 0;
+            while ((1 << log2) < align) log2++;
+            return (SectionCharacteristics)((uint)(log2 + 1) << 20);
+        }
+
         public CoffSectionBuilder(
             string name,
             SectionCharacteristics characteristics,
@@ -2118,8 +2143,6 @@ namespace System.Reflection.PortableExecutable
 
     public class CoffSectionWithContentBuilder : CoffSectionBuilder
     {
-        private const SectionCharacteristics LinkerComdat = (SectionCharacteristics)0x00001000;
-
         public BlobBuilder Content { get; set; } = new BlobBuilder();
         public BlobBuilder Relocations { get; set; } = new BlobBuilder();
 
@@ -2131,7 +2154,7 @@ namespace System.Reflection.PortableExecutable
             SectionCharacteristics characteristics,
             CoffComdatSelection selection,
             CoffSectionBuilder associatedSection = null)
-            : base(name, characteristics | LinkerComdat, selection, associatedSection) { }
+            : base(name, characteristics | SectionCharacteristics.LinkerComdat, selection, associatedSection) { }
 
         public override BlobBuilder SerializeContent(SectionLocation location) => Content;
         public override BlobBuilder SerializeRelocations(SectionLocation location) => Relocations;
@@ -2144,8 +2167,41 @@ namespace System.Reflection.PortableExecutable
         public UninitializedCoffSectionBuilder(string name, SectionCharacteristics characteristics)
             : base(name, characteristics) { }
 
+        public UninitializedCoffSectionBuilder(
+            string name,
+            SectionCharacteristics characteristics,
+            CoffComdatSelection selection,
+            CoffSectionBuilder associatedSection = null)
+            : base(name, characteristics | SectionCharacteristics.LinkerComdat, selection, associatedSection) { }
+
         public override BlobBuilder SerializeContent(SectionLocation location)
             => throw new NotSupportedException();
+    }
+
+    /// <summary>A `.debug$S` section backed by a CodeViewSymbolBuilder. Can be the
+    /// module-wide non-COMDAT section, or a per-function COMDAT section that is
+    /// associative to that function's `.text$mn` (matching MSVC /Gy).</summary>
+    public sealed class CodeViewSectionBuilder : CoffSectionBuilder
+    {
+        private readonly CodeViewSymbolBuilder _codeViewSymbolBuilder;
+
+        public CodeViewSectionBuilder(CodeViewSymbolBuilder codeviewSymbols)
+            : this(codeviewSymbols, null) { }
+
+        public CodeViewSectionBuilder(CodeViewSymbolBuilder codeviewSymbols, CoffSectionBuilder associatedSection)
+            : base(".debug$S",
+                SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemDiscardable |
+                SectionCharacteristics.Align1Bytes | SectionCharacteristics.MemRead |
+                (associatedSection != null ? SectionCharacteristics.LinkerComdat : 0),
+                associatedSection != null ? CoffComdatSelection.Associative : null,
+                associatedSection)
+            => _codeViewSymbolBuilder = codeviewSymbols;
+
+        public override BlobBuilder SerializeContent(SectionLocation location)
+            => _codeViewSymbolBuilder.Serialize();
+
+        public override BlobBuilder SerializeRelocations(SectionLocation location)
+            => _codeViewSymbolBuilder.SerializeRelocations();
     }
 
     public abstract class CoffBuilder
@@ -2251,7 +2307,7 @@ namespace System.Reflection.PortableExecutable
                 {
                     var section = serializedSections[i];
                     sectionSerializationInfo.Add(_sections[i], new CoffSymbolTableBuilder.SectionSerializationInfo(
-                        section.Builder.Count > 0 ? section.SizeOfRawData : 0,
+                        section.SizeOfRawData,
                         section.Relocations != null ? section.Relocations.Count / 10 : 0));
                 }
 
@@ -2449,21 +2505,6 @@ namespace System.Reflection.PortableExecutable
             {
                 yield return new CodeViewSectionBuilder(codeViewSymbols);
             }
-        }
-
-        private class CodeViewSectionBuilder : CoffSectionBuilder
-        {
-            private readonly CodeViewSymbolBuilder _codeViewSymbolBuilder;
-
-            public CodeViewSectionBuilder(CodeViewSymbolBuilder codeviewSymbols)
-                : base(".debug$S", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemDiscardable | SectionCharacteristics.Align1Bytes | SectionCharacteristics.MemRead)
-                => _codeViewSymbolBuilder = codeviewSymbols;
-
-            public override BlobBuilder SerializeContent(SectionLocation location)
-                => _codeViewSymbolBuilder.Serialize();
-
-            public override BlobBuilder SerializeRelocations(SectionLocation location)
-                => _codeViewSymbolBuilder.SerializeRelocations();
         }
 
         private class CorMetaSectionBuilder : CoffSectionBuilder

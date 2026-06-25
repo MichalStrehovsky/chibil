@@ -78,9 +78,9 @@ public class MsvcNameMangler : NameMangler
             dims.Add(cur.ArrayLen);
             cur = cur.Base;
         }
-        sb.Append(Mangler.EncodeNumber(ndims));
+        sb.Append(Mangler.EncodeNumber((uint)ndims));
         foreach (int dim in dims)
-            sb.Append(Mangler.EncodeNumber(dim));
+            sb.Append(Mangler.EncodeNumber((uint)dim));
 
         // Element type code
         var mangler = new Mangler(_types, useArgBackrefs: false);
@@ -97,6 +97,53 @@ public class MsvcNameMangler : NameMangler
 
     public override string GenerateAnonymousGlobalName()
         => $"?A0x{_tuHash}.unnamed-global-{_anonGlobalCounter++}";
+
+    // The 10 "special" punctuation bytes encoded as ?0..?9, in order.
+    private static ReadOnlySpan<byte> StringSpecialChars => ",/\\:. \n\t'-"u8;
+
+    // Produces the MSVC `??_C@` decorated name `cl.exe` emits under /GF for a pooled
+    // string literal: ??_C@_<kind><len>@<crc>@<text>@
+    //   kind : '0' for 1-byte (narrow) elements, '1' for 2-byte (wide) elements.
+    //   len  : byte length INCLUDING the null terminator, MSVC number-encoded.
+    //   crc  : JamCRC-32 of all bytes (including terminator), MSVC number-encoded
+    //          (hex nibbles 0..15 as 'A'..'P', most-significant first, '@'-terminated).
+    //   text : up to the first 32 literal bytes (excluding the terminator), escaped.
+    public override string MangleStringLiteralName(byte[] bytes, int elementSize)
+    {
+        var sb = new StringBuilder("??_C@_");
+        sb.Append(elementSize >= 2 ? '1' : '0');
+        sb.Append(Mangler.EncodeNumber((uint)bytes.Length));
+        sb.Append(Mangler.EncodeNumber(Util.JamCrc32(bytes)));
+        int textBytes = Math.Min(bytes.Length - elementSize, 32);
+        for (int i = 0; i < textBytes; i++)
+            AppendStringByte(sb, bytes[i]);
+        sb.Append('@');
+        return sb.ToString();
+    }
+
+    private static void AppendStringByte(StringBuilder sb, byte b)
+    {
+        if ((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+            (b >= '0' && b <= '9') || b == '_' || b == '$')
+        {
+            sb.Append((char)b);
+            return;
+        }
+
+        int special = StringSpecialChars.IndexOf(b);
+        if (special >= 0)
+        {
+            sb.Append('?').Append((char)('0' + special));
+            return;
+        }
+
+        if (b >= 0xC1 && b <= 0xDA) { sb.Append('?').Append((char)('A' + (b - 0xC1))); return; }
+        if (b >= 0xE1 && b <= 0xFA) { sb.Append('?').Append((char)('a' + (b - 0xE1))); return; }
+
+        sb.Append("?$");
+        sb.Append((char)('A' + (b >> 4)));
+        sb.Append((char)('A' + (b & 0xF)));
+    }
 
     private readonly struct Mangler
     {
@@ -348,14 +395,15 @@ public class MsvcNameMangler : NameMangler
                 dims.Add(cur.ArrayLen);
                 cur = cur.Base;
             }
-            sb.Append(EncodeNumber(ndims));
+            sb.Append(EncodeNumber((uint)ndims));
             foreach (int dim in dims)
-                sb.Append(EncodeNumber(dim));
+                sb.Append(EncodeNumber((uint)dim));
             MangleType(sb, cur, isReturn: false);
         }
 
-        /// <summary>MSVC number encoding for array dimensions.</summary>
-        public static string EncodeNumber(int value)
+        /// <summary>MSVC number encoding for array dimensions and string-literal
+        /// lengths/CRCs. Unsigned so a 32-bit CRC value fits without overflow.</summary>
+        public static string EncodeNumber(uint value)
         {
             if (value == 0) return "A@";
             if (value >= 1 && value <= 10) return ((char)('0' + value - 1)).ToString();

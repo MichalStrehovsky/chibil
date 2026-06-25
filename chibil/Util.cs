@@ -288,4 +288,32 @@ public static class Util
         Array.Copy(utf8, result, utf8.Length);
         return result;
     }
+
+    private static readonly uint[] _jamCrcTable = BuildJamCrcTable();
+
+    /// <summary>
+    /// JamCRC-32: standard CRC-32 (reflected, polynomial 0xEDB88320, initial value
+    /// 0xFFFFFFFF) WITHOUT the final XOR — the variant MSVC uses to hash pooled
+    /// string literals for their `??_C@` COMDAT names.
+    /// </summary>
+    public static uint JamCrc32(ReadOnlySpan<byte> data)
+    {
+        uint crc = 0xFFFFFFFFu;
+        foreach (byte b in data)
+            crc = (crc >> 8) ^ _jamCrcTable[(crc ^ b) & 0xFF];
+        return crc;
+    }
+
+    private static uint[] BuildJamCrcTable()
+    {
+        var table = new uint[256];
+        for (uint i = 0; i < 256; i++)
+        {
+            uint c = i;
+            for (int k = 0; k < 8; k++)
+                c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            table[i] = c;
+        }
+        return table;
+    }
 }

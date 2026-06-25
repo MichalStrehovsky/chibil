@@ -85,7 +85,7 @@ internal static class ClrIjw
         // (1) __mep@?fn slot in .data, zero-initialized. The linker stamps
         //     the MethodDef token bytes here via the TOKEN reloc below.
         int slotOffset = dataSectionBuilder.Content.Count;
-        for (int i = 0; i < ptrSize; i++) dataSectionBuilder.Content.WriteByte(0);
+        dataSectionBuilder.Content.WriteBytes(0, ptrSize);
 
         var mepDataSym = symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, dataSectionBuilder, slotOffset);
 
@@ -143,9 +143,7 @@ internal static class ClrIjw
         ICollection<CoffSectionBuilder> sections,
         int methodToken, string bareName, string mangledSuffix)
     {
-        SectionCharacteristics pointerAlign = ptrSize == 8
-            ? SectionCharacteristics.Align8Bytes
-            : SectionCharacteristics.Align4Bytes;
+        SectionCharacteristics pointerAlign = CoffSectionBuilder.AlignmentCharacteristics(ptrSize);
 
         var dataSection = new CoffSectionWithContentBuilder(
             ".data",
@@ -153,7 +151,7 @@ internal static class ClrIjw
             CoffComdatSelection.Any);
         sections.Add(dataSection);
 
-        for (int i = 0; i < ptrSize; i++) dataSection.Content.WriteByte(0);
+        dataSection.Content.WriteBytes(0, ptrSize);
         symtab.AddComdatSectionSymbol(dataSection);
         var mepDataSym = symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, dataSection, 0);
 

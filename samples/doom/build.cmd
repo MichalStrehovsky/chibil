@@ -48,7 +48,7 @@ REM --------------------------------------------------------------------------
 REM  Step 1: Compile pal.c with chibil
 REM --------------------------------------------------------------------------
 echo [1/3] Compiling pal.c with chibil...
-dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -cc1-input pal.c -cc1-output obj\pal.obj
+dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -cc1-input pal.c -cc1-output obj\pal.obj -ffunction-sections -fdata-sections
 if errorlevel 1 (
     echo ERROR: Failed to compile pal.c with chibil
     exit /b 1
@@ -58,7 +58,7 @@ REM --------------------------------------------------------------------------
 REM  Step 2: Compile doom.c with chibil (C -> MSIL COFF .obj)
 REM --------------------------------------------------------------------------
 echo [2/3] Compiling doom.c with chibil...
-dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -cc1-input doom.c -cc1-output obj\doom.obj
+dotnet run -c Release --project "%CHIBIL_DIR%" -- -cc1 %CHIBIL_DEFINES% -cc1-input doom.c -cc1-output obj\doom.obj -ffunction-sections -fdata-sections
 if errorlevel 1 (
     echo ERROR: Failed to compile doom.c with chibil
     exit /b 1
@@ -68,7 +68,7 @@ REM --------------------------------------------------------------------------
 REM  Step 3: Link doom.exe
 REM --------------------------------------------------------------------------
 echo [3/3] Linking doom.exe...
-link /nologo /DEBUG /entry:main /subsystem:console obj\doom.obj obj\pal.obj ^
+link /OPT:ref,icf /nologo /DEBUG /entry:main /subsystem:console obj\doom.obj obj\pal.obj ^
      kernel32.lib user32.lib gdi32.lib mscoree.lib ^
      /out:bin\doom.exe
 if errorlevel 1 (
