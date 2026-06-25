@@ -1182,12 +1182,12 @@ public class CodeGen
                 GenExpr(node.Cond);
                 EmitBranch(ILOpCode.Brfalse, elseLabel, node.Cond.Ty);
                 GenStmt(node.Then);
-                bool emittedEndBranch = !IsCurrentOffsetTerminal();
-                if (emittedEndBranch)
+                bool needsEndLabel = !IsCurrentOffsetTerminal();
+                if (needsEndLabel)
                     EmitBranch(ILOpCode.Br, endLabel);
                 MarkLabel(elseLabel);
                 GenStmt(node.Els);
-                if (emittedEndBranch)
+                if (needsEndLabel)
                     MarkLabel(endLabel);
                 return;
             }
