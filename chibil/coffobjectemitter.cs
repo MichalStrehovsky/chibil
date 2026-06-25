@@ -162,6 +162,8 @@ namespace System.Reflection.PortableExecutable
             {
                 _stringTable.WriteByte(0);
                 _stringTableIndex.Add("", 0);
+                if (s.Length == 0)
+                    return 0;
             }
 
             result = _stringTable.Count;
