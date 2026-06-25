@@ -1115,6 +1115,13 @@ public class Parser
             var stmtExpr = NewNode(NodeKind.StmtExpr, tok); stmtExpr.Body = head.Next;
             return stmtExpr;
         }
+        // Fast path: a scalar variable lvalue (local/parameter/global) has no
+        // side effects and can be read twice for free, so lower `x op= rhs` to
+        // a direct `x = (x op rhs)` instead of materializing `&x` and operating
+        // through the pointer. GenAssign emits the optimal load/store for this.
+        if (binary.Lhs.Kind == NodeKind.Var)
+            return NewBinary(NodeKind.Assign, NewVarNode(binary.Lhs.Var, tok), binary, tok);
+
         Obj v2 = NewLvar("", _types.PointerTo(binary.Lhs.Ty));
         Node x1 = NewBinary(NodeKind.Assign, NewVarNode(v2, tok), NewUnary(NodeKind.Addr, binary.Lhs, tok), tok);
         Node x2 = NewBinary(NodeKind.Assign, NewUnary(NodeKind.Deref, NewVarNode(v2, tok), tok), NewBinary(binary.Kind, NewUnary(NodeKind.Deref, NewVarNode(v2, tok), tok), binary.Rhs, tok), tok);
