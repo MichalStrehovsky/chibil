@@ -478,6 +478,80 @@ public class CodeGen
         Pop();
     }
 
+    // Lowers a condition directly into a conditional branch to <target>, taken
+    // when <cond> evaluates true (branchIfTrue) or false (!branchIfTrue), without
+    // materializing an intermediate 0/1 boolean. Recognizes comparisons, logical
+    // negation, and short-circuiting && / ||; falls back to a truth test otherwise.
+    private void GenCondBranch(Node cond, LabelHandle target, bool branchIfTrue)
+    {
+        switch (cond.Kind)
+        {
+            case NodeKind.Not:
+                // !x is true iff x is false.
+                GenCondBranch(cond.Lhs, target, !branchIfTrue);
+                return;
+
+            case NodeKind.LogAnd:
+            case NodeKind.LogOr:
+            {
+                bool isAnd = cond.Kind == NodeKind.LogAnd;
+                if (isAnd == branchIfTrue)
+                {
+                    // Short-circuit: branching when (a && b) is true, or when
+                    // (a || b) is false. If the first operand already decides the
+                    // outcome the opposite way, skip past the second operand.
+                    var skip = _enc.DefineLabel();
+                    GenCondBranch(cond.Lhs, skip, !branchIfTrue);
+                    GenCondBranch(cond.Rhs, target, branchIfTrue);
+                    MarkLabel(skip);
+                }
+                else
+                {
+                    // Either operand can independently trigger the branch:
+                    // (a && b) is false, or (a || b) is true.
+                    GenCondBranch(cond.Lhs, target, branchIfTrue);
+                    GenCondBranch(cond.Rhs, target, branchIfTrue);
+                }
+                return;
+            }
+
+            case NodeKind.Eq:
+            case NodeKind.Ne:
+            case NodeKind.Lt:
+            case NodeKind.Le:
+            {
+                CType opTy = cond.Lhs.Ty;
+                bool isUnsigned = opTy.IsUnsigned;
+                bool isFloat = TypeSystem.IsFlonum(opTy);
+                // Map the comparison (Eq/Ne/Lt/Le, with > and >= canonicalized to
+                // swapped Lt/Le by the parser) plus branch sense to a fused CIL branch.
+                // For floats, ordered comparisons (<, <=, ==) use ordered branches while
+                // their negations (>=, >, !=) use the unordered (.un) variants so that any
+                // NaN operand makes the original positive comparison false, matching C.
+                ILOpCode op = cond.Kind switch
+                {
+                    NodeKind.Eq => branchIfTrue ? ILOpCode.Beq : ILOpCode.Bne_un,
+                    NodeKind.Ne => branchIfTrue ? ILOpCode.Bne_un : ILOpCode.Beq,
+                    NodeKind.Lt => branchIfTrue
+                        ? (isUnsigned ? ILOpCode.Blt_un : ILOpCode.Blt)
+                        : ((isUnsigned || isFloat) ? ILOpCode.Bge_un : ILOpCode.Bge),
+                    _ /* Le */ => branchIfTrue
+                        ? (isUnsigned ? ILOpCode.Ble_un : ILOpCode.Ble)
+                        : ((isUnsigned || isFloat) ? ILOpCode.Bgt_un : ILOpCode.Bgt),
+                };
+                GenExpr(cond.Lhs);
+                GenExpr(cond.Rhs);
+                EmitBranch(op, target); Pop(2);
+                return;
+            }
+        }
+
+        // Fallback: produce the value and branch on its truthiness. The typed
+        // overload handles pointer/float non-zero materialization as needed.
+        GenExpr(cond);
+        EmitBranch(branchIfTrue ? ILOpCode.Brtrue : ILOpCode.Brfalse, target, cond.Ty);
+    }
+
     private void EmitNonZero(CType ty)
     {
         if (TypeSystem.IsFlonum(ty))
@@ -715,8 +789,7 @@ public class CodeGen
                 int savedDepth = _stackDepth;
                 var elseLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
-                GenExpr(node.Cond);
-                EmitBranch(ILOpCode.Brfalse, elseLabel, node.Cond.Ty);
+                GenCondBranch(node.Cond, elseLabel, false);
                 _stackDepth = savedDepth;
                 GenExpr(node.Then);
                 _enc.Branch(ILOpCode.Br, endLabel);
@@ -743,11 +816,9 @@ public class CodeGen
                 int savedDepth = _stackDepth;
                 var falseLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
-                GenExpr(node.Lhs);
-                EmitBranch(ILOpCode.Brfalse, falseLabel, node.Lhs.Ty);
+                GenCondBranch(node.Lhs, falseLabel, false);
                 _stackDepth = savedDepth;
-                GenExpr(node.Rhs);
-                EmitBranch(ILOpCode.Brfalse, falseLabel, node.Rhs.Ty);
+                GenCondBranch(node.Rhs, falseLabel, false);
                 _stackDepth = savedDepth;
                 EmitConstI4(1);
                 _enc.Branch(ILOpCode.Br, endLabel);
@@ -763,11 +834,9 @@ public class CodeGen
                 int savedDepth = _stackDepth;
                 var trueLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
-                GenExpr(node.Lhs);
-                EmitBranch(ILOpCode.Brtrue, trueLabel, node.Lhs.Ty);
+                GenCondBranch(node.Lhs, trueLabel, true);
                 _stackDepth = savedDepth;
-                GenExpr(node.Rhs);
-                EmitBranch(ILOpCode.Brtrue, trueLabel, node.Rhs.Ty);
+                GenCondBranch(node.Rhs, trueLabel, true);
                 _stackDepth = savedDepth;
                 EmitConstI4(0);
                 _enc.Branch(ILOpCode.Br, endLabel);
@@ -1187,16 +1256,14 @@ public class CodeGen
                 var endLabel = _enc.DefineLabel();
                 if (node.Els == null)
                 {
-                    GenExpr(node.Cond);
-                    EmitBranch(ILOpCode.Brfalse, endLabel, node.Cond.Ty);
+                    GenCondBranch(node.Cond, endLabel, false);
                     GenStmt(node.Then);
                     MarkLabel(endLabel);
                     return;
                 }
 
                 var elseLabel = _enc.DefineLabel();
-                GenExpr(node.Cond);
-                EmitBranch(ILOpCode.Brfalse, elseLabel, node.Cond.Ty);
+                GenCondBranch(node.Cond, elseLabel, false);
                 GenStmt(node.Then);
                 bool needsEndLabel = !IsCurrentOffsetTerminal();
                 if (needsEndLabel)
@@ -1218,8 +1285,7 @@ public class CodeGen
                 MarkLabel(beginLabel);
                 if (node.Cond != null)
                 {
-                    GenExpr(node.Cond);
-                    EmitBranch(ILOpCode.Brfalse, brkLabel, node.Cond.Ty);
+                    GenCondBranch(node.Cond, brkLabel, false);
                 }
                 GenStmt(node.Then);
                 MarkLabel(contLabel);
@@ -1243,8 +1309,7 @@ public class CodeGen
                 MarkLabel(beginLabel);
                 GenStmt(node.Then);
                 MarkLabel(contLabel);
-                GenExpr(node.Cond);
-                EmitBranch(ILOpCode.Brtrue, beginLabel, node.Cond.Ty);
+                GenCondBranch(node.Cond, beginLabel, true);
                 MarkLabel(brkLabel);
                 return;
             }
