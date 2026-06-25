@@ -126,6 +126,10 @@ public class Driver
             if (arg == "-S") { _optS = true; continue; }
             if (arg == "-fcommon") { Options.OptFcommon = true; continue; }
             if (arg == "-fno-common") { Options.OptFcommon = false; continue; }
+            if (arg == "-ffunction-sections") { Options.OptFunctionSections = true; continue; }
+            if (arg == "-fno-function-sections") { Options.OptFunctionSections = false; continue; }
+            if (arg == "-fdata-sections") { Options.OptDataSections = true; continue; }
+            if (arg == "-fno-data-sections") { Options.OptDataSections = false; continue; }
             if (arg == "-fmanaged-aggregate-fields") { Options.UseFieldBackedManagedAggregates = true; continue; }
             if (arg == "-fno-managed-aggregate-fields") { Options.UseFieldBackedManagedAggregates = false; continue; }
             if (arg == "-c") { _optC = true; continue; }
@@ -399,9 +403,17 @@ public class Driver
     {
         Token tok = null;
 
+        // TU hash (from source path) — used for mangled names. Available before
+        // parsing, so the shared name mangler can be built up front and handed to
+        // both the parser (for string-literal pooling) and the emitter.
+        string sourceFile = Path.GetFullPath(Options.BaseFile);
+        byte[] pathHash = SHA256.HashData(Encoding.UTF8.GetBytes(sourceFile));
+        string tuHash = BitConverter.ToString(pathHash, 0, 4).Replace("-", "").ToLowerInvariant();
+
         // Create the parser early so the preprocessor can use const_expr for #if
         var types = new TypeSystem(Options.DataModel);
-        var parser = new Parser(tokenizer, Options, types);
+        var nameMangler = new MsvcNameMangler(types, tuHash);
+        var parser = new Parser(tokenizer, Options, types, nameMangler);
         preprocessor.SetParser(parser);
 
         // Process -include option
@@ -432,11 +444,6 @@ public class Driver
         Obj prog = parser.Parse(tok);
 
         string objName = Path.GetFileName(_outputFile ?? "a.obj");
-        string sourceFile = Path.GetFullPath(Options.BaseFile);
-
-        // TU hash (from source path)
-        byte[] pathHash = SHA256.HashData(Encoding.UTF8.GetBytes(sourceFile));
-        string tuHash = BitConverter.ToString(pathHash, 0, 4).Replace("-", "").ToLowerInvariant();
 
         ManagedAggregateModel aggregateModel = Options.UseFieldBackedManagedAggregates
             ? new FieldBackedManagedAggregateModel(types)
@@ -446,7 +453,7 @@ public class Driver
             Options,
             tokenizer,
             types,
-            new MsvcNameMangler(types, tuHash),
+            nameMangler,
             aggregateModel);
         byte[] objBytes = codegen.Generate(prog, objName);
 

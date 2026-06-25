@@ -28,12 +28,14 @@ public class Parser
     private readonly Tokenizer _tokenizer;
     private readonly CompilerOptions _options;
     private readonly TypeSystem _types;
+    private readonly NameMangler _nameMangler;
 
-    public Parser(Tokenizer tokenizer, CompilerOptions options, TypeSystem types)
+    public Parser(Tokenizer tokenizer, CompilerOptions options, TypeSystem types, NameMangler nameMangler)
     {
         _tokenizer = tokenizer;
         _options = options;
         _types = types;
+        _nameMangler = nameMangler;
         _scope = new Scope();
     }
 
@@ -170,11 +172,33 @@ public class Parser
         return v;
     }
 
+    private readonly Dictionary<string, Obj> _stringLiterals = new(StringComparer.Ordinal);
+
     private Obj NewStringLiteral(byte[] str, CType ty)
     {
-        Obj v = NewAnonGvar(ty, "$SG");
-        v.InitData = str;
-        v.IsStringLiteral = true;
+        // Pool string literals only under -fdata-sections (matching clang and MSVC
+        // /GF): each literal becomes its own content-keyed COMDAT so identical
+        // literals fold together and unused ones can be dead-stripped. Otherwise fall
+        // back to a merged anonymous global.
+        if (!_options.OptDataSections)
+        {
+            Obj anon = NewAnonGvar(ty, "$SG");
+            anon.InitData = str;
+            anon.IsStringLiteral = true;
+            return anon;
+        }
+
+        // The COFF symbol name is derived from the literal's content, so identical
+        // literals fold into a single definition within the TU (and across TUs at
+        // link time, since the name is content-keyed).
+        string name = _nameMangler.MangleStringLiteralName(str, ty.Base.Size);
+        if (_stringLiterals.TryGetValue(name, out Obj existing))
+            return existing;
+
+        var v = new Obj { Name = name, Ty = ty, Align = ty.Align, IsStringLiteral = true };
+        v.IsStatic = true; v.IsDefinition = true; v.InitData = str;
+        v.Next = _globals; _globals = v;
+        _stringLiterals[name] = v;
         return v;
     }
 

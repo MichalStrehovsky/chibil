@@ -8,6 +8,19 @@ namespace Chibil.Tests;
 public class AuditBugTests : ChibiTestBase
 {
     [Fact]
+    public void ZeroInitializedBssGlobalsAreAligned()
+    {
+        Compile("""
+            typedef unsigned long long uintptr_t;
+            char c = 0;
+            long long ll = 0;
+            int main(void) { return ((uintptr_t)&ll) & 7; }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
     public void StmtExprValuePreserved()
     {
         Compile("""

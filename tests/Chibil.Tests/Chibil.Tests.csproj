@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <Compile Remove="Asm2ObjAssembly\**" />
+    <Compile Remove="ReflectionProbe\**" />
   </ItemGroup>
 
   <ItemGroup>
@@ -52,6 +53,18 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <OutputItemType>EmbeddedResource</OutputItemType>
       <LogicalName>Asm2ObjAssembly.dll</LogicalName>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
+    <!--
+      The ReflectionProbe fixture is built as a side artifact and embedded as
+      "ReflectionProbe.dll". The function/data-sections tests run it through
+      AddAsm2ObjAssembly("ReflectionProbe.dll") to observe /OPT:REF dead-stripping
+      at runtime via reflection. See FunctionDataSectionsTests.
+    -->
+    <ProjectReference Include="ReflectionProbe\ReflectionProbe.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <OutputItemType>EmbeddedResource</OutputItemType>
+      <LogicalName>ReflectionProbe.dll</LogicalName>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
   </ItemGroup>

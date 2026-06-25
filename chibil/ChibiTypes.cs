@@ -427,6 +427,8 @@ public class CompilerOptions
     public List<string> IncludePaths = new();
     public bool OptFpic;
     public bool OptFcommon = true;
+    public bool OptFunctionSections;
+    public bool OptDataSections;
     public bool UseFieldBackedManagedAggregates;
     public string BaseFile;
     public DataModel DataModel = DataModel.LLP64;
