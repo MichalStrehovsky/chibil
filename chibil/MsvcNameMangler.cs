@@ -99,9 +99,7 @@ public class MsvcNameMangler : NameMangler
         => $"?A0x{_tuHash}.unnamed-global-{_anonGlobalCounter++}";
 
     // The 10 "special" punctuation bytes encoded as ?0..?9, in order.
-    private static ReadOnlySpan<byte> StringSpecialChars =>
-        new byte[] { (byte)',', (byte)'/', (byte)'\\', (byte)':', (byte)'.',
-                     (byte)' ', (byte)'\n', (byte)'\t', (byte)'\'', (byte)'-' };
+    private static ReadOnlySpan<byte> StringSpecialChars => ",/\\:. \n\t'-"u8;
 
     // Produces the MSVC `??_C@` decorated name `cl.exe` emits under /GF for a pooled
     // string literal: ??_C@_<kind><len>@<crc>@<text>@
