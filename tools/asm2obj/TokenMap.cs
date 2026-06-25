@@ -34,6 +34,7 @@ public sealed class TokenMap
     private readonly int[] _genericParamConstraint;
     private readonly int[] _property;
     private readonly int[] _event;
+    private readonly string[] _typeDefUnmappedReasons;
 
     private readonly MetadataReader _reader;
     private readonly MetadataBuilder _builder;
@@ -64,6 +65,7 @@ public sealed class TokenMap
         _genericParamConstraint = new int[reader.GetTableRowCount(TableIndex.GenericParamConstraint) + 1];
         _property = new int[reader.GetTableRowCount(TableIndex.Property) + 1];
         _event = new int[reader.GetTableRowCount(TableIndex.Event) + 1];
+        _typeDefUnmappedReasons = new string[_typeDef.Length];
     }
 
     // ─── Predictions (Phase B) ────────────────────────────────────────────────
@@ -73,6 +75,7 @@ public sealed class TokenMap
 
     public void SetTypeRef(TypeReferenceHandle input, int outputRow) => _typeRef[MetadataTokens.GetRowNumber(input)] = outputRow;
     public void SetTypeDef(TypeDefinitionHandle input, int outputRow) => _typeDef[MetadataTokens.GetRowNumber(input)] = outputRow;
+    public void SetTypeDefUnmappedReason(TypeDefinitionHandle input, string reason) => _typeDefUnmappedReasons[MetadataTokens.GetRowNumber(input)] = reason;
     public void SetField(FieldDefinitionHandle input, int outputRow) => _field[MetadataTokens.GetRowNumber(input)] = outputRow;
     public void SetMethodDef(MethodDefinitionHandle input, int outputRow) => _methodDef[MetadataTokens.GetRowNumber(input)] = outputRow;
 
@@ -99,7 +102,16 @@ public sealed class TokenMap
     // ─── Lookups ─────────────────────────────────────────────────────────────
 
     public TypeReferenceHandle MapTypeRef(TypeReferenceHandle h) => MetadataTokens.TypeReferenceHandle(_typeRef[MetadataTokens.GetRowNumber(h)]);
-    public TypeDefinitionHandle MapTypeDef(TypeDefinitionHandle h) => MetadataTokens.TypeDefinitionHandle(_typeDef[MetadataTokens.GetRowNumber(h)]);
+    public TypeDefinitionHandle MapTypeDef(TypeDefinitionHandle h)
+    {
+        int inputRow = MetadataTokens.GetRowNumber(h);
+        int outputRow = _typeDef[inputRow];
+        if (outputRow == 0)
+            throw new NotSupportedException(
+                _typeDefUnmappedReasons[inputRow] ??
+                $"Input TypeDef '{GetTypeDefFullName(h)}' is not emitted by asm2obj and cannot be referenced.");
+        return MetadataTokens.TypeDefinitionHandle(outputRow);
+    }
     public FieldDefinitionHandle MapField(FieldDefinitionHandle h) => MetadataTokens.FieldDefinitionHandle(_field[MetadataTokens.GetRowNumber(h)]);
     public MethodDefinitionHandle MapMethodDef(MethodDefinitionHandle h) => MetadataTokens.MethodDefinitionHandle(_methodDef[MetadataTokens.GetRowNumber(h)]);
     public MemberReferenceHandle MapMemberRef(MemberReferenceHandle h) => MetadataTokens.MemberReferenceHandle(_memberRef[MetadataTokens.GetRowNumber(h)]);
@@ -206,5 +218,13 @@ public sealed class TokenMap
         if (actualRow != expectedRow)
             throw new InvalidOperationException(
                 $"TokenMap prediction mismatch: expected row {expectedRow}, got {actualRow} for handle kind {actual.Kind}.");
+    }
+
+    private string GetTypeDefFullName(TypeDefinitionHandle h)
+    {
+        var td = _reader.GetTypeDefinition(h);
+        string ns = _reader.GetString(td.Namespace);
+        string name = _reader.GetString(td.Name);
+        return ns.Length == 0 ? name : ns + "." + name;
     }
 }
