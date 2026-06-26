@@ -101,8 +101,8 @@ public class Parser
     private static Node NewBinary(NodeKind kind, Node lhs, Node rhs, Token tok) => new() { Kind = kind, Lhs = lhs, Rhs = rhs, Tok = tok };
     private static Node NewUnary(NodeKind kind, Node expr, Token tok) => new() { Kind = kind, Lhs = expr, Tok = tok };
     private static Node NewNum(long val, Token tok) => new() { Kind = NodeKind.Num, Val = val, Tok = tok };
-    private Node NewLong(long val, Token tok) => new() { Kind = NodeKind.Num, Val = val, Ty = _types.TyLong, Tok = tok };
     private Node NewUlong(long val, Token tok) => new() { Kind = NodeKind.Num, Val = val, Ty = _types.SizeType, Tok = tok };
+    private Node NewPtrdiff(long val, Token tok) => new() { Kind = NodeKind.Num, Val = val, Ty = _types.PtrdiffType, Tok = tok };
     private static Node NewVarNode(Obj var, Token tok) => new() { Kind = NodeKind.Var, Var = var, Tok = tok };
     private static Node NewVlaPtr(Obj var, Token tok) => new() { Kind = NodeKind.VlaPtr, Var = var, Tok = tok };
 
@@ -1029,7 +1029,7 @@ public class Parser
         if (lhs.Ty.Base == null && rhs.Ty.Base != null) { var tmp = lhs; lhs = rhs; rhs = tmp; }
         if (lhs.Ty.Base.Kind == TypeKind.Vla) { rhs = NewBinary(NodeKind.Mul, rhs, NewVarNode(lhs.Ty.Base.VlaSize, tok), tok); return NewBinary(NodeKind.Add, lhs, rhs, tok); }
         if (lhs.Ty.Base.Size != 1)
-            rhs = NewBinary(NodeKind.Mul, rhs, NewLong(lhs.Ty.Base.Size, tok), tok);
+            rhs = NewBinary(NodeKind.Mul, rhs, NewPtrdiff(lhs.Ty.Base.Size, tok), tok);
         return NewBinary(NodeKind.Add, lhs, rhs, tok);
     }
 
@@ -1044,7 +1044,7 @@ public class Parser
         }
         if (lhs.Ty.Base != null && TypeSystem.IsInteger(rhs.Ty))
         {
-            rhs = NewBinary(NodeKind.Mul, rhs, NewLong(lhs.Ty.Base.Size, tok), tok);
+            rhs = NewBinary(NodeKind.Mul, rhs, NewPtrdiff(lhs.Ty.Base.Size, tok), tok);
             _types.AddType(rhs); var node = NewBinary(NodeKind.Sub, lhs, rhs, tok); node.Ty = lhs.Ty; return node;
         }
         if (lhs.Ty.Base != null && rhs.Ty.Base != null)

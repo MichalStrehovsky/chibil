@@ -503,6 +503,27 @@ public class AuditBugTests : ChibiTestBase
     }
 
     [Fact]
+    public void PointerArithmeticOffsetUsesPointerWidth()
+    {
+        // Under LLP64 `long` is 32-bit, so the element-size scaling in pointer
+        // arithmetic must be done in pointer/ptrdiff_t width (64-bit), not in
+        // `long` width. With a 32-bit multiply, `n * sizeof(int)` overflows for
+        // large indices and the offset is wrong.
+        Compile("""
+            int main(void) {
+                int *p = (int *)0;
+                int n = 0x20000000;          /* 2^29, fits in int */
+                int *q = p + n;              /* n * 4 == 0x80000000 (2^31) */
+                unsigned long long off = (unsigned long long)q;
+                if (off == 0x80000000ULL) return 0;
+                return 1;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
     public void FuncAndFunctionTest()
     {
         Compile("""
