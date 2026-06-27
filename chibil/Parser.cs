@@ -1172,7 +1172,7 @@ public class Parser
         // when the result is used. Atomic lvalues are excluded so the bump keeps
         // its read-modify-write atomicity via the generic op= CAS lowering.
         if (node.Kind == NodeKind.Var && !node.Ty.IsVolatile && !node.Ty.IsAtomic
-            && node.Ty.Kind is not (TypeKind.Struct or TypeKind.Union or TypeKind.Array))
+            && node.Ty.Kind is not (TypeKind.Struct or TypeKind.Union or TypeKind.Array or TypeKind.Vla))
         {
             Node bump = ToAssign(NewAdd(node, NewNum(addend, tok), tok));
             _types.AddType(bump);
