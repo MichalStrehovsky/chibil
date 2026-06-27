@@ -1164,12 +1164,14 @@ public class Parser
     private Node NewIncDec(Node node, Token tok, int addend)
     {
         _types.AddType(node);
-        // Use-then-bump for a simple non-volatile scalar variable lvalue: the
-        // value of `v++` is the current value of `v` (which can be re-read with
-        // no side effects), and the increment is an independent `v = v + addend`.
-        // This matches MSVC /clr and avoids the `(v += addend) - addend`
-        // correction the generic lowering below emits when the result is used.
-        if (node.Kind == NodeKind.Var && !node.Ty.IsVolatile
+        // Use-then-bump for a simple non-volatile, non-atomic scalar variable
+        // lvalue: the value of `v++` is the current value of `v` (which can be
+        // re-read with no side effects), and the increment is an independent
+        // `v = v + addend`. This matches MSVC /clr and avoids the
+        // `(v += addend) - addend` correction the generic lowering below emits
+        // when the result is used. Atomic lvalues are excluded so the bump keeps
+        // its read-modify-write atomicity via the generic op= CAS lowering.
+        if (node.Kind == NodeKind.Var && !node.Ty.IsVolatile && !node.Ty.IsAtomic
             && node.Ty.Kind is not (TypeKind.Struct or TypeKind.Union or TypeKind.Array))
         {
             Node bump = ToAssign(NewAdd(node, NewNum(addend, tok), tok));

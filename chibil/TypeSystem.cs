@@ -362,6 +362,10 @@ public class TypeSystem
             case NodeKind.Comma:
                 node.Ty = node.Rhs.Ty;
                 return;
+            case NodeKind.PostIncDec:
+                // Produces the old value (Lhs); Rhs is the independent bump.
+                node.Ty = node.Lhs.Ty;
+                return;
             case NodeKind.Member:
                 node.Ty = node.Member.Ty;
                 return;
