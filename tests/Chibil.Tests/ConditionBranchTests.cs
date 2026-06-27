@@ -187,6 +187,37 @@ public sealed class ConditionBranchTests : ChibiTestBase
     }
 
     [Fact]
+    public void LogicalOperatorsMaterializeBooleanAndShortCircuit()
+    {
+        Compile("""
+            int calls;
+            int side(int v) { calls++; return v; }
+            int main(void) {
+                int r;
+                calls = 0;
+                r = side(0) && side(1);
+                if (r != 0) return 1;
+                if (calls != 1) return 2;
+                calls = 0;
+                r = side(2) && side(3);
+                if (r != 1) return 3;
+                if (calls != 2) return 4;
+                calls = 0;
+                r = side(4) || side(0);
+                if (r != 1) return 5;
+                if (calls != 1) return 6;
+                calls = 0;
+                r = side(0) || side(0);
+                if (r != 0) return 7;
+                if (calls != 2) return 8;
+                return 0;
+            }
+            """)
+        .Link(ConsoleMain)
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
     public void TernaryWithComparisonCondition()
     {
         Compile("""
