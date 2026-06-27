@@ -858,11 +858,12 @@ public class CodeGen
 
     private void GenAssign(Node node, bool wantValue)
     {
-        if (node.Rhs.Kind == NodeKind.Var && node.Rhs.Var.IsReadOnlyConst)
+        if (IsAggregateType(node.Ty) && node.Rhs.Kind == NodeKind.Var && node.Rhs.Var.IsReadOnlyConst)
         {
             GenAddr(node.Lhs);
             GenAddr(node.Rhs);
             EmitConstI4(node.Ty.Size);
+            _enc.OpCode(ILOpCode.Unaligned); _enc.WriteByte(1);
             _enc.OpCode(ILOpCode.Cpblk);
             if (wantValue)
                 GenExpr(node.Lhs);
