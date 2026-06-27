@@ -1164,6 +1164,8 @@ public class Parser
     private Node NewIncDec(Node node, Token tok, int addend)
     {
         _types.AddType(node);
+        if (!TypeSystem.IsNumeric(node.Ty) && node.Ty.Kind != TypeKind.Ptr)
+            Util.ErrorTok(tok, "not an lvalue");
         // Use-then-bump for a simple non-volatile, non-atomic scalar variable
         // lvalue: the value of `v++` is the current value of `v` (which can be
         // re-read with no side effects), and the increment is an independent
