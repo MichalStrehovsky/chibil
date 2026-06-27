@@ -79,8 +79,9 @@ public class CodeGen
         GenStmt(_currentFn.Body);
 
         CType returnTy = _currentFn.Ty.ReturnTy;
-        if (!IsCurrentOffsetTerminal())
+        if (_enc.IsReachable)
         {
+            // TODO: Should consider generating a throw (except for `main`).
             if (returnTy.Kind != TypeKind.Void)
             {
                 if (IsStructOrUnion(returnTy))
@@ -96,7 +97,7 @@ public class CodeGen
                     EmitTypedZero(returnTy);
                 }
             }
-            EmitRet();
+            _enc.EmitRet();
         }
 
         // Build locals signature
@@ -139,17 +140,6 @@ public class CodeGen
     }
 
     private LabelHandle GetLabel(int label) => _labels[label - 1];
-
-    private bool IsCurrentOffsetTerminal() => !_enc.IsReachable;
-
-    private void EmitRet() => _enc.EmitRet();
-
-    private void EmitBranch(ILOpCode opcode, LabelHandle label)
-    {
-        _enc.Branch(opcode, label);
-    }
-
-    private void MarkLabel(LabelHandle label) => _enc.MarkLabel(label);
 
     private void GenExprDiscard(Node node)
     {
@@ -452,7 +442,7 @@ public class CodeGen
     {
         if (TypeSystem.IsFlonum(conditionType))
             EmitNonZero(conditionType);
-        EmitBranch(opcode, label);
+        _enc.Branch(opcode, label);
     }
 
     // Lowers a condition directly into a conditional branch to <target>, taken
@@ -480,7 +470,7 @@ public class CodeGen
                     var skip = _enc.DefineLabel();
                     GenCondBranch(cond.Lhs, skip, !branchIfTrue);
                     GenCondBranch(cond.Rhs, target, branchIfTrue);
-                    MarkLabel(skip);
+                    _enc.MarkLabel(skip);
                 }
                 else
                 {
@@ -518,7 +508,7 @@ public class CodeGen
                 };
                 GenExpr(cond.Lhs);
                 GenExpr(cond.Rhs);
-                EmitBranch(op, target);
+                _enc.Branch(op, target);
                 return;
             }
         }
@@ -1185,25 +1175,14 @@ public class CodeGen
         {
             case NodeKind.If:
             {
-                var endLabel = _enc.DefineLabel();
-                if (node.Els == null)
-                {
-                    GenCondBranch(node.Cond, endLabel, false);
-                    GenStmt(node.Then);
-                    MarkLabel(endLabel);
-                    return;
-                }
-
                 var elseLabel = _enc.DefineLabel();
+                var endLabel = _enc.DefineLabel();
                 GenCondBranch(node.Cond, elseLabel, false);
                 GenStmt(node.Then);
-                bool needsEndLabel = !IsCurrentOffsetTerminal();
-                if (needsEndLabel)
-                    EmitBranch(ILOpCode.Br, endLabel);
-                MarkLabel(elseLabel);
-                GenStmt(node.Els);
-                if (needsEndLabel)
-                    MarkLabel(endLabel);
+                _enc.Branch(ILOpCode.Br, endLabel);
+                _enc.MarkLabel(elseLabel);
+                if (node.Els != null) GenStmt(node.Els);
+                _enc.MarkLabel(endLabel);
                 return;
             }
 
@@ -1214,21 +1193,21 @@ public class CodeGen
                 var brkLabel = GetLabel(node.BrkLabelId);
 
                 if (node.Init != null) GenStmt(node.Init);
-                MarkLabel(beginLabel);
+                _enc.MarkLabel(beginLabel);
                 if (node.Cond != null)
                 {
                     GenCondBranch(node.Cond, brkLabel, false);
                 }
                 GenStmt(node.Then);
-                MarkLabel(contLabel);
+                _enc.MarkLabel(contLabel);
                 if (node.Inc != null)
                 {
                     int incDepth = _enc.StackDepth;
                     GenExprDiscard(node.Inc);
                     Debug.Assert(_enc.StackDepth == incDepth);
                 }
-                EmitBranch(ILOpCode.Br, beginLabel);
-                MarkLabel(brkLabel);
+                _enc.Branch(ILOpCode.Br, beginLabel);
+                _enc.MarkLabel(brkLabel);
                 return;
             }
 
@@ -1238,11 +1217,11 @@ public class CodeGen
                 var contLabel = GetLabel(node.ContLabelId);
                 var brkLabel = GetLabel(node.BrkLabelId);
 
-                MarkLabel(beginLabel);
+                _enc.MarkLabel(beginLabel);
                 GenStmt(node.Then);
-                MarkLabel(contLabel);
+                _enc.MarkLabel(contLabel);
                 GenCondBranch(node.Cond, beginLabel, true);
-                MarkLabel(brkLabel);
+                _enc.MarkLabel(brkLabel);
                 return;
             }
 
@@ -1263,7 +1242,7 @@ public class CodeGen
                     {
                         _enc.LoadLocal(condScratch);
                         if (is64) EmitConstI8(c.Begin); else EmitConstI4(c.Begin);
-                        EmitBranch(ILOpCode.Beq, caseLabel);
+                        _enc.Branch(ILOpCode.Beq, caseLabel);
                     }
                     else
                     {
@@ -1272,27 +1251,27 @@ public class CodeGen
                         if (is64) EmitConstI8(c.Begin); else EmitConstI4(c.Begin);
                         _enc.OpCode(ILOpCode.Sub);
                         if (is64) EmitConstI8(c.End - c.Begin); else EmitConstI4(c.End - c.Begin);
-                        EmitBranch(ILOpCode.Ble_un, caseLabel);
+                        _enc.Branch(ILOpCode.Ble_un, caseLabel);
                     }
                 }
 
                 if (node.DefaultCase != null)
                 {
                     var defaultLabel = GetLabel(node.DefaultCase.LabelId);
-                    EmitBranch(ILOpCode.Br, defaultLabel);
+                    _enc.Branch(ILOpCode.Br, defaultLabel);
                 }
                 else
                 {
-                    EmitBranch(ILOpCode.Br, brkLabel);
+                    _enc.Branch(ILOpCode.Br, brkLabel);
                 }
 
                 GenStmt(node.Then);
-                MarkLabel(brkLabel);
+                _enc.MarkLabel(brkLabel);
                 return;
             }
 
             case NodeKind.Case:
-                MarkLabel(GetLabel(node.LabelId));
+                _enc.MarkLabel(GetLabel(node.LabelId));
                 GenStmt(node.Lhs);
                 return;
 
@@ -1302,11 +1281,11 @@ public class CodeGen
                 return;
 
             case NodeKind.Goto:
-                EmitBranch(ILOpCode.Br, GetLabel(node.LabelId));
+                _enc.Branch(ILOpCode.Br, GetLabel(node.LabelId));
                 return;
 
             case NodeKind.Label:
-                MarkLabel(GetLabel(node.LabelId));
+                _enc.MarkLabel(GetLabel(node.LabelId));
                 GenStmt(node.Lhs);
                 return;
 
@@ -1316,7 +1295,7 @@ public class CodeGen
                     GenByValueOperand(node.Lhs, _currentFn.Ty.ReturnTy);
  // ret consumes
                 }
-                EmitRet();
+                _enc.EmitRet();
                 return;
 
             case NodeKind.ExprStmt:
