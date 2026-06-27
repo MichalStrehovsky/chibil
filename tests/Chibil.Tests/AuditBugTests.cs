@@ -503,6 +503,31 @@ public class AuditBugTests : ChibiTestBase
     }
 
     [Fact]
+    public void PointerArithmeticOffsetUsesPointerWidth()
+    {
+        // Under LLP64 `long` is 32-bit, so the element-size scaling in pointer
+        // arithmetic must be done in pointer/ptrdiff_t width (64-bit), not in
+        // `long` width. With a 32-bit multiply, `n * sizeof(int)` truncates for
+        // large indices and the offset is wrong.
+        //
+        // `n` is `unsigned`, so `n * sizeof(int)` is a well-defined (modular)
+        // operation with no signed overflow UB: in a 32-bit multiply it wraps
+        // to 0, in a 64-bit (ptrdiff_t) multiply it is 2^32.
+        Compile("""
+            int main(void) {
+                int *p = (int *)0;
+                unsigned n = 0x40000000u;    /* 2^30 */
+                int *q = p + n;              /* n * 4 == 2^32; 32-bit wraps to 0 */
+                unsigned long long off = (unsigned long long)q;
+                if (off == 0x100000000ULL) return 0;
+                return 1;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
     public void FuncAndFunctionTest()
     {
         Compile("""
