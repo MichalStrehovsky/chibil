@@ -27,6 +27,11 @@ jobs:
         run: |
           call .github\workflows\vcvars.cmd x64
           dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:FieldBackedAggregateTests=true
+      - name: xUnit tests (optimized)
+        shell: cmd
+        run: |
+          call .github\workflows\vcvars.cmd x64
+          dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:OptimizedTests=true
       - name: Build PureDOOM
         shell: cmd
         run: |

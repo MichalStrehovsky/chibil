@@ -689,7 +689,7 @@ public class MsilObjectEmitter
         {
             if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
 
-            CompiledMethod body = CodeGen.EmitFunction(_types, this, fn);
+            CompiledMethod body = CodeGen.EmitFunction(_types, this, fn, _options.Optimize);
 
             // Finalize method body
             var methodDef = _methodDefs[fn];
@@ -698,7 +698,8 @@ public class MsilObjectEmitter
             GetBodyEncoder(fn).AddMethodBody(methodDef, mangledName, body.Instructions,
                 body.MaxStack, body.LocalVariables, attributes: MethodBodyAttributes.InitLocals,
                 debugName: fn.Name,
-                localSlots: body.LocalDebugInfo);
+                localSlots: body.LocalDebugInfo,
+                localScopes: body.LocalScopes);
         }
     }
 
