@@ -744,20 +744,10 @@ public class CodeGen
                 return;
 
             case NodeKind.MemZero:
-                if (_localSlots.TryGetValue(node.Var, out int mzSlot))
-                {
-                    _enc.LoadLocalAddress(mzSlot);
-                    EmitConstI4(0);
-                    EmitConstI4(node.Var.Ty.Size);
-                    _enc.OpCode(ILOpCode.Initblk);
-                }
-                else
-                {
-                    GenAddr(new Node { Kind = NodeKind.Var, Var = node.Var, Tok = node.Tok, Ty = node.Var.Ty });
-                    EmitConstI4(0);
-                    EmitConstI4(node.Var.Ty.Size);
-                    _enc.OpCode(ILOpCode.Initblk);
-                }
+                GenAddr(new Node { Kind = NodeKind.Var, Var = node.Var, Tok = node.Tok, Ty = node.Var.Ty });
+                EmitConstI4(0);
+                EmitConstI4(node.Var.Ty.Size);
+                _enc.OpCode(ILOpCode.Initblk);
                 return;
 
             case NodeKind.Cond:
@@ -868,6 +858,18 @@ public class CodeGen
 
     private void GenAssign(Node node, bool wantValue)
     {
+        if (IsAggregateType(node.Ty) && node.Rhs.Kind == NodeKind.Var && node.Rhs.Var.IsReadOnlyConst)
+        {
+            GenAddr(node.Lhs);
+            GenAddr(node.Rhs);
+            EmitConstI4(node.Ty.Size);
+            _enc.OpCode(ILOpCode.Unaligned); _enc.WriteByte(1);
+            _enc.OpCode(ILOpCode.Cpblk);
+            if (wantValue)
+                GenExpr(node.Lhs);
+            return;
+        }
+
         if (node.Lhs.Kind == NodeKind.Member && node.Lhs.Member.IsBitfield)
         {
             GenBitfieldAssign(node, wantValue);

@@ -835,13 +835,12 @@ public class MsilObjectEmitter
             // -fdata-sections (MSVC /GF behavior, matching clang); otherwise they go
             // to the merged read-only section like before.
             bool pooledString = g.IsStringLiteral && _options.OptDataSections;
-            bool useComdat = _options.OptDataSections;
             // A pooled string is initialized data even when its bytes are all zero
             // (e.g. ""), so it must not be diverted to the zero-init .bss path.
             bool allZero = !g.IsStringLiteral && g.InitData != null && g.Rel == null &&
                 Array.TrueForAll(g.InitData, b => b == 0);
 
-            if (allZero && useComdat)
+            if (allZero && _options.OptDataSections)
             {
                 var bss = new UninitializedCoffSectionBuilder(
                     ".bss",
@@ -860,7 +859,7 @@ public class MsilObjectEmitter
                 CoffSectionWithContentBuilder section;
                 int offset;
 
-                if (useComdat)
+                if (_options.OptDataSections)
                 {
                     // String literals fold across TUs (selection Any); other data
                     // items are unique per TU (NoDuplicates). Strings and const data
@@ -871,8 +870,8 @@ public class MsilObjectEmitter
                     CType elemTy = g.Ty;
                     while (elemTy.Kind == TypeKind.Array)
                         elemTy = elemTy.Base;
-                    bool isReadOnly = pooledString || elemTy.IsConst;
-                    var selection = pooledString
+                    bool isReadOnly = g.IsStringLiteral || elemTy.IsConst || g.IsReadOnlyConst;
+                    var selection = g.IsStringLiteral
                         ? CoffComdatSelection.Any
                         : CoffComdatSelection.NoDuplicates;
                     section = new CoffSectionWithContentBuilder(
@@ -886,7 +885,7 @@ public class MsilObjectEmitter
                 }
                 else
                 {
-                    section = IsReadOnlyData(g) ? _rdataSection : _dataSection;
+                    section = g.IsStringLiteral || g.IsReadOnlyConst ? _rdataSection : _dataSection;
 
                     // Pad to required alignment
                     section.Content.Align(g.Align);
@@ -925,8 +924,6 @@ public class MsilObjectEmitter
         }
 
     }
-
-    private static bool IsReadOnlyData(Obj g) => g.IsStringLiteral;
 
     private int AllocateMergedBss(Obj g)
     {

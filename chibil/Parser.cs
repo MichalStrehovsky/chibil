@@ -1760,6 +1760,25 @@ public class Parser
     private Node LvarInitializer(ref Token rest, Token tok, Obj var)
     {
         Initializer init = InitializerEntry(ref rest, tok, var.Ty, out var.Ty);
+
+        // Try optimizing into a preinitialized data blob copy
+        if (var.Ty.Kind is TypeKind.Array or TypeKind.Struct or TypeKind.Union)
+        {
+            Relocation head = new();
+            byte[] buf = new byte[var.Ty.Size];
+            if (WriteGvarData(head, init, var.Ty, buf, 0, constOnly: true) != null &&
+                // All-zero initializers are better handled by the code below
+                Array.Exists(buf, b => b != 0))
+            {
+                Obj blob = NewAnonGvar(var.Ty, "$SG");
+                blob.InitData = buf;
+                blob.IsReadOnlyConst = true;
+                Node copy = NewBinary(NodeKind.Assign, NewVarNode(var, tok), NewVarNode(blob, tok), tok);
+                copy.Ty = copy.Lhs.Ty = copy.Rhs.Ty = var.Ty;
+                return copy;
+            }
+        }
+
         var desg = new InitDesg { Var = var };
         Node rhs = CreateLvarInit(init, var.Ty, desg, tok);
         // Aggregate initializers may omit elements; keep the explicit zero-fill
@@ -1784,12 +1803,13 @@ public class Parser
         var.Rel = head.Next;
     }
 
-    private Relocation WriteGvarData(Relocation cur, Initializer init, CType ty, byte[] buf, int offset)
+    private Relocation WriteGvarData(Relocation cur, Initializer init, CType ty, byte[] buf, int offset, bool constOnly = false)
     {
-        if (ty.Kind == TypeKind.Array) { for (int i = 0; i < ty.ArrayLen; i++) cur = WriteGvarData(cur, init.Children[i], ty.Base, buf, offset + ty.Base.Size * i); return cur; }
-        if (ty.Kind == TypeKind.Struct) { for (Member mem = ty.Members; mem != null; mem = mem.Next) { if (mem.IsBitfield) { Node expr = init.Children[mem.Idx].Expr; if (expr == null) break; ulong oldval = ReadBuf(buf, offset + mem.Offset, mem.Ty.Size); ulong newval = (ulong)Eval(expr); ulong mask = (1UL << mem.BitWidth) - 1; ulong combined = oldval | ((newval & mask) << mem.BitOffset); Util.WriteBuf(buf, offset + mem.Offset, (long)combined, mem.Ty.Size); } else cur = WriteGvarData(cur, init.Children[mem.Idx], mem.Ty, buf, offset + mem.Offset); } return cur; }
-        if (ty.Kind == TypeKind.Union) { if (init.Mem == null) return cur; return WriteGvarData(cur, init.Children[init.Mem.Idx], init.Mem.Ty, buf, offset); }
+        if (ty.Kind == TypeKind.Array) { for (int i = 0; i < ty.ArrayLen; i++) { cur = WriteGvarData(cur, init.Children[i], ty.Base, buf, offset + ty.Base.Size * i, constOnly); if (cur == null) return null; } return cur; }
+        if (ty.Kind == TypeKind.Struct) { for (Member mem = ty.Members; mem != null; mem = mem.Next) { if (mem.IsBitfield) { Node expr = init.Children[mem.Idx].Expr; if (expr == null) break; if (constOnly && !IsConstExpr(expr)) return null; ulong oldval = ReadBuf(buf, offset + mem.Offset, mem.Ty.Size); ulong newval = (ulong)Eval(expr); ulong mask = (1UL << mem.BitWidth) - 1; ulong combined = oldval | ((newval & mask) << mem.BitOffset); Util.WriteBuf(buf, offset + mem.Offset, (long)combined, mem.Ty.Size); } else { cur = WriteGvarData(cur, init.Children[mem.Idx], mem.Ty, buf, offset + mem.Offset, constOnly); if (cur == null) return null; } } return cur; }
+        if (ty.Kind == TypeKind.Union) { if (init.Mem == null) return cur; return WriteGvarData(cur, init.Children[init.Mem.Idx], init.Mem.Ty, buf, offset, constOnly); }
         if (init.Expr == null) return cur;
+        if (constOnly && !IsConstExpr(init.Expr)) return null;
         if (ty.Kind == TypeKind.Float) { Util.WriteFloat(buf, offset, (float)EvalDouble(init.Expr)); return cur; }
         if (ty.Kind == TypeKind.Double) { Util.WriteDouble(buf, offset, EvalDouble(init.Expr)); return cur; }
         if (ty.Kind == TypeKind.LDouble)
@@ -1810,6 +1830,7 @@ public class Parser
 
         long val = Eval2(init.Expr, out string label);
         if (label == null) { Util.WriteBuf(buf, offset, val, ty.Size); return cur; }
+        if (constOnly) return null;
         var rel = new Relocation { Offset = offset, Label = label, Addend = val };
         cur.Next = rel; return cur.Next;
     }
