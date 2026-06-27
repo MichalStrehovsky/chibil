@@ -785,29 +785,15 @@ public class CodeGen
                 return;
 
             case NodeKind.LogAnd:
+            case NodeKind.LogOr:
             {
                 var falseLabel = _enc.DefineLabel();
                 var endLabel = _enc.DefineLabel();
-                GenCondBranch(node.Lhs, falseLabel, false);
-                GenCondBranch(node.Rhs, falseLabel, false);
+                GenCondBranch(node, falseLabel, false);
                 EmitConstI4(1);
                 _enc.Branch(ILOpCode.Br, endLabel);
                 _enc.MarkLabel(falseLabel);
                 EmitConstI4(0);
-                _enc.MarkLabel(endLabel);
-                return;
-            }
-
-            case NodeKind.LogOr:
-            {
-                var trueLabel = _enc.DefineLabel();
-                var endLabel = _enc.DefineLabel();
-                GenCondBranch(node.Lhs, trueLabel, true);
-                GenCondBranch(node.Rhs, trueLabel, true);
-                EmitConstI4(0);
-                _enc.Branch(ILOpCode.Br, endLabel);
-                _enc.MarkLabel(trueLabel);
-                EmitConstI4(1);
                 _enc.MarkLabel(endLabel);
                 return;
             }
