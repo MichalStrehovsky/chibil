@@ -13,6 +13,10 @@
     <DefineConstants>$(DefineConstants);FIELD_BACKED_AGGREGATES</DefineConstants>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(OptimizedTests)' == 'true'">
+    <DefineConstants>$(DefineConstants);OPTIMIZED_TESTS</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
     <PackageReference Include="xunit" Version="2.*" />

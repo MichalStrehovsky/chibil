@@ -124,6 +124,8 @@ public class Driver
             if (arg == "-o") { _optO = args[++i]; continue; }
             if (arg.StartsWith("-o") && arg.Length > 2) { _optO = arg[2..]; continue; }
             if (arg == "-S") { _optS = true; continue; }
+            if (arg == "-O0") { Options.Optimize = false; continue; }
+            if (arg == "-O" || (arg.StartsWith("-O") && arg.Length > 2)) { Options.Optimize = true; continue; }
             if (arg == "-fcommon") { Options.OptFcommon = true; continue; }
             if (arg == "-fno-common") { Options.OptFcommon = false; continue; }
             if (arg == "-ffunction-sections") { Options.OptFunctionSections = true; continue; }

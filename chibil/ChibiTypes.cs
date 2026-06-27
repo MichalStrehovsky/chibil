@@ -429,6 +429,7 @@ public class CompilerOptions
     public bool OptFcommon = true;
     public bool OptFunctionSections;
     public bool OptDataSections;
+    public bool Optimize;
     public bool UseFieldBackedManagedAggregates;
     public string BaseFile;
     public DataModel DataModel = DataModel.LLP64;
