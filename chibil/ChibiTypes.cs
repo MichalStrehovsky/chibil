@@ -201,6 +201,8 @@ public class Obj
     public bool IsTentative;
     public bool IsTls;
     public bool IsStringLiteral;
+    // Anonymous static blob copied into a local via cpblk.
+    public bool IsReadOnlyConst;
     public bool IsAnonymous;
     public Obj StaticLocalFn;
     public byte[] InitData;
