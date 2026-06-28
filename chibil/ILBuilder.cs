@@ -5,6 +5,10 @@ using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 
+using Coff;
+
+using LabelHandle = Coff.LabelHandle;
+
 namespace Chibil;
 
 // A basic-block based IL builder inspired by Roslyn's ILBuilder
@@ -460,7 +464,7 @@ public sealed class ILBuilder
     public LabelHandle DefineLabel()
     {
         _labels.Add(default);
-        return MakeLabel(_labels.Count);
+        return new LabelHandle(_labels.Count);
     }
 
     public void MarkLabel(LabelHandle label)
@@ -505,11 +509,6 @@ public sealed class ILBuilder
             info.Stack = _curStack;
             _labels[idx] = info;
         }
-    }
-
-    private static unsafe LabelHandle MakeLabel(int id)
-    {
-        return *(LabelHandle*)&id;
     }
 
     // ── Emit: non-terminator opcodes ────────────────────────────────────────

@@ -250,31 +250,21 @@ public class GlobalAdvancedTest
 
         void EmitThunk(int thunkOff, CoffSymbolHandle mepDataSym)
         {
+            var nepReloc = new CoffRelocationEncoder(coffHeader, nepSection.Relocations);
             if (machine == Machine.Arm64)
             {
                 // ADRP X9, page-of-mep      ; encoded: 09 00 00 90 (placeholder; linker patches)
                 // LDR X9, [X9, #pageoff]    ; encoded: 29 01 40 F9 (placeholder)
                 // BR X9                     ; encoded: 20 01 1F D6
                 nepSection.Content.WriteBytes(new byte[] { 0x09, 0x00, 0x00, 0x90, 0x29, 0x01, 0x40, 0xF9, 0x20, 0x01, 0x1F, 0xD6 });
-                // IMAGE_REL_ARM64_PAGEBASE_REL21 = 0x0004 (at thunkOff+0)
-                nepSection.Relocations.WriteInt32(thunkOff + 0);
-                nepSection.Relocations.WriteInt32(mepDataSym._value);
-                nepSection.Relocations.WriteUInt16(0x0004);
-                // IMAGE_REL_ARM64_PAGEOFFSET_12L = 0x0007 (at thunkOff+4)
-                nepSection.Relocations.WriteInt32(thunkOff + 4);
-                nepSection.Relocations.WriteInt32(mepDataSym._value);
-                nepSection.Relocations.WriteUInt16(0x0007);
+                nepReloc.AddRelocation(thunkOff + 0, ImageRelocation.Arm64_PAGEBASE_REL21, mepDataSym);
+                nepReloc.AddRelocation(thunkOff + 4, ImageRelocation.Arm64_PAGEOFFSET_12L, mepDataSym);
             }
             else
             {
                 // FF 25 [4-byte operand placeholder] — the linker fills the operand via the reloc.
                 nepSection.Content.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
-                nepSection.Relocations.WriteInt32(thunkOff + 2);
-                nepSection.Relocations.WriteInt32(mepDataSym._value);
-                if (is32)
-                    nepSection.Relocations.WriteUInt16(0x0006);  // IMAGE_REL_I386_DIR32
-                else
-                    nepSection.Relocations.WriteUInt16(0x0004);  // IMAGE_REL_AMD64_REL32
+                nepReloc.AddRelocation(thunkOff + 2, machine == Machine.I386 ? ImageRelocation.I386_DIR32 : ImageRelocation.Amd64_REL32, mepDataSym);
             }
         }
 

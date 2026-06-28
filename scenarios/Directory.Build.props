@@ -5,13 +5,20 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Using Include="Coff" />
+  </ItemGroup>
+
   <PropertyGroup Condition="'$(FileBasedProgram)' == 'true'">
     <DefineConstants>$(DefineConstants);FILE_BASED_PROGRAM</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\chibil\coffobjectemitter.cs" />
     <Compile Include="..\chibil\ClrIjw.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\coff\Coff.csproj" />
   </ItemGroup>
 
 </Project>
