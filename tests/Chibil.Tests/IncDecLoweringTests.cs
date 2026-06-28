@@ -179,4 +179,22 @@ public class IncDecLoweringTests : ChibiTestBase
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
+
+    [Fact]
+    public void VlaPostIncrementRejected()
+    {
+        // A VLA is an array type (not a modifiable scalar lvalue), so `a++`
+        // must be rejected like any array. Regression guard: the post-inc/dec
+        // fast path must not treat a VLA Var as a scalar (which previously
+        // crashed the compiler instead of reporting a diagnostic).
+        CompileExpectingError("""
+            int main() {
+                int n = 4;
+                int a[n];
+                a++;
+                return 0;
+            }
+            """)
+        .AssertErrorContains("not an lvalue");
+    }
 }

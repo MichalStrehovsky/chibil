@@ -35,7 +35,7 @@ public enum NodeKind
     Return, If, For, Do, Switch, Case,
     Block, Goto, Label,
     FunCall, ExprStmt, StmtExpr,
-    Var, VlaPtr, Num, Cast, MemZero,
+    Var, VlaPtr, Num, Cast, MemZero, PostIncDec,
     Asm, Cas, Exch,
 }
 

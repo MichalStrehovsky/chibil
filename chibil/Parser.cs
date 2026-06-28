@@ -1164,6 +1164,29 @@ public class Parser
     private Node NewIncDec(Node node, Token tok, int addend)
     {
         _types.AddType(node);
+        if (node.Ty.Kind is TypeKind.Array or TypeKind.Vla or TypeKind.Func)
+            Util.ErrorTok(tok, "not an lvalue");
+        if (!TypeSystem.IsNumeric(node.Ty) && node.Ty.Kind != TypeKind.Ptr)
+            Util.ErrorTok(tok, "invalid operands");
+        // Use-then-bump for a simple non-volatile, non-atomic scalar variable
+        // lvalue: the value of `v++` is the current value of `v` (which can be
+        // re-read with no side effects), and the increment is an independent
+        // `v = v + addend`. This matches MSVC /clr and avoids the
+        // `(v += addend) - addend` correction the generic lowering below emits
+        // when the result is used. Atomic lvalues are excluded so the bump keeps
+        // its read-modify-write atomicity via the generic op= CAS lowering.
+        if (node.Kind == NodeKind.Var && !node.Ty.IsVolatile && !node.Ty.IsAtomic
+            && node.Ty.Kind is not (TypeKind.Struct or TypeKind.Union or TypeKind.Array or TypeKind.Vla))
+        {
+            Node bump = ToAssign(NewAdd(node, NewNum(addend, tok), tok));
+            _types.AddType(bump);
+            Node n = NewNode(NodeKind.PostIncDec, tok);
+            n.Lhs = NewVarNode(node.Var, tok);
+            _types.AddType(n.Lhs);
+            n.Rhs = bump;
+            n.Ty = node.Ty;
+            return n;
+        }
         return _types.NewCast(NewAdd(ToAssign(NewAdd(node, NewNum(addend, tok), tok)), NewNum(-addend, tok), tok), node.Ty);
     }
 

@@ -320,7 +320,7 @@ public class TypeSystem
                 return;
             }
             case NodeKind.Assign:
-                if (node.Lhs.Ty.Kind == TypeKind.Array)
+                if (node.Lhs.Ty.Kind is TypeKind.Array or TypeKind.Vla or TypeKind.Func)
                     Util.ErrorTok(node.Lhs.Tok, "not an lvalue");
                 if (node.Lhs.Ty.Kind != TypeKind.Struct)
                     node.Rhs = NewCast(node.Rhs, node.Lhs.Ty);
@@ -361,6 +361,10 @@ public class TypeSystem
                 return;
             case NodeKind.Comma:
                 node.Ty = node.Rhs.Ty;
+                return;
+            case NodeKind.PostIncDec:
+                // Produces the old value (Lhs); Rhs is the independent bump.
+                node.Ty = node.Lhs.Ty;
                 return;
             case NodeKind.Member:
                 node.Ty = node.Member.Ty;

@@ -175,6 +175,11 @@ public class CodeGen
                 return;
             case NodeKind.Num:
                 return;
+            // A discarded post-increment/decrement needs only its bump side
+            // effect; the old value is never materialized.
+            case NodeKind.PostIncDec:
+                GenExprDiscard(node.Rhs);
+                return;
         }
 
         int depthBefore = _enc.StackDepth;
@@ -731,6 +736,14 @@ public class CodeGen
             case NodeKind.Cast:
                 GenExpr(node.Lhs);
                 EmitCast(node.Lhs.Ty, node.Ty);
+                return;
+
+            case NodeKind.PostIncDec:
+                // Use-then-bump: produce the old value of the variable (re-read,
+                // no side effects), then run the independent `v = v + addend`
+                // store. Matches MSVC /clr; no `(v += addend) - addend`.
+                GenExpr(node.Lhs);
+                GenExprDiscard(node.Rhs);
                 return;
 
             case NodeKind.MemZero:
