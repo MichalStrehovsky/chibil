@@ -44,6 +44,50 @@ namespace Coff
         SafeMsil = 4,
     }
 
+    // CodeView symbol record kinds (SYM_ENUM_e in cvinfo.h). Only the records
+    // actually emitted by the writer are listed here.
+    public enum CodeViewSymbolKind : ushort
+    {
+        End = 0x0006,        // S_END
+        FrameProc = 0x1012,  // S_FRAMEPROC
+        ObjName = 0x1101,    // S_OBJNAME
+        Block32 = 0x1103,    // S_BLOCK32
+        ManSlot = 0x1120,    // S_MANSLOT
+        GManProc = 0x112A,   // S_GMANPROC
+        Compile3 = 0x113C,   // S_COMPILE3
+        ProcIdEnd = 0x114F,  // S_PROC_ID_END
+    }
+
+    // CodeView debug subsection kinds (DEBUG_S_SUBSECTION_TYPE in cvinfo.h).
+    public enum CodeViewSubsectionKind : uint
+    {
+        Symbols = 0xF1,       // DEBUG_S_SYMBOLS
+        Lines = 0xF2,         // DEBUG_S_LINES
+        StringTable = 0xF3,   // DEBUG_S_STRINGTABLE
+        FileChecksums = 0xF4, // DEBUG_S_FILECHKSMS
+    }
+
+    // Flags for the S_FRAMEPROC record (FRAMEPROCSYM flags bitfield in cvinfo.h).
+    // Only the bits MSVC /clr:pure emits are listed here.
+    [Flags]
+    public enum CodeViewFrameProcFlags : uint
+    {
+        None = 0,
+        AsyncEH = 0x00000200,  // fAsyncEH: function compiled with /EHa
+        OptSpeed = 0x00100000, // fOptSpeed: optimized for speed
+    }
+
+    public static class CodeView
+    {
+        // CV_SIGNATURE_C13: the debug-information format version written at the
+        // start of each .debug$S section.
+        public const uint SignatureC13 = 4;
+
+        // CV_Line_t.fStatement: the high bit of a line-number entry's flags marks
+        // a statement (as opposed to an expression) line number.
+        public const uint LineIsStatement = 0x80000000;
+    }
+
     public enum CoffSymbolType : short
     {
         Null = 0x00,

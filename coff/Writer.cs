@@ -85,7 +85,7 @@ namespace Coff
                 for (int i = blockStart; i < blockEnd; i++)
                 {
                     builder.WriteInt32(_entries[i].CodeOffset);
-                    builder.WriteUInt32(0x80000000 | (uint)_entries[i].LineNumber);
+                    builder.WriteUInt32(CodeView.LineIsStatement | (uint)_entries[i].LineNumber);
                 }
 
                 blockStart = blockEnd;
@@ -188,7 +188,7 @@ namespace Coff
         }
 
         /// <summary>
-        /// Adds S_OBJNAME and S_COMPILE3 records in their own 0xF1 subsection.
+        /// Adds S_OBJNAME and S_COMPILE3 records in their own DEBUG_S_SYMBOLS subsection.
         /// Call this before adding method symbols.
         /// </summary>
         public void AddObjNameAndCompile3(string objName, CodeViewLanguage language, CodeViewMachine machine,
@@ -196,22 +196,22 @@ namespace Coff
             ushort beMajor, ushort beMinor, ushort beBuild,
             string compilerVersion, CodeViewCompileFlags compileFlags = 0)
         {
-            _symbolAndLineNumbersBlob.WriteUInt32(0xF1);
+            _symbolAndLineNumbersBlob.WriteUInt32((uint)CodeViewSubsectionKind.Symbols);
             var sizeFixup = _symbolAndLineNumbersBlob.ReserveBytes(4);
             int startOffset = _symbolAndLineNumbersBlob.Count;
 
-            // S_OBJNAME (0x1101): signature(4) + name(null-terminated)
+            // S_OBJNAME: signature(4) + name(null-terminated)
             int objNameRecLen = 2 + 4 + objName.Length + 1;
             _symbolAndLineNumbersBlob.WriteUInt16((ushort)objNameRecLen);
-            _symbolAndLineNumbersBlob.WriteUInt16(0x1101);
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)CodeViewSymbolKind.ObjName);
             _symbolAndLineNumbersBlob.WriteUInt32(0); // signature
             _symbolAndLineNumbersBlob.WriteUTF8(objName);
             _symbolAndLineNumbersBlob.WriteByte(0);
 
-            // S_COMPILE3 (0x113C): flags(4) + machine(2) + versions(8*2=16) + verString(null-terminated)
+            // S_COMPILE3: flags(4) + machine(2) + versions(8*2=16) + verString(null-terminated)
             int compile3RecLen = 2 + 4 + 2 + 16 + compilerVersion.Length + 1;
             _symbolAndLineNumbersBlob.WriteUInt16((ushort)compile3RecLen);
-            _symbolAndLineNumbersBlob.WriteUInt16(0x113C);
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)CodeViewSymbolKind.Compile3);
 
             // flags: language in low byte, other flags in higher bytes
             uint flags = (uint)language | (uint)compileFlags;
@@ -255,13 +255,13 @@ namespace Coff
             IReadOnlyList<CodeViewManSlot> localSlots = null,
             IReadOnlyList<CodeViewLocalScope> localScopes = null)
         {
-            _symbolAndLineNumbersBlob.WriteUInt32(0xF1);
+            _symbolAndLineNumbersBlob.WriteUInt32((uint)CodeViewSubsectionKind.Symbols);
             var sizeFixup = _symbolAndLineNumbersBlob.ReserveBytes(4);
             var startOffset = _symbolAndLineNumbersBlob.Count;
 
             _symbolAndLineNumbersBlob.WriteUInt16((ushort)(2 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 2 + 2 + 1 + methodName.Length + 1));
 
-            _symbolAndLineNumbersBlob.WriteUInt16(0x112a);
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)CodeViewSymbolKind.GManProc);
 
             _symbolAndLineNumbersBlob.WriteUInt32(0);
             _symbolAndLineNumbersBlob.WriteUInt32(0);
@@ -290,7 +290,7 @@ namespace Coff
 
             // frameproc
             _symbolAndLineNumbersBlob.WriteUInt16(2 + 4 + 4 + 4 + 4 + 4 + 2 + 1 + 1 + 1 + 1);
-            _symbolAndLineNumbersBlob.WriteUInt16(0x1012);
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)CodeViewSymbolKind.FrameProc);
 
             _symbolAndLineNumbersBlob.WriteInt32(0);
             _symbolAndLineNumbersBlob.WriteInt32(0);
@@ -299,8 +299,8 @@ namespace Coff
             _symbolAndLineNumbersBlob.WriteInt32(0);
             _symbolAndLineNumbersBlob.WriteInt16(0);
 
-            // MAGIC
-            _symbolAndLineNumbersBlob.WriteInt32(0x00100200);
+            // frameproc flags: matches MSVC /clr:pure (compiled /EHa, optimized for speed)
+            _symbolAndLineNumbersBlob.WriteUInt32((uint)(CodeViewFrameProcFlags.AsyncEH | CodeViewFrameProcFlags.OptSpeed));
 
             // S_MANSLOT records for local variables (function-level)
             if (localSlots != null)
@@ -318,7 +318,7 @@ namespace Coff
 
             // end method
             _symbolAndLineNumbersBlob.WriteUInt16(2);
-            _symbolAndLineNumbersBlob.WriteUInt16(0x114F);
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)CodeViewSymbolKind.ProcIdEnd);
 
             new BlobWriter(sizeFixup).WriteInt32(_symbolAndLineNumbersBlob.Count - startOffset);
 
@@ -329,7 +329,7 @@ namespace Coff
         {
             int manSlotRecLen = 2 + 4 + 4 + 4 + 2 + 2 + slot.Name.Length + 1;
             _symbolAndLineNumbersBlob.WriteUInt16((ushort)manSlotRecLen);
-            _symbolAndLineNumbersBlob.WriteUInt16(0x1120); // S_MANSLOT
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)CodeViewSymbolKind.ManSlot);
             _symbolAndLineNumbersBlob.WriteInt32(slot.Slot);
             _symbolAndLineNumbersBlob.WriteInt32(slot.TypeToken);
             _symbolAndLineNumbersBlob.WriteInt32(0); // attr.off
@@ -341,10 +341,10 @@ namespace Coff
 
         private void EmitLocalScope(CodeViewLocalScope scope, CoffSymbolHandle methodCoffSymbol, int methodCoffSymbolDelta)
         {
-            // S_BLOCK32 (0x1103): pParent(4) + pEnd(4) + len(4) + off(4) + seg(2) + name(null-term)
+            // S_BLOCK32: pParent(4) + pEnd(4) + len(4) + off(4) + seg(2) + name(null-term)
             int blockRecLen = 2 + 4 + 4 + 4 + 4 + 2 + 1;
             _symbolAndLineNumbersBlob.WriteUInt16((ushort)blockRecLen);
-            _symbolAndLineNumbersBlob.WriteUInt16(0x1103); // S_BLOCK32
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)CodeViewSymbolKind.Block32);
             _symbolAndLineNumbersBlob.WriteInt32(0); // pParent (fixup by linker)
             _symbolAndLineNumbersBlob.WriteInt32(0); // pEnd (fixup by linker)
             _symbolAndLineNumbersBlob.WriteInt32(scope.CodeLength); // len
@@ -367,12 +367,12 @@ namespace Coff
 
             // S_END
             _symbolAndLineNumbersBlob.WriteUInt16(2);
-            _symbolAndLineNumbersBlob.WriteUInt16(0x0006); // S_END
+            _symbolAndLineNumbersBlob.WriteUInt16((ushort)CodeViewSymbolKind.End);
         }
 
         public void AddLineNumbers(CoffSymbolHandle methodCoffSymbol, int methodCoffSymbolDelta, int codeSize, CodeViewLineNumberBuilder lineNumbersBlob)
         {
-            _symbolAndLineNumbersBlob.WriteUInt32(0xF2);
+            _symbolAndLineNumbersBlob.WriteUInt32((uint)CodeViewSubsectionKind.Lines);
             var sizeFixup = _symbolAndLineNumbersBlob.ReserveBytes(4);
             int startOffset = _symbolAndLineNumbersBlob.Count;
 
@@ -397,7 +397,7 @@ namespace Coff
         {
             BlobBuilder builder = new BlobBuilder();
 
-            builder.WriteUInt32(4); // version
+            builder.WriteUInt32(CodeView.SignatureC13); // version
 
             if (_symbolAndLineNumbersBlob.Count > 0)
             {
@@ -406,7 +406,7 @@ namespace Coff
 
             if (_stringTable.Count > 0)
             {
-                builder.WriteUInt32(0xF3); // String table
+                builder.WriteUInt32((uint)CodeViewSubsectionKind.StringTable);
                 builder.WriteInt32(_stringTable.Count);
                 builder.LinkSuffix(_stringTable);
                 builder.Align(4);
@@ -414,7 +414,7 @@ namespace Coff
 
             if (_fileTable.Count > 0)
             {
-                builder.WriteUInt32(0xF4); // File checksums
+                builder.WriteUInt32((uint)CodeViewSubsectionKind.FileChecksums);
                 builder.WriteInt32(_fileTable.Count);
                 builder.LinkSuffix(_fileTable);
                 builder.Align(4);
