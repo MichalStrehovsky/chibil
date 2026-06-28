@@ -9,14 +9,36 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
-using System.IO;
-using System.Reflection;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 
-namespace System.Reflection.PortableExecutable
+namespace Coff
 {
+    public readonly struct LabelHandle : IEquatable<LabelHandle>
+    {
+        /// <summary>
+        /// 1-based id identifying the label within the context of a <see cref="ControlFlowBuilder"/>.
+        /// </summary>
+        public int Id { get; }
+
+        public LabelHandle(int id)
+        {
+            Debug.Assert(id >= 1);
+            Id = id;
+        }
+
+        public bool IsNil => Id == 0;
+
+        public bool Equals(LabelHandle other) => Id == other.Id;
+        public override bool Equals([NotNullWhen(true)] object? obj) => obj is LabelHandle labelHandle && Equals(labelHandle);
+        public override int GetHashCode() => Id.GetHashCode();
+
+        public static bool operator ==(LabelHandle left, LabelHandle right) => left.Equals(right);
+        public static bool operator !=(LabelHandle left, LabelHandle right) => !left.Equals(right);
+    }
+
     public class CodeViewLineNumberBuilder
     {
         private readonly List<LineNumberEntry> _entries = new List<LineNumberEntry>();
@@ -69,40 +91,6 @@ namespace System.Reflection.PortableExecutable
                 blockStart = blockEnd;
             }
         }
-    }
-
-    public enum CodeViewChecksumType : byte
-    {
-        None = 0,
-        SHA256 = 3,
-    }
-
-    public enum CodeViewLanguage : byte
-    {
-        C = 0x00,
-        Cpp = 0x01,
-    }
-
-    public enum CodeViewMachine : ushort
-    {
-        I386 = 0x0007,    // CV_CFL_PENTIUMIII — matches MSVC /clr:pure output
-        Amd64 = 0x00D0,   // CV_CFL_X64
-        Arm64 = 0x00F6,   // CV_CFL_ARM64
-    }
-
-    [Flags]
-    public enum CodeViewCompileFlags : uint
-    {
-        None = 0,
-        EditAndContinue = 0x0100,
-        NoDebugInfo = 0x0200,
-        LTCG = 0x0400,
-        NoDataAlign = 0x0800,
-        ManagedPresent = 0x1000,
-        SecurityChecks = 0x2000,
-        HotPatch = 0x4000,
-        CVTCIL = 0x8000,
-        MSILModule = 0x10000,
     }
 
     public struct CodeViewFileHandle
@@ -755,14 +743,10 @@ namespace System.Reflection.PortableExecutable
             _lazyExceptionHandlers?.Clear();
         }
 
-        internal LabelHandle AddLabel()
+        public LabelHandle AddLabel()
         {
             _labels.Add(-1);
-            unsafe
-            {
-                int labelHandle = _labels.Count;
-                return *(LabelHandle*)&labelHandle;
-            }
+            return new LabelHandle(_labels.Count);
         }
 
         internal void AddBranch(int ilOffset, LabelHandle label, ILOpCode opCode)
@@ -783,7 +767,7 @@ namespace System.Reflection.PortableExecutable
 
         internal bool HasFixups => _branches.Count > 0 || _switches.Count > 0;
 
-        internal void MarkLabel(int ilOffset, LabelHandle label)
+        public void MarkLabel(int ilOffset, LabelHandle label)
         {
             Debug.Assert(ilOffset >= 0);
             ValidateLabel(label, nameof(label));
@@ -1108,70 +1092,57 @@ namespace System.Reflection.PortableExecutable
         public CoffRelocationEncoder(CoffHeaderBuilder headerBuilder, BlobBuilder builder)
             => (HeaderBuilder, Builder) = (headerBuilder, builder);
 
-        public void AddSectionRelocation(int offset, CoffSymbolHandle coffSymbol)
+        public void AddRelocation(int offset, ImageRelocation type, CoffSymbolHandle coffSymbol)
         {
             Builder.WriteInt32(offset);
             Builder.WriteInt32(coffSymbol._value);
-            Builder.WriteUInt16(HeaderBuilder.Machine switch
-            {
-                Machine.I386 => 0x000A,      // IMAGE_REL_I386_SECTION
-                Machine.Amd64 => 0x000A,     // IMAGE_REL_AMD64_SECTION
-                Machine.Arm64 => 0x000D,     // IMAGE_REL_ARM64_SECTION
-                _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
-            });
+            Builder.WriteUInt16((ushort)type);
         }
+
+        public void AddSectionRelocation(int offset, CoffSymbolHandle coffSymbol)
+            => AddRelocation(offset, HeaderBuilder.Machine switch
+            {
+                Machine.I386 => ImageRelocation.I386_SECTION,
+                Machine.Amd64 => ImageRelocation.Amd64_SECTION,
+                Machine.Arm64 => ImageRelocation.Arm64_SECTION,
+                _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
+            }, coffSymbol);
 
         public void AddSectionRelativeRelocation(int offset, CoffSymbolHandle coffSymbol)
-        {
-            Builder.WriteInt32(offset);
-            Builder.WriteInt32(coffSymbol._value);
-            Builder.WriteUInt16(HeaderBuilder.Machine switch
+            => AddRelocation(offset, HeaderBuilder.Machine switch
             {
-                Machine.I386 => 0x000B,      // IMAGE_REL_I386_SECREL
-                Machine.Amd64 => 0x000B,     // IMAGE_REL_AMD64_SECREL
-                Machine.Arm64 => 0x0008,     // IMAGE_REL_ARM64_SECREL
+                Machine.I386 => ImageRelocation.I386_SECREL,
+                Machine.Amd64 => ImageRelocation.Amd64_SECREL,
+                Machine.Arm64 => ImageRelocation.Arm64_SECREL,
                 _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
-            });
-        }
+            }, coffSymbol);
 
         public void AddTokenRelocation(int offset, CoffSymbolHandle coffSymbol)
-        {
-            Builder.WriteInt32(offset);
-            Builder.WriteInt32(coffSymbol._value);
-            Builder.WriteUInt16(HeaderBuilder.Machine switch
+            => AddRelocation(offset, HeaderBuilder.Machine switch
             {
-                Machine.I386 => 0x000C,      // IMAGE_REL_I386_TOKEN
-                Machine.Amd64 => 0x000D,     // IMAGE_REL_AMD64_TOKEN
-                Machine.Arm64 => 0x000C,     // IMAGE_REL_ARM64_TOKEN
+                Machine.I386 => ImageRelocation.I386_TOKEN,
+                Machine.Amd64 => ImageRelocation.Amd64_TOKEN,
+                Machine.Arm64 => ImageRelocation.Arm64_TOKEN,
                 _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
-            });
-        }
+            }, coffSymbol);
 
         public void AddAddressRelocation(int offset, CoffSymbolHandle coffSymbol)
-        {
-            Builder.WriteInt32(offset);
-            Builder.WriteInt32(coffSymbol._value);
-            Builder.WriteUInt16(HeaderBuilder.Machine switch
+            => AddRelocation(offset, HeaderBuilder.Machine switch
             {
-                Machine.I386 => 0x0006,      // IMAGE_REL_I386_DIR32
-                Machine.Amd64 => 0x0001,     // IMAGE_REL_AMD64_ADDR64
-                Machine.Arm64 => 0x000E,     // IMAGE_REL_ARM64_ADDR64
+                Machine.I386 => ImageRelocation.I386_DIR32,
+                Machine.Amd64 => ImageRelocation.Amd64_ADDR64,
+                Machine.Arm64 => ImageRelocation.Arm64_ADDR64,
                 _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
-            });
-        }
+            }, coffSymbol);
 
         public void AddImageRelativeRelocation(int offset, CoffSymbolHandle coffSymbol)
-        {
-            Builder.WriteInt32(offset);
-            Builder.WriteInt32(coffSymbol._value);
-            Builder.WriteUInt16(HeaderBuilder.Machine switch
+            => AddRelocation(offset, HeaderBuilder.Machine switch
             {
-                Machine.I386 => 0x0007,      // IMAGE_REL_I386_DIR32NB
-                Machine.Amd64 => 0x0003,     // IMAGE_REL_AMD64_ADDR32NB
-                Machine.Arm64 => 0x0002,     // IMAGE_REL_ARM64_ADDR32NB
+                Machine.I386 => ImageRelocation.I386_DIR32NB,
+                Machine.Amd64 => ImageRelocation.Amd64_ADDR32NB,
+                Machine.Arm64 => ImageRelocation.Arm64_ADDR32NB,
                 _ => throw new NotSupportedException($"Unsupported machine type: {HeaderBuilder.Machine}"),
-            });
-        }
+            }, coffSymbol);
     }
 
     public readonly struct ManagedCoffRelocationEncoder
@@ -1681,14 +1652,6 @@ namespace System.Reflection.PortableExecutable
         }
     }
 
-    [Flags]
-    public enum ObjectFeatures : ushort
-    {
-        None,
-        PureMsil = 2,
-        SafeMsil = 4,
-    }
-
     public class CoffSymbolTableBuilder
     {
         protected Dictionary<string, CoffSymbolHandle> _coffSymbols = new Dictionary<string, CoffSymbolHandle>(StringComparer.Ordinal);
@@ -2062,19 +2025,6 @@ namespace System.Reflection.PortableExecutable
         }
     }
 
-    public enum CoffSymbolType : short
-    {
-        Null = 0x00,
-        Function = 0x20,
-    }
-
-    public enum CoffSymbolStorageClass : byte
-    {
-        External = 2,
-        Static = 3,
-        ClrToken = 107,
-    }
-
     public sealed class CoffHeaderBuilder
     {
         public Machine Machine { get; }
@@ -2085,16 +2035,6 @@ namespace System.Reflection.PortableExecutable
             Machine = machine;
             ImageCharacteristics = characteristics;
         }
-    }
-
-    public enum CoffComdatSelection : byte
-    {
-        NoDuplicates = 1,
-        Any = 2,
-        SameSize = 3,
-        ExactMatch = 4,
-        Associative = 5,
-        Largest = 6,
     }
 
     public abstract class CoffSectionBuilder

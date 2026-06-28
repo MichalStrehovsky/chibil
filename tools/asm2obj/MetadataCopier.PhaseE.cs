@@ -1,9 +1,9 @@
 // Phase E — NEP thunk emission for UnmanagedExport methods.
 
-using System;
-using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
+
+using Coff;
 
 namespace Asm2Obj;
 

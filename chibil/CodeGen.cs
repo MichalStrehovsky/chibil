@@ -1,7 +1,10 @@
 using System.Diagnostics;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
-using System.Reflection.PortableExecutable;
+
+using Coff;
+
+using LabelHandle = Coff.LabelHandle;
 
 namespace Chibil;
 

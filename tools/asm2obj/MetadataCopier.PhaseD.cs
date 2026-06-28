@@ -2,11 +2,11 @@
 // symbols and external MemberRef CLR tokens, then walks each MethodDef with a
 // body, runs IlBodyRewriter, and finalises the body via AddMethodBody.
 
-using System;
-using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
+
+using Coff;
 
 namespace Asm2Obj;
 

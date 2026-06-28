@@ -4,6 +4,8 @@ using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Reflection.Metadata.Ecma335;
 
+using Coff;
+
 /// <summary>
 /// Shared helpers for /clr (mixed-mode) IJW emission used by scenario emitters.
 /// See <c>scenarios/NOTES.md</c> § "/clr mixed-mode IJW entry-point thunks" for
@@ -94,26 +96,21 @@ internal static class ClrIjw
 
         // (2) NEP thunk in .nep, single indirect jump through the __mep@?fn slot.
         int thunkOffset = nepSectionBuilder.Content.Count;
+        var nepReloc = new CoffRelocationEncoder(coffHeader, nepSectionBuilder.Relocations);
         if (machine == Machine.Arm64)
         {
             // ADRP X9, page-of-slot   ; 09 00 00 90   (placeholder, linker patches via PAGEBASE_REL21)
             // LDR  X9, [X9, #off]     ; 29 01 40 F9   (placeholder, linker patches via PAGEOFFSET_12L)
             // BR   X9                 ; 20 01 1F D6
             nepSectionBuilder.Content.WriteBytes(new byte[] { 0x09, 0x00, 0x00, 0x90, 0x29, 0x01, 0x40, 0xF9, 0x20, 0x01, 0x1F, 0xD6 });
-            nepSectionBuilder.Relocations.WriteInt32(thunkOffset + 0);
-            nepSectionBuilder.Relocations.WriteInt32(mepDataSym._value);
-            nepSectionBuilder.Relocations.WriteUInt16(0x0004);                                  // IMAGE_REL_ARM64_PAGEBASE_REL21
-            nepSectionBuilder.Relocations.WriteInt32(thunkOffset + 4);
-            nepSectionBuilder.Relocations.WriteInt32(mepDataSym._value);
-            nepSectionBuilder.Relocations.WriteUInt16(0x0007);                                  // IMAGE_REL_ARM64_PAGEOFFSET_12L
+            nepReloc.AddRelocation(thunkOffset + 0, ImageRelocation.Arm64_PAGEBASE_REL21, mepDataSym);
+            nepReloc.AddRelocation(thunkOffset + 4, ImageRelocation.Arm64_PAGEOFFSET_12L, mepDataSym);
         }
         else
         {
             // FF 25 [4-byte operand placeholder] — linker fills the operand via the reloc.
             nepSectionBuilder.Content.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
-            nepSectionBuilder.Relocations.WriteInt32(thunkOffset + 2);
-            nepSectionBuilder.Relocations.WriteInt32(mepDataSym._value);
-            nepSectionBuilder.Relocations.WriteUInt16(machine == Machine.I386 ? (ushort)0x0006 : (ushort)0x0004);  // I386 DIR32 / AMD64 REL32
+            nepReloc.AddRelocation(thunkOffset + 2, machine == Machine.I386 ? ImageRelocation.I386_DIR32 : ImageRelocation.Amd64_REL32, mepDataSym);
         }
 
         // (3) Bare-name COFF alias for the thunk (e.g. `foo` / `_foo`).
@@ -164,22 +161,17 @@ internal static class ClrIjw
             CoffComdatSelection.NoDuplicates);
         sections.Add(nepSection);
 
+        var nepReloc = new CoffRelocationEncoder(coffHeader, nepSection.Relocations);
         if (machine == Machine.Arm64)
         {
             nepSection.Content.WriteBytes(new byte[] { 0x09, 0x00, 0x00, 0x90, 0x29, 0x01, 0x40, 0xF9, 0x20, 0x01, 0x1F, 0xD6 });
-            nepSection.Relocations.WriteInt32(0);
-            nepSection.Relocations.WriteInt32(mepDataSym._value);
-            nepSection.Relocations.WriteUInt16(0x0004);
-            nepSection.Relocations.WriteInt32(4);
-            nepSection.Relocations.WriteInt32(mepDataSym._value);
-            nepSection.Relocations.WriteUInt16(0x0007);
+            nepReloc.AddRelocation(0, ImageRelocation.Arm64_PAGEBASE_REL21, mepDataSym);
+            nepReloc.AddRelocation(4, ImageRelocation.Arm64_PAGEOFFSET_12L, mepDataSym);
         }
         else
         {
             nepSection.Content.WriteBytes(new byte[] { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 });
-            nepSection.Relocations.WriteInt32(2);
-            nepSection.Relocations.WriteInt32(mepDataSym._value);
-            nepSection.Relocations.WriteUInt16(machine == Machine.I386 ? (ushort)0x0006 : (ushort)0x0004);
+            nepReloc.AddRelocation(2, machine == Machine.I386 ? ImageRelocation.I386_DIR32 : ImageRelocation.Amd64_REL32, mepDataSym);
         }
 
         symtab.AddComdatSectionSymbol(nepSection);

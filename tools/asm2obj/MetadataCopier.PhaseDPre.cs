@@ -2,11 +2,12 @@
 // HasFieldRVA field from the input PE into the output .data section and
 // registers the corresponding CLR-token COFF data symbols.
 
-using System;
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
+
+using Coff;
 
 namespace Asm2Obj;
 
