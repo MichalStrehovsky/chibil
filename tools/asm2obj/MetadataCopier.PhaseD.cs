@@ -154,8 +154,8 @@ public sealed partial class MetadataCopier
         {
             int token = System.BitConverter.ToInt32(bytes, offset);
             if (token == 0) return; // empty slot (e.g. fat header with no locals)
+            new BlobWriter(bytes, offset, 4).WriteInt32(0);
             int mapped = (token >> 24) == 0x70 ? map.MapUserStringToken(token) : map.MapToken(token);
-            new BlobWriter(bytes, offset, 4).WriteInt32(mapped);
             reloc.AddClrRelocation(baseOffset + offset, mapped);
         }
 
