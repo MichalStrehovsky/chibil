@@ -806,11 +806,34 @@ public sealed class ILBuilder
         var lineBuilder = new CodeViewLineNumberBuilder();
         int lastLineOffset = -1;
 
+        // EH table: only build the control-flow builder when EH regions exist. Labels
+        // are defined up front and marked through the encoder at the current offset as
+        // each block is laid down, mirroring how SRM's ControlFlowBuilder is fed via
+        // InstructionEncoder.DefineLabel/MarkLabel (AddLabel/MarkLabel are internal).
+        RelocatableControlFlowBuilder flow = null;
+        var enc = new RelocatableInstructionEncoder(code, relocBuilder, null, lineBuilder);
+        Dictionary<int, LabelHandle> labelHandles = null;
+        if (_ehRegions.Count > 0)
+        {
+            flow = new RelocatableControlFlowBuilder();
+            enc = new RelocatableInstructionEncoder(code, relocBuilder, flow, lineBuilder);
+            labelHandles = new Dictionary<int, LabelHandle>();
+            foreach (var r in _ehRegions)
+                foreach (int id in new[] { r.TryStart, r.TryEnd, r.HandlerStart, r.HandlerEnd })
+                    if (id != 0 && !labelHandles.ContainsKey(id))
+                        labelHandles[id] = enc.DefineLabel();
+        }
+
         for (var block = _leaderBlock; block != null; block = block.NextBlock)
         {
             Debug.Assert(code.Count == block.Start, "block layout offset mismatch");
 
             int blockStart = block.Start;
+
+            if (labelHandles != null)
+                foreach (var kv in labelHandles)
+                    if (_labels[kv.Key - 1].Block == block)
+                        enc.MarkLabel(kv.Value);
 
             if (block.Relocations != null)
                 foreach (var (offset, token) in block.Relocations)
@@ -836,12 +859,24 @@ public sealed class ILBuilder
             block.WriteContentTo(code);
         }
 
-        // EH table: only build the control-flow builder when EH regions exist.
-        RelocatableControlFlowBuilder flow = null;
-        if (_ehRegions.Count > 0)
-            flow = BuildExceptionFlow();
+        if (labelHandles != null)
+        {
+            foreach (var r in _ehRegions)
+            {
+                switch (r.Kind)
+                {
+                    case ExceptionRegionKind.Catch:
+                        flow.AddCatchRegion(labelHandles[r.TryStart], labelHandles[r.TryEnd],
+                            labelHandles[r.HandlerStart], labelHandles[r.HandlerEnd], r.CatchType);
+                        break;
+                    case ExceptionRegionKind.Finally:
+                        flow.AddFinallyRegion(labelHandles[r.TryStart], labelHandles[r.TryEnd],
+                            labelHandles[r.HandlerStart], labelHandles[r.HandlerEnd]);
+                        break;
+                }
+            }
+        }
 
-        var enc = new RelocatableInstructionEncoder(code, relocBuilder, flow, lineBuilder);
         var scopes = BuildLocalScopes();
         return new RealizedMethod(enc, _maxStack, scopes);
     }
@@ -1058,43 +1093,6 @@ public sealed class ILBuilder
         } while (delta < 0);
 
         return branchesOptimized;
-    }
-
-    // ── EH table ────────────────────────────────────────────────────────────
-
-    private RelocatableControlFlowBuilder BuildExceptionFlow()
-    {
-        var flow = new RelocatableControlFlowBuilder();
-
-        // Re-create labels in the flow builder at final offsets.
-        var map = new Dictionary<int, LabelHandle>();
-        LabelHandle FlowLabel(int id)
-        {
-            if (!map.TryGetValue(id, out var lh))
-            {
-                lh = flow.AddLabel();
-                flow.MarkLabel(_labels[id - 1].Block.Start, lh);
-                map[id] = lh;
-            }
-            return lh;
-        }
-
-        foreach (var r in _ehRegions)
-        {
-            switch (r.Kind)
-            {
-                case ExceptionRegionKind.Catch:
-                    flow.AddCatchRegion(FlowLabel(r.TryStart), FlowLabel(r.TryEnd),
-                        FlowLabel(r.HandlerStart), FlowLabel(r.HandlerEnd), r.CatchType);
-                    break;
-                case ExceptionRegionKind.Finally:
-                    flow.AddFinallyRegion(FlowLabel(r.TryStart), FlowLabel(r.TryEnd),
-                        FlowLabel(r.HandlerStart), FlowLabel(r.HandlerEnd));
-                    break;
-            }
-        }
-
-        return flow;
     }
 
     // ── Local scope tree ────────────────────────────────────────────────────

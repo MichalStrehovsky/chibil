@@ -743,7 +743,7 @@ namespace Coff
             _lazyExceptionHandlers?.Clear();
         }
 
-        public LabelHandle AddLabel()
+        internal LabelHandle AddLabel()
         {
             _labels.Add(-1);
             return new LabelHandle(_labels.Count);
@@ -767,7 +767,7 @@ namespace Coff
 
         internal bool HasFixups => _branches.Count > 0 || _switches.Count > 0;
 
-        public void MarkLabel(int ilOffset, LabelHandle label)
+        internal void MarkLabel(int ilOffset, LabelHandle label)
         {
             Debug.Assert(ilOffset >= 0);
             ValidateLabel(label, nameof(label));
