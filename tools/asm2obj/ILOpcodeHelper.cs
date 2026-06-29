@@ -8,7 +8,7 @@ using System;
 namespace Asm2Obj;
 
 /// <summary>
-/// Per-opcode metadata used by <see cref="IlBodyRewriter"/>.
+/// Per-opcode metadata used by IL body emission (MetadataCopier.PhaseD).
 ///
 /// The table is indexed by the opcode as a <c>ushort</c>. 1-byte opcodes are
 /// indexed by their 1-byte value; 2-byte (<c>0xFE</c>-prefix) opcodes are

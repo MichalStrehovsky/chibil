@@ -31,11 +31,8 @@ public static class AsmToObjConverter
         var nepSection = new CoffSectionWithContentBuilder(".nep", SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes);
         var ilFixupSection = new CoffSectionWithContentBuilder(".rdata$ilfixup", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
 
-        var bodyEncoder = new RelocatableMethodBodyStreamEncoder(
-            ilSection, symtab, coffHeader, codeViewSymbolBuilder: null);
-
         copier.EmitFieldData(symtab, peReader, dataSection);
-        copier.EmitMethodBodies(symtab, ilSection, bodyEncoder, peReader);
+        copier.EmitMethodBodies(symtab, ilSection, coffHeader, peReader);
 
         copier.EmitNepThunks(
             machine, coffHeader, symtab,

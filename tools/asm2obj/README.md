@@ -45,9 +45,9 @@ The pipeline is a strict two-pass metadata copier:
 4. **Phase D — IL body emission.** Pre-register every surviving MethodDef
    in the COFF symbol table (so undefined-CLR-token ordering invariants
    hold), pre-register all external MemberRefs, then walk each MethodDef
-   with a body, run `IlBodyRewriter` (raw-IL copy with metadata-token slot
-   substitution + `ldstr` UserString remap), and finalise via
-   `AddMethodBody`.
+   with a body, copy its bytes verbatim into `.text$mn` while remapping
+   every token operand (metadata tokens + `ldstr` UserString tokens) and
+   the fat-header local-var sig token via CLR-token relocations.
 5. **Phase E — NEP thunks.** For each method whose return-type slot
    carries `modopt(CallConvCdecl)` or `modopt(CallConvStdcall)` —
    either already in the input signature blob or scheduled to be
@@ -157,7 +157,7 @@ tools/asm2obj/
 ├── AsmToObjConverter.cs     # top-level pipeline driver
 ├── TokenMap.cs              # input handle → output handle
 ├── EcmaSignatureRewriter.cs # signature blob rewriter
-├── IlBodyRewriter.cs        # raw IL copy with token substitution
+├── ILOpcodeHelper.cs        # per-opcode sizes (used to find token slots)
 ├── MsvcNameMangler.cs       # ECMA sig → MSVC decorated name
 ├── MetadataCopier.cs              # MetadataCopier (partial: fields + entry points)
 ├── MetadataCopier.PhaseA.cs       # classification
