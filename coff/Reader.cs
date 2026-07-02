@@ -401,7 +401,7 @@ namespace Coff
         }
 
         /// <exception cref="IOException">IO error while reading from the underlying stream.</exception>
-        /// <exception cref="InvalidOperationException">COFF object doesn't have metadata.</exception>
+        /// <exception cref="InvalidOperationException">COFF object not available.</exception>
         private AbstractMemoryBlock GetSectionHeadersBlock()
         {
             if (_lazySectionHeadersBlock == null)
