@@ -29,6 +29,7 @@ public class Parser
     private readonly CompilerOptions _options;
     private readonly TypeSystem _types;
     private readonly NameMangler _nameMangler;
+    private readonly ConstEval _consteval;
 
     public Parser(Tokenizer tokenizer, CompilerOptions options, TypeSystem types, NameMangler nameMangler)
     {
@@ -36,6 +37,7 @@ public class Parser
         _options = options;
         _types = types;
         _nameMangler = nameMangler;
+        _consteval = new ConstEval(types);
         _scope = new Scope();
     }
 
@@ -345,7 +347,7 @@ public class Parser
                 if (attr == null) Util.ErrorTok(tok, "_Alignas is not allowed in this context");
                 tok = Util.Skip(tok.Next, "(");
                 if (IsTypename(tok)) attr.Align = Typename(ref tok, tok).Align;
-                else attr.Align = (int)ConstExpr(ref tok, tok);
+                else { Token alTok = tok; attr.Align = ValidateAlignment((int)ConstExpr(ref tok, tok), alTok); }
                 tok = Util.Skip(tok, ")"); continue;
             }
 
@@ -450,8 +452,16 @@ public class Parser
         Node expr = Conditional(ref tok, tok);
         tok = Util.Skip(tok, "]");
         ty = TypeSuffix(ref rest, tok, ty);
-        if (ty.Kind == TypeKind.Vla || !IsConstExpr(expr)) return _types.VlaOf(ty, expr);
-        return TypeSystem.ArrayOf(ty, (int)Eval(expr));
+        if (ty.Kind == TypeKind.Vla) return _types.VlaOf(ty, expr);
+        EvalResult r = _consteval.TryEvalConstInt(expr, out long arrLen);
+        // An ill-formed constant size (e.g. non-integer, division by zero, or an
+        // out-of-range shift) is a hard error; a genuinely non-constant size is a
+        // (block-scope) variable-length array.
+        if (r.IsIllFormed) Util.ErrorTok(expr.Tok, r.Message);
+        if (!r.IsSuccess) return _types.VlaOf(ty, expr);
+        if (arrLen < 0) Util.ErrorTok(expr.Tok, "array size is negative");
+        if (arrLen > int.MaxValue) Util.ErrorTok(expr.Tok, "array size is too large");
+        return TypeSystem.ArrayOf(ty, (int)arrLen);
     }
 
     private CType TypeSuffix(ref Token rest, Token tok, CType ty)
@@ -667,7 +677,7 @@ public class Parser
                 }
                 mem.Name = mem.Ty.Name; mem.Idx = idx++;
                 mem.Align = attr.Align != 0 ? attr.Align : mem.Ty.Align;
-                if (Util.Consume(ref tok, tok, ":")) { mem.IsBitfield = true; mem.BitWidth = (int)ConstExpr(ref tok, tok); }
+                if (Util.Consume(ref tok, tok, ":")) { mem.IsBitfield = true; Token bwTok = tok; mem.BitWidth = (int)ConstExpr(ref tok, tok); if (mem.BitWidth < 0) Util.ErrorTok(bwTok, "bit-field width is negative"); if (mem.BitWidth > mem.Ty.Size * 8) Util.ErrorTok(bwTok, "bit-field width exceeds the width of its type"); }
                 cur = cur.Next = mem;
             }
         }
@@ -695,7 +705,7 @@ public class Parser
                 {
                     if (_options.UseFieldBackedManagedAggregates)
                         Util.ErrorTok(attrTok, "field-backed managed aggregates do not support aligned aggregate types");
-                    tok = Util.Skip(tok, "("); ty.Align = (int)ConstExpr(ref tok, tok); tok = Util.Skip(tok, ")"); continue;
+                    tok = Util.Skip(tok, "("); ty.Align = ValidateAlignment((int)ConstExpr(ref tok, tok), attrTok); tok = Util.Skip(tok, ")"); continue;
                 }
                 Util.ErrorTok(tok, "unknown attribute");
             }
@@ -788,147 +798,20 @@ public class Parser
     //  Constant expression evaluation
     // ═══════════════════════════════════════════════════════════════
 
-    // C's eval(node) passes NULL for label → labels not allowed
-    private long Eval(Node node) => Eval2(node, out Unsafe.NullRef<string>());
-
-    private long Eval2(Node node, out string label)
-    {
-        Unsafe.SkipInit(out label);
-        _types.AddType(node);
-        if (TypeSystem.IsFlonum(node.Ty)) return (long)EvalDouble(node);
-
-        switch (node.Kind)
-        {
-            case NodeKind.Add: { long l = Eval2(node.Lhs, out label); return l + Eval(node.Rhs); }
-            case NodeKind.Sub: { long l = Eval2(node.Lhs, out label); return l - Eval(node.Rhs); }
-            case NodeKind.Mul: return Eval(node.Lhs) * Eval(node.Rhs);
-            case NodeKind.Div:
-                if (node.Ty.IsUnsigned) return (long)((ulong)Eval(node.Lhs) / (ulong)Eval(node.Rhs));
-                return Eval(node.Lhs) / Eval(node.Rhs);
-            case NodeKind.Neg: return -Eval(node.Lhs);
-            case NodeKind.Mod:
-                if (node.Ty.IsUnsigned) return (long)((ulong)Eval(node.Lhs) % (ulong)Eval(node.Rhs));
-                return Eval(node.Lhs) % Eval(node.Rhs);
-            case NodeKind.BitAnd: return Eval(node.Lhs) & Eval(node.Rhs);
-            case NodeKind.BitOr: return Eval(node.Lhs) | Eval(node.Rhs);
-            case NodeKind.BitXor: return Eval(node.Lhs) ^ Eval(node.Rhs);
-            case NodeKind.Shl: return Eval(node.Lhs) << (int)Eval(node.Rhs);
-            case NodeKind.Shr:
-                if (node.Ty.IsUnsigned && node.Ty.Size == 8) return (long)((ulong)Eval(node.Lhs) >> (int)Eval(node.Rhs));
-                return Eval(node.Lhs) >> (int)Eval(node.Rhs);
-            case NodeKind.Eq: return Eval(node.Lhs) == Eval(node.Rhs) ? 1 : 0;
-            case NodeKind.Ne: return Eval(node.Lhs) != Eval(node.Rhs) ? 1 : 0;
-            case NodeKind.Lt:
-                if (node.Lhs.Ty.IsUnsigned) return (ulong)Eval(node.Lhs) < (ulong)Eval(node.Rhs) ? 1 : 0;
-                return Eval(node.Lhs) < Eval(node.Rhs) ? 1 : 0;
-            case NodeKind.Le:
-                if (node.Lhs.Ty.IsUnsigned) return (ulong)Eval(node.Lhs) <= (ulong)Eval(node.Rhs) ? 1 : 0;
-                return Eval(node.Lhs) <= Eval(node.Rhs) ? 1 : 0;
-            case NodeKind.Cond: return Eval(node.Cond) != 0 ? Eval2(node.Then, out label) : Eval2(node.Els, out label);
-            case NodeKind.Comma: return Eval2(node.Rhs, out label);
-            case NodeKind.Not: return Eval(node.Lhs) == 0 ? 1 : 0;
-            case NodeKind.BitNot: return ~Eval(node.Lhs);
-            case NodeKind.LogAnd: return (Eval(node.Lhs) != 0 && Eval(node.Rhs) != 0) ? 1 : 0;
-            case NodeKind.LogOr: return (Eval(node.Lhs) != 0 || Eval(node.Rhs) != 0) ? 1 : 0;
-            case NodeKind.Cast:
-            {
-                long val = Eval2(node.Lhs, out label);
-                if (TypeSystem.IsInteger(node.Ty))
-                {
-                    switch (node.Ty.Size)
-                    {
-                        case 1: return node.Ty.IsUnsigned ? (byte)val : (sbyte)val;
-                        case 2: return node.Ty.IsUnsigned ? (ushort)val : (short)val;
-                        case 4: return node.Ty.IsUnsigned ? (uint)val : (int)val;
-                    }
-                }
-                return val;
-            }
-            case NodeKind.Addr: return EvalRval(node.Lhs, out label);
-            case NodeKind.Member:
-                if (Unsafe.IsNullRef(ref label)) Util.ErrorTok(node.Tok, "not a compile-time constant");
-                if (node.Ty.Kind != TypeKind.Array) Util.ErrorTok(node.Tok, "invalid initializer");
-                return EvalRval(node.Lhs, out label) + node.Member.Offset;
-            case NodeKind.Var:
-                if (Unsafe.IsNullRef(ref label)) Util.ErrorTok(node.Tok, "not a compile-time constant");
-                if (node.Var.Ty.Kind != TypeKind.Array && node.Var.Ty.Kind != TypeKind.Func) Util.ErrorTok(node.Tok, "invalid initializer");
-                label = node.Var.Name;
-                return 0;
-            case NodeKind.Deref:
-                // Array subscript on global: *(arr + i) where result is array type (decays to pointer)
-                if (Unsafe.IsNullRef(ref label)) Util.ErrorTok(node.Tok, "not a compile-time constant");
-                if (node.Ty.Kind == TypeKind.Array || node.Ty.Kind == TypeKind.Func)
-                    return Eval2(node.Lhs, out label);
-                Util.ErrorTok(node.Tok, "not a compile-time constant");
-                return 0;
-            case NodeKind.Num: return node.Val;
-        }
-        Util.ErrorTok(node.Tok, $"not a compile-time constant (node={node.Kind})");
-        return 0;
-    }
-
-    private long EvalRval(Node node, out string label)
-    {
-        Unsafe.SkipInit(out label);
-        switch (node.Kind)
-        {
-            case NodeKind.Var:
-                if (node.Var.IsLocal) Util.ErrorTok(node.Tok, "not a compile-time constant");
-                label = node.Var.Name;
-                return 0;
-            case NodeKind.Deref: return Eval2(node.Lhs, out label);
-            case NodeKind.Member: return EvalRval(node.Lhs, out label) + node.Member.Offset;
-        }
-        Util.ErrorTok(node.Tok, "invalid initializer");
-        return 0;
-    }
-
-    private bool IsConstExpr(Node node)
-    {
-        _types.AddType(node);
-        switch (node.Kind)
-        {
-            case NodeKind.Add: case NodeKind.Sub: case NodeKind.Mul: case NodeKind.Div:
-            case NodeKind.BitAnd: case NodeKind.BitOr: case NodeKind.BitXor:
-            case NodeKind.Shl: case NodeKind.Shr: case NodeKind.Eq: case NodeKind.Ne:
-            case NodeKind.Lt: case NodeKind.Le: case NodeKind.LogAnd: case NodeKind.LogOr:
-                return IsConstExpr(node.Lhs) && IsConstExpr(node.Rhs);
-            case NodeKind.Cond: return IsConstExpr(node.Cond) && IsConstExpr(Eval(node.Cond) != 0 ? node.Then : node.Els);
-            case NodeKind.Comma: return IsConstExpr(node.Rhs);
-            case NodeKind.Neg: case NodeKind.Not: case NodeKind.BitNot: case NodeKind.Cast: return IsConstExpr(node.Lhs);
-            case NodeKind.Num: return true;
-        }
-        return false;
-    }
-
     public long ConstExpr(ref Token rest, Token tok)
     {
         Node node = Conditional(ref rest, tok);
-        return Eval(node);
+        EvalResult r = _consteval.TryEvalConstInt(node, out long value);
+        if (!r.IsSuccess) Util.ErrorTok(node.Tok, r.Message);
+        return value;
     }
 
-    private double EvalDouble(Node node)
+    // An alignment must be zero (meaning "default") or a positive power of two.
+    private static int ValidateAlignment(int align, Token tok)
     {
-        _types.AddType(node);
-        if (TypeSystem.IsInteger(node.Ty))
-        {
-            if (node.Ty.IsUnsigned) return (ulong)Eval(node);
-            return Eval(node);
-        }
-        switch (node.Kind)
-        {
-            case NodeKind.Add: return EvalDouble(node.Lhs) + EvalDouble(node.Rhs);
-            case NodeKind.Sub: return EvalDouble(node.Lhs) - EvalDouble(node.Rhs);
-            case NodeKind.Mul: return EvalDouble(node.Lhs) * EvalDouble(node.Rhs);
-            case NodeKind.Div: return EvalDouble(node.Lhs) / EvalDouble(node.Rhs);
-            case NodeKind.Neg: return -EvalDouble(node.Lhs);
-            case NodeKind.Cond: return EvalDouble(node.Cond) != 0 ? EvalDouble(node.Then) : EvalDouble(node.Els);
-            case NodeKind.Comma: return EvalDouble(node.Rhs);
-            case NodeKind.Cast: return TypeSystem.IsFlonum(node.Lhs.Ty) ? EvalDouble(node.Lhs) : Eval(node.Lhs);
-            case NodeKind.Num: return node.FVal;
-        }
-        Util.ErrorTok(node.Tok, "not a compile-time constant");
-        return 0;
+        if (align < 0 || (align != 0 && (align & (align - 1)) != 0))
+            Util.ErrorTok(tok, "requested alignment is not a positive power of 2");
+        return align;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1537,11 +1420,15 @@ public class Parser
     private void ArrayDesignator(ref Token rest, Token tok, CType ty, out int begin, out int end)
     {
         begin = (int)ConstExpr(ref tok, tok.Next);
+        if (begin < 0)
+            Util.ErrorTok(tok, "array designator index is negative");
         if (begin >= ty.ArrayLen)
             Util.ErrorTok(tok, "array designator index exceeds array bounds");
         if (Util.Equal(tok, "..."))
         {
             end = (int)ConstExpr(ref tok, tok.Next);
+            if (end < 0)
+                Util.ErrorTok(tok, "array designator index is negative");
             if (end >= ty.ArrayLen)
                 Util.ErrorTok(tok, "array designator index exceeds array bounds");
             if (end < begin)
@@ -1829,29 +1716,21 @@ public class Parser
     private Relocation WriteGvarData(Relocation cur, Initializer init, CType ty, byte[] buf, int offset, bool constOnly = false)
     {
         if (ty.Kind == TypeKind.Array) { for (int i = 0; i < ty.ArrayLen; i++) { cur = WriteGvarData(cur, init.Children[i], ty.Base, buf, offset + ty.Base.Size * i, constOnly); if (cur == null) return null; } return cur; }
-        if (ty.Kind == TypeKind.Struct) { for (Member mem = ty.Members; mem != null; mem = mem.Next) { if (mem.IsBitfield) { Node expr = init.Children[mem.Idx].Expr; if (expr == null) break; if (constOnly && !IsConstExpr(expr)) return null; ulong oldval = ReadBuf(buf, offset + mem.Offset, mem.Ty.Size); ulong newval = (ulong)Eval(expr); ulong mask = (1UL << mem.BitWidth) - 1; ulong combined = oldval | ((newval & mask) << mem.BitOffset); Util.WriteBuf(buf, offset + mem.Offset, (long)combined, mem.Ty.Size); } else { cur = WriteGvarData(cur, init.Children[mem.Idx], mem.Ty, buf, offset + mem.Offset, constOnly); if (cur == null) return null; } } return cur; }
+        if (ty.Kind == TypeKind.Struct) { for (Member mem = ty.Members; mem != null; mem = mem.Next) { if (mem.IsBitfield) { Node expr = init.Children[mem.Idx].Expr; if (expr == null) break; EvalResult bfr = _consteval.TryEvalInitInt(expr, out long bfval); if (!bfr.IsSuccess) { if (!constOnly) Util.ErrorTok(expr.Tok, bfr.Message); return null; } ulong oldval = ReadBuf(buf, offset + mem.Offset, mem.Ty.Size); ulong newval = (ulong)bfval; ulong mask = mem.BitWidth >= 64 ? ~0UL : (1UL << mem.BitWidth) - 1; ulong combined = oldval | ((newval & mask) << mem.BitOffset); Util.WriteBuf(buf, offset + mem.Offset, (long)combined, mem.Ty.Size); } else { cur = WriteGvarData(cur, init.Children[mem.Idx], mem.Ty, buf, offset + mem.Offset, constOnly); if (cur == null) return null; } } return cur; }
         if (ty.Kind == TypeKind.Union) { if (init.Mem == null) return cur; return WriteGvarData(cur, init.Children[init.Mem.Idx], init.Mem.Ty, buf, offset, constOnly); }
         if (init.Expr == null) return cur;
-        if (constOnly && !IsConstExpr(init.Expr)) return null;
-        if (ty.Kind == TypeKind.Float) { Util.WriteFloat(buf, offset, (float)EvalDouble(init.Expr)); return cur; }
-        if (ty.Kind == TypeKind.Double) { Util.WriteDouble(buf, offset, EvalDouble(init.Expr)); return cur; }
-        if (ty.Kind == TypeKind.LDouble)
+        if (ty.Kind == TypeKind.Float || ty.Kind == TypeKind.Double || ty.Kind == TypeKind.LDouble)
         {
-            if (ty.Size == 8)
-            {
-                // LLP64: long double is same as double
-                Util.WriteDouble(buf, offset, EvalDouble(init.Expr));
-            }
-            else
-            {
-                // LP64: 80-bit x87 extended precision, padded to 16 bytes
-                byte[] f80 = Util.DoubleToF80Bytes(EvalDouble(init.Expr));
-                Array.Copy(f80, 0, buf, offset, Math.Min(f80.Length, ty.Size));
-            }
+            EvalResult rd = _consteval.TryEvalInitDouble(init.Expr, out double dval);
+            if (!rd.IsSuccess) { if (!constOnly) Util.ErrorTok(init.Expr.Tok, rd.Message); return null; }
+            if (ty.Kind == TypeKind.Float) Util.WriteFloat(buf, offset, (float)dval);
+            else if (ty.Kind == TypeKind.Double || ty.Size == 8) Util.WriteDouble(buf, offset, dval); // LLP64: long double == double
+            else { byte[] f80 = Util.DoubleToF80Bytes(dval); Array.Copy(f80, 0, buf, offset, Math.Min(f80.Length, ty.Size)); }
             return cur;
         }
 
-        long val = Eval2(init.Expr, out string label);
+        EvalResult rs = _consteval.TryEvalAddr(init.Expr, out long val, out string label);
+        if (!rs.IsSuccess) { if (!constOnly) Util.ErrorTok(init.Expr.Tok, rs.Message); return null; }
         if (label == null) { Util.WriteBuf(buf, offset, val, ty.Size); return cur; }
         if (constOnly) return null;
         var rel = new Relocation { Offset = offset, Label = label, Addend = val };
