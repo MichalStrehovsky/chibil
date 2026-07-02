@@ -22,6 +22,8 @@ public class CodeGen
     private readonly Dictionary<Obj, int> _paramSlots;
     private readonly List<(CType ty, int slot)> _scratchLocals;
     private readonly int _scratchLocalBase;
+    private readonly ConstEval _consteval;
+    private readonly Dictionary<Node, ExprResult> _foldCache = new();
     private readonly LabelHandle[] _labels;
 
     public CodeGen(TypeSystem types, MsilObjectEmitter emit, Obj fn, bool optimize)
@@ -30,6 +32,7 @@ public class CodeGen
         _emit = emit;
         _currentFn = fn;
         _enc = new ILBuilder(optimize);
+        _consteval = new ConstEval(types);
         _localSlots = new Dictionary<Obj, int>();
         _paramSlots = new Dictionary<Obj, int>();
         _scratchLocals = new List<(CType, int)>();
@@ -439,6 +442,179 @@ public class CodeGen
         _enc.LoadConstantI8(value);
     }
 
+    /// <summary>Load a folded constant with the correct width for its type.</summary>
+    private void EmitConst(ConstValue cv)
+    {
+        CType ty = cv.Ty;
+        if (cv.IsFloat)
+        {
+            if (ty.Kind == TypeKind.Float)
+                _enc.LoadConstantR4((float)cv.FloatValue);
+            else
+                _enc.LoadConstantR8(cv.FloatValue);
+            return;
+        }
+        if (ty.Kind == TypeKind.LLong ||
+            (ty.Kind == TypeKind.Long && _types.DataModel.LongSize == 8))
+            EmitConstI8(cv.IntValue);
+        else
+            EmitConstI4(cv.IntValue);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Constant folding (bottom-up, memoized)
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// A code-gen expression result: either a compile-time constant (which callers
+    /// may load with a single <see cref="EmitConst"/>) or "not constant".
+    /// </summary>
+    private readonly struct ExprResult
+    {
+        public readonly bool IsConst;
+        public readonly ConstValue Value;
+        private ExprResult(bool isConst, ConstValue value) { IsConst = isConst; Value = value; }
+        public static readonly ExprResult NonConst = new(false, default);
+        public static ExprResult Const(ConstValue value) => new(true, value);
+    }
+
+    /// <summary>
+    /// Determine whether <paramref name="node"/> is a pure compile-time constant and,
+    /// if so, its value. Results are memoized per node so the whole expression tree is
+    /// classified in O(n): each node combines its children's cached results through the
+    /// shared <see cref="ConstEval"/> fold combinators. Nodes with side effects, memory
+    /// reads, calls, or address (relocation) values are never constant.
+    /// </summary>
+    private ExprResult TryFold(Node node)
+    {
+        if (_foldCache.TryGetValue(node, out ExprResult cached))
+            return cached;
+        ExprResult result = ComputeFold(node);
+        _foldCache[node] = result;
+        return result;
+    }
+
+    private ExprResult ComputeFold(Node node)
+    {
+        switch (node.Kind)
+        {
+            case NodeKind.Num:
+                if (node.Ty == null || !TypeSystem.IsNumeric(node.Ty))
+                    return ExprResult.NonConst;
+                if (TypeSystem.IsFlonum(node.Ty))
+                {
+                    // Round a float-typed literal to float precision (matches the
+                    // runtime's r4 value and ConstEval's float normalization).
+                    double f = node.Ty.Kind == TypeKind.Float ? (float)node.FVal : node.FVal;
+                    return ExprResult.Const(ConstValue.Float(f, node.Ty));
+                }
+                return ExprResult.Const(ConstValue.Int(node.Val, node.Ty));
+
+            case NodeKind.Add:
+            case NodeKind.Sub:
+            case NodeKind.Mul:
+            case NodeKind.Div:
+            case NodeKind.Mod:
+            case NodeKind.BitAnd:
+            case NodeKind.BitOr:
+            case NodeKind.BitXor:
+            case NodeKind.Shl:
+            case NodeKind.Shr:
+            case NodeKind.Eq:
+            case NodeKind.Ne:
+            case NodeKind.Lt:
+            case NodeKind.Le:
+            case NodeKind.Gt:
+            case NodeKind.Ge:
+            {
+                // The result and operand types must both be plain numeric scalars.
+                // This excludes pointer arithmetic / pointer differences, whose
+                // operands are non-constant here anyway but whose result type is a
+                // pointer (must not become an `ldc`).
+                if (!IsFoldableScalar(node.Ty) || !IsFoldableScalar(node.Lhs.Ty))
+                    return ExprResult.NonConst;
+                ExprResult l = TryFold(node.Lhs);
+                if (!l.IsConst) return ExprResult.NonConst;
+                ExprResult r = TryFold(node.Rhs);
+                if (!r.IsConst) return ExprResult.NonConst;
+                if (_consteval.FoldBinary(node.Kind, node.Ty, node.Lhs.Ty,
+                        l.Value, r.Value, out ConstValue cv).IsSuccess)
+                    return ExprResult.Const(cv);
+                return ExprResult.NonConst; // ill-formed (e.g. div by zero) → runtime IL
+            }
+
+            case NodeKind.Neg:
+            case NodeKind.BitNot:
+            {
+                if (!IsFoldableScalar(node.Ty)) return ExprResult.NonConst;
+                ExprResult o = TryFold(node.Lhs);
+                if (!o.IsConst) return ExprResult.NonConst;
+                if (_consteval.FoldUnary(node.Kind, node.Ty, o.Value, out ConstValue cv).IsSuccess)
+                    return ExprResult.Const(cv);
+                return ExprResult.NonConst;
+            }
+
+            case NodeKind.Not:
+            {
+                ExprResult o = TryFold(node.Lhs);
+                if (!o.IsConst) return ExprResult.NonConst;
+                return ExprResult.Const(ConstValue.Int(o.Value.IsTruthy ? 0 : 1, node.Ty));
+            }
+
+            case NodeKind.Cast:
+            {
+                if (!IsFoldableScalar(node.Ty) || !IsFoldableScalar(node.Lhs.Ty))
+                    return ExprResult.NonConst;
+                ExprResult o = TryFold(node.Lhs);
+                if (!o.IsConst) return ExprResult.NonConst;
+                if (_consteval.FoldCast(node.Lhs.Ty, node.Ty, o.Value, out ConstValue cv).IsSuccess)
+                    return ExprResult.Const(cv);
+                return ExprResult.NonConst;
+            }
+
+            case NodeKind.LogAnd:
+            {
+                ExprResult l = TryFold(node.Lhs);
+                if (!l.IsConst) return ExprResult.NonConst;
+                if (!l.Value.IsTruthy) return ExprResult.Const(ConstValue.Int(0, node.Ty));
+                ExprResult r = TryFold(node.Rhs);
+                if (!r.IsConst) return ExprResult.NonConst;
+                return ExprResult.Const(ConstValue.Int(r.Value.IsTruthy ? 1 : 0, node.Ty));
+            }
+
+            case NodeKind.LogOr:
+            {
+                ExprResult l = TryFold(node.Lhs);
+                if (!l.IsConst) return ExprResult.NonConst;
+                if (l.Value.IsTruthy) return ExprResult.Const(ConstValue.Int(1, node.Ty));
+                ExprResult r = TryFold(node.Rhs);
+                if (!r.IsConst) return ExprResult.NonConst;
+                return ExprResult.Const(ConstValue.Int(r.Value.IsTruthy ? 1 : 0, node.Ty));
+            }
+
+            case NodeKind.Cond:
+            {
+                ExprResult c = TryFold(node.Cond);
+                if (!c.IsConst) return ExprResult.NonConst;
+                // Only the selected arm is evaluated (matches C ?: semantics).
+                return TryFold(c.Value.IsTruthy ? node.Then : node.Els);
+            }
+
+            case NodeKind.Comma:
+            {
+                // Fold only if the discarded left operand is itself a pure constant
+                // (no side effects to preserve).
+                ExprResult l = TryFold(node.Lhs);
+                if (!l.IsConst) return ExprResult.NonConst;
+                return TryFold(node.Rhs);
+            }
+        }
+        return ExprResult.NonConst;
+    }
+
+    /// <summary>A plain numeric scalar type that a folded constant can be loaded as.</summary>
+    private static bool IsFoldableScalar(CType ty) => ty != null && TypeSystem.IsNumeric(ty);
+
     // ═══════════════════════════════════════════════════════════════
     //  Branch normalization helpers
     // ═══════════════════════════════════════════════════════════════
@@ -456,6 +632,17 @@ public class CodeGen
     // negation, and short-circuiting && / ||; falls back to a truth test otherwise.
     private void GenCondBranch(Node cond, LabelHandle target, bool branchIfTrue)
     {
+        // A compile-time-constant condition collapses to an unconditional branch
+        // (or nothing). It is pure (TryFold only succeeds for side-effect-free
+        // expressions), so eliding it is safe.
+        ExprResult condConst = TryFold(cond);
+        if (condConst.IsConst)
+        {
+            if (condConst.Value.IsTruthy == branchIfTrue)
+                _enc.Branch(ILOpCode.Br, target);
+            return;
+        }
+
         switch (cond.Kind)
         {
             case NodeKind.Not:
@@ -495,11 +682,29 @@ public class CodeGen
                 CType opTy = cond.Lhs.Ty;
                 bool isUnsigned = opTy.IsUnsigned;
                 bool isFloat = TypeSystem.IsFlonum(opTy);
-                // Map the comparison (Eq/Ne/Lt/Le, with > and >= canonicalized to
-                // swapped Lt/Le by the parser) plus branch sense to a fused CIL branch.
-                // For floats, ordered comparisons (<, <=, ==) use ordered branches while
-                // their negations (>=, >, !=) use the unordered (.un) variants so that any
-                // NaN operand makes the original positive comparison false, matching C.
+
+                // Compare-against-constant-zero for integer/pointer operands folds to
+                // a single brtrue/brfalse on the other operand, avoiding materializing
+                // `ldc.i4.0` and a fused beq/bne. (Floats keep their fused branch so
+                // NaN ordering is preserved.)
+                if ((cond.Kind == NodeKind.Eq || cond.Kind == NodeKind.Ne) && !isFloat)
+                {
+                    Node other = null;
+                    if (IsIntegerZero(cond.Rhs)) other = cond.Lhs;
+                    else if (IsIntegerZero(cond.Lhs)) other = cond.Rhs;
+                    if (other != null)
+                    {
+                        GenExpr(other);
+                        // (x != 0) true == x true; (x == 0) true == x false.
+                        bool branchWhenTrue = cond.Kind == NodeKind.Ne ? branchIfTrue : !branchIfTrue;
+                        EmitBranch(branchWhenTrue ? ILOpCode.Brtrue : ILOpCode.Brfalse, target, other.Ty);
+                        return;
+                    }
+                }
+
+                // Map the comparison plus branch sense to a fused CIL branch.
+                // For floats, ordered branches preserve false-on-NaN positive comparisons;
+                // their negations use unordered (.un) branches so false conditions include NaN.
                 ILOpCode op = cond.Kind switch
                 {
                     NodeKind.Eq => branchIfTrue ? ILOpCode.Beq : ILOpCode.Bne_un,
@@ -522,6 +727,13 @@ public class CodeGen
         // overload handles pointer/float non-zero materialization as needed.
         GenExpr(cond);
         EmitBranch(branchIfTrue ? ILOpCode.Brtrue : ILOpCode.Brfalse, target, cond.Ty);
+    }
+
+    /// <summary>True if the node folds to an integer constant equal to zero.</summary>
+    private bool IsIntegerZero(Node node)
+    {
+        ExprResult r = TryFold(node);
+        return r.IsConst && !r.Value.IsFloat && r.Value.IntValue == 0;
     }
 
     private void EmitNonZero(CType ty)
@@ -629,6 +841,24 @@ public class CodeGen
     private void GenExpr(Node node)
     {
         MarkLineNumber(node.Tok);
+
+        // Constant folding: collapse a compile-time-constant numeric expression to a
+        // single load. Foldability is computed once, bottom-up and memoized (see
+        // TryFold), so this is O(n) across the whole expression. A fully-constant
+        // subtree emits one `ldc` at its highest node; mixed expressions emit their
+        // constant operands in place (correct IL stack order) as recursion reaches
+        // them. Pointer-typed constants are not folded (an address needs a
+        // relocation, not an ldc); side-effecting and ill-formed expressions fall
+        // through to runtime IL.
+        if (node.Ty != null && node.Kind != NodeKind.Num)
+        {
+            ExprResult folded = TryFold(node);
+            if (folded.IsConst)
+            {
+                EmitConst(folded.Value);
+                return;
+            }
+        }
 
         switch (node.Kind)
         {
