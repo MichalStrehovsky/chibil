@@ -1,8 +1,10 @@
 ﻿using System;
+using System.Buffers.Text;
 using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
@@ -16,7 +18,7 @@ namespace Coff
     {
         private MemoryBlockProvider _coffObject;
 
-        // If we read the data from the image lazily (_coffObject != null) we defer reading the headers.
+        // If we read the data from the COFF object lazily (_coffObject != null) we defer reading the headers.
         private CoffHeaders _lazyCoffHeaders;
 
         private AbstractMemoryBlock _lazySectionHeadersBlock;
@@ -40,80 +42,80 @@ namespace Coff
         }
 
         /// <summary>
-        /// Creates a Portable Executable reader over a PE image stored in a stream.
+        /// Creates a COFF object reader over a COFF object stored in a stream.
         /// </summary>
-        /// <param name="peStream">PE image stream.</param>
-        /// <exception cref="ArgumentNullException"><paramref name="peStream"/> is null.</exception>
+        /// <param name="coffStream">COFF object stream.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="coffStream"/> is null.</exception>
         /// <remarks>
-        /// Ownership of the stream is transferred to the <see cref="PEReader"/> upon successful validation of constructor arguments. It will be
-        /// disposed by the <see cref="PEReader"/> and the caller must not manipulate it.
+        /// Ownership of the stream is transferred to the <see cref="CoffReader"/> upon successful validation of constructor arguments. It will be
+        /// disposed by the <see cref="CoffReader"/> and the caller must not manipulate it.
         /// </remarks>
-        public CoffReader(Stream peStream)
-            : this(peStream, PEStreamOptions.Default)
+        public CoffReader(Stream coffStream)
+            : this(coffStream, PEStreamOptions.Default)
         {
         }
 
         /// <summary>
-        /// Creates a Portable Executable reader over a PE image stored in a stream beginning at its current position and ending at the end of the stream.
+        /// Creates a COFF object reader over a COFF object stored in a stream beginning at its current position and ending at the end of the stream.
         /// </summary>
-        /// <param name="peStream">PE image stream.</param>
+        /// <param name="coffStream">COFF object stream.</param>
         /// <param name="options">
-        /// Options specifying how sections of the PE image are read from the stream.
+        /// Options specifying how sections of the COFF object are read from the stream.
         ///
-        /// Unless <see cref="PEStreamOptions.LeaveOpen"/> is specified, ownership of the stream is transferred to the <see cref="PEReader"/>
-        /// upon successful argument validation. It will be disposed by the <see cref="PEReader"/> and the caller must not manipulate it.
+        /// Unless <see cref="PEStreamOptions.LeaveOpen"/> is specified, ownership of the stream is transferred to the <see cref="CoffReader"/>
+        /// upon successful argument validation. It will be disposed by the <see cref="CoffReader"/> and the caller must not manipulate it.
         ///
         /// Unless <see cref="PEStreamOptions.PrefetchMetadata"/> or <see cref="PEStreamOptions.PrefetchEntireImage"/> is specified no data
-        /// is read from the stream during the construction of the <see cref="PEReader"/>. Furthermore, the stream must not be manipulated
-        /// by caller while the <see cref="PEReader"/> is alive and undisposed.
+        /// is read from the stream during the construction of the <see cref="CoffReader"/>. Furthermore, the stream must not be manipulated
+        /// by caller while the <see cref="CoffReader"/> is alive and undisposed.
         ///
-        /// If <see cref="PEStreamOptions.PrefetchMetadata"/> or <see cref="PEStreamOptions.PrefetchEntireImage"/>, the <see cref="PEReader"/>
+        /// If <see cref="PEStreamOptions.PrefetchMetadata"/> or <see cref="PEStreamOptions.PrefetchEntireImage"/>, the <see cref="CoffReader"/>
         /// will have read all of the data requested during construction. As such, if <see cref="PEStreamOptions.LeaveOpen"/> is also
-        /// specified, the caller retains full ownership of the stream and is assured that it will not be manipulated by the <see cref="PEReader"/>
+        /// specified, the caller retains full ownership of the stream and is assured that it will not be manipulated by the <see cref="CoffReader"/>
         /// after construction.
         /// </param>
-        /// <exception cref="ArgumentNullException"><paramref name="peStream"/> is null.</exception>
+        /// <exception cref="ArgumentNullException"><paramref name="coffStream"/> is null.</exception>
         /// <exception cref="ArgumentOutOfRangeException"><paramref name="options"/> has an invalid value.</exception>
         /// <exception cref="IOException">Error reading from the stream (only when prefetching data).</exception>
-        /// <exception cref="BadImageFormatException"><see cref="PEStreamOptions.PrefetchMetadata"/> is specified and the PE headers of the image are invalid.</exception>
-        public CoffReader(Stream peStream, PEStreamOptions options)
-            : this(peStream, options, 0)
+        /// <exception cref="BadImageFormatException"><see cref="PEStreamOptions.PrefetchMetadata"/> is specified and the COFF headers of the object are invalid.</exception>
+        public CoffReader(Stream coffStream, PEStreamOptions options)
+            : this(coffStream, options, 0)
         {
         }
 
         /// <summary>
-        /// Creates a Portable Executable reader over a PE image of the given size beginning at the stream's current position.
+        /// Creates a COFF object reader over a COFF object of the given size beginning at the stream's current position.
         /// </summary>
-        /// <param name="peStream">PE image stream.</param>
-        /// <param name="size">PE image size.</param>
+        /// <param name="coffStream">COFF object stream.</param>
+        /// <param name="size">COFF object size.</param>
         /// <param name="options">
-        /// Options specifying how sections of the PE image are read from the stream.
+        /// Options specifying how sections of the COFF object are read from the stream.
         ///
-        /// Unless <see cref="PEStreamOptions.LeaveOpen"/> is specified, ownership of the stream is transferred to the <see cref="PEReader"/>
-        /// upon successful argument validation. It will be disposed by the <see cref="PEReader"/> and the caller must not manipulate it.
+        /// Unless <see cref="PEStreamOptions.LeaveOpen"/> is specified, ownership of the stream is transferred to the <see cref="CoffReader"/>
+        /// upon successful argument validation. It will be disposed by the <see cref="CoffReader"/> and the caller must not manipulate it.
         ///
         /// Unless <see cref="PEStreamOptions.PrefetchMetadata"/> or <see cref="PEStreamOptions.PrefetchEntireImage"/> is specified no data
-        /// is read from the stream during the construction of the <see cref="PEReader"/>. Furthermore, the stream must not be manipulated
-        /// by caller while the <see cref="PEReader"/> is alive and undisposed.
+        /// is read from the stream during the construction of the <see cref="CoffReader"/>. Furthermore, the stream must not be manipulated
+        /// by caller while the <see cref="CoffReader"/> is alive and undisposed.
         ///
-        /// If <see cref="PEStreamOptions.PrefetchMetadata"/> or <see cref="PEStreamOptions.PrefetchEntireImage"/>, the <see cref="PEReader"/>
+        /// If <see cref="PEStreamOptions.PrefetchMetadata"/> or <see cref="PEStreamOptions.PrefetchEntireImage"/>, the <see cref="CoffReader"/>
         /// will have read all of the data requested during construction. As such, if <see cref="PEStreamOptions.LeaveOpen"/> is also
-        /// specified, the caller retains full ownership of the stream and is assured that it will not be manipulated by the <see cref="PEReader"/>
+        /// specified, the caller retains full ownership of the stream and is assured that it will not be manipulated by the <see cref="CoffReader"/>
         /// after construction.
         /// </param>
         /// <exception cref="ArgumentOutOfRangeException">Size is negative or extends past the end of the stream.</exception>
         /// <exception cref="IOException">Error reading from the stream (only when prefetching data).</exception>
-        /// <exception cref="BadImageFormatException"><see cref="PEStreamOptions.PrefetchMetadata"/> is specified and the PE headers of the image are invalid.</exception>
-        public unsafe CoffReader(Stream peStream, PEStreamOptions options, int size)
+        /// <exception cref="BadImageFormatException"><see cref="PEStreamOptions.PrefetchMetadata"/> is specified and the COFF headers of the object are invalid.</exception>
+        public unsafe CoffReader(Stream coffStream, PEStreamOptions options, int size)
         {
-            if (peStream is null)
+            if (coffStream is null)
             {
-                throw new ArgumentNullException(nameof(peStream));
+                throw new ArgumentNullException(nameof(coffStream));
             }
 
-            if (!peStream.CanRead || !peStream.CanSeek)
+            if (!coffStream.CanRead || !coffStream.CanSeek)
             {
-                throw new ArgumentException("Must support Read and Seek", nameof(peStream));
+                throw new ArgumentException("Must support Read and Seek", nameof(coffStream));
             }
 
             if ((options & PEStreamOptions.IsLoadedImage) != 0)
@@ -121,27 +123,27 @@ namespace Coff
                 throw new ArgumentOutOfRangeException(nameof(options));
             }
 
-            long start = peStream.Position;
-            int actualSize = StreamExtensions.GetAndValidateSize(peStream, size, nameof(peStream));
+            long start = coffStream.Position;
+            int actualSize = StreamExtensions.GetAndValidateSize(coffStream, size, nameof(coffStream));
 
             bool closeStream = true;
             try
             {
                 if ((options & (PEStreamOptions.PrefetchMetadata | PEStreamOptions.PrefetchEntireImage)) == 0)
                 {
-                    _coffObject = new StreamMemoryBlockProvider(peStream, start, actualSize, (options & PEStreamOptions.LeaveOpen) != 0);
+                    _coffObject = new StreamMemoryBlockProvider(coffStream, start, actualSize, (options & PEStreamOptions.LeaveOpen) != 0);
                     closeStream = false;
                 }
                 else
                 {
-                    // Read in the entire image or metadata blob:
+                    // Read in the entire COFF object or metadata blob:
                     if ((options & PEStreamOptions.PrefetchEntireImage) != 0)
                     {
-                        var imageBlock = StreamMemoryBlockProvider.ReadMemoryBlockNoLock(peStream, start, actualSize);
+                        var imageBlock = StreamMemoryBlockProvider.ReadMemoryBlockNoLock(coffStream, start, actualSize);
                         _lazyImageBlock = imageBlock;
                         _coffObject = new ExternalMemoryBlockProvider(imageBlock.Pointer, imageBlock.Size);
 
-                        // if the caller asked for metadata initialize the PE headers (calculates metadata offset):
+                        // if the caller asked for metadata initialize the COFF headers (calculates metadata offset):
                         if ((options & PEStreamOptions.PrefetchMetadata) != 0)
                         {
                             _lazyCoffHeaders = new CoffHeaders(imageBlock.GetStream(), imageBlock.Size);
@@ -149,12 +151,12 @@ namespace Coff
                     }
                     else
                     {
-                        // The peImage is left null, but the lazyMetadataBlock is initialized up front.
-                        _lazyCoffHeaders = new CoffHeaders(peStream, actualSize);
+                        // _coffObject is left null, but _lazyMetadataBlock is initialized up front.
+                        _lazyCoffHeaders = new CoffHeaders(coffStream, actualSize);
 
                         if (_lazyCoffHeaders.MetadataStartOffset != -1)
                         {
-                            _lazyMetadataBlock = StreamMemoryBlockProvider.ReadMemoryBlockNoLock(peStream, start + _lazyCoffHeaders.MetadataStartOffset, _lazyCoffHeaders.MetadataSize);
+                            _lazyMetadataBlock = StreamMemoryBlockProvider.ReadMemoryBlockNoLock(coffStream, start + _lazyCoffHeaders.MetadataStartOffset, _lazyCoffHeaders.MetadataSize);
                         }
                     }
                     // We read all we need, the stream is going to be closed.
@@ -164,7 +166,7 @@ namespace Coff
             {
                 if (closeStream && (options & PEStreamOptions.LeaveOpen) == 0)
                 {
-                    peStream.Dispose();
+                    coffStream.Dispose();
                 }
             }
         }
@@ -311,14 +313,14 @@ namespace Coff
         }
 
         /// <exception cref="IOException">IO error while reading from the underlying stream.</exception>
-        /// <exception cref="InvalidOperationException">PE image not available.</exception>
+        /// <exception cref="InvalidOperationException">COFF object not available.</exception>
         private AbstractMemoryBlock GetCoffSectionBlock(CoffSection section)
         {
             int index = section._index;
 
             Debug.Assert(index >= 0 && index < CoffHeaders.CoffHeader.NumberOfSections);
 
-            var peImage = GetCoffObject();
+            var coffObject = GetCoffObject();
 
             if (_lazySectionBlocks == null)
             {
@@ -333,7 +335,7 @@ namespace Coff
 
             int size = section.PointerToRawData == 0 ? 0 : section.SizeOfRawData;
 
-            AbstractMemoryBlock newBlock = peImage.GetMemoryBlock(section.PointerToRawData, size);
+            AbstractMemoryBlock newBlock = coffObject.GetMemoryBlock(section.PointerToRawData, size);
 
 
             if (Interlocked.CompareExchange(ref _lazySectionBlocks[index], newBlock, null) != null)
@@ -346,24 +348,23 @@ namespace Coff
         }
 
         /// <summary>
-        /// Loads COFF section of the specified name into memory and returns a memory block that spans the section.
+        /// Loads the specified COFF section into memory and returns a memory block that spans the section.
         /// </summary>
-        /// <exception cref="ArgumentNullException"><paramref name="sectionName"/> is null.</exception>
-        /// <exception cref="InvalidOperationException">PE image not available.</exception>
+        /// <exception cref="InvalidOperationException">COFF object not available.</exception>
         public PEMemoryBlock GetSectionData(CoffSection section)
         {
             return new PEMemoryBlock(GetCoffSectionBlock(section));
         }
 
         /// <exception cref="IOException">IO error while reading from the underlying stream.</exception>
-        /// <exception cref="InvalidOperationException">PE image not available.</exception>
+        /// <exception cref="InvalidOperationException">COFF object not available.</exception>
         private AbstractMemoryBlock GetCoffSectionRelocationBlock(CoffSection section)
         {
             int index = section._index;
 
             Debug.Assert(index >= 0 && index < CoffHeaders.CoffHeader.NumberOfSections);
 
-            var peImage = GetCoffObject();
+            var coffObject = GetCoffObject();
 
             if (_lazySectionRelocationBlocks == null)
             {
@@ -378,7 +379,7 @@ namespace Coff
 
             int size = section.PointerToRelocations == 0 ? 0 : section.NumberOfRelocations * CoffSection.RelocationSize;
 
-            AbstractMemoryBlock newBlock = peImage.GetMemoryBlock(section.PointerToRelocations, size);
+            AbstractMemoryBlock newBlock = coffObject.GetMemoryBlock(section.PointerToRelocations, size);
 
 
             if (Interlocked.CompareExchange(ref _lazySectionRelocationBlocks[index], newBlock, null) != null)
@@ -393,7 +394,7 @@ namespace Coff
         /// <summary>
         /// Loads the COFF relocation entries for the specified section into memory and returns a memory block that spans them.
         /// </summary>
-        /// <exception cref="InvalidOperationException">PE image not available.</exception>
+        /// <exception cref="InvalidOperationException">COFF object not available.</exception>
         public PEMemoryBlock GetSectionRelocations(CoffSection section)
         {
             return new PEMemoryBlock(GetCoffSectionRelocationBlock(section));
@@ -522,27 +523,26 @@ namespace Coff
         private readonly int _stringTableSize;
 
         /// <summary>
-        /// Reads PE headers from the current location in the stream.
+        /// Reads COFF headers from the current location in the stream.
         /// </summary>
-        /// <param name="peStream">Stream containing PE image of the given size starting at its current position.</param>
-        /// <param name="size">Size of the PE image.</param>
-        /// <param name="isLoadedImage">True if the PE image has been loaded into memory by the OS loader.</param>
+        /// <param name="coffStream">Stream containing COFF object of the given size starting at its current position.</param>
+        /// <param name="size">Size of the COFF object.</param>
         /// <exception cref="BadImageFormatException">The data read from stream have invalid format.</exception>
         /// <exception cref="IOException">Error reading from the stream.</exception>
         /// <exception cref="ArgumentException">The stream doesn't support seek operations.</exception>
-        /// <exception cref="ArgumentNullException"><paramref name="peStream"/> is null.</exception>
+        /// <exception cref="ArgumentNullException"><paramref name="coffStream"/> is null.</exception>
         /// <exception cref="ArgumentOutOfRangeException">Size is negative or extends past the end of the stream.</exception>
-        public CoffHeaders(Stream peStream, int size)
+        public CoffHeaders(Stream coffStream, int size)
         {
-            ArgumentNullException.ThrowIfNull(peStream, nameof(peStream));
+            ArgumentNullException.ThrowIfNull(coffStream, nameof(coffStream));
 
-            if (!peStream.CanRead || !peStream.CanSeek)
+            if (!coffStream.CanRead || !coffStream.CanSeek)
             {
-                throw new ArgumentException("Stream must support Read and Seek", nameof(peStream));
+                throw new ArgumentException("Stream must support Read and Seek", nameof(coffStream));
             }
 
-            int actualSize = StreamExtensions.GetAndValidateSize(peStream, size, nameof(peStream));
-            var reader = new PEBinaryReader(peStream, actualSize);
+            int actualSize = StreamExtensions.GetAndValidateSize(coffStream, size, nameof(coffStream));
+            var reader = new PEBinaryReader(coffStream, actualSize);
 
             _coffHeader = new CoffHeader(ref reader);
 
@@ -589,8 +589,8 @@ namespace Coff
         }
 
         /// <summary>
-        /// Gets the offset (in bytes) from the start of the PE image to the start of the CLI metadata.
-        /// or -1 if the image does not contain metadata.
+        /// Gets the offset (in bytes) from the start of the COFF object to the start of the CLI metadata,
+        /// or -1 if the object does not contain metadata.
         /// </summary>
         public int MetadataStartOffset
         {
@@ -598,7 +598,7 @@ namespace Coff
         }
 
         /// <summary>
-        /// Gets the size of the CLI metadata 0 if the image does not contain metadata.)
+        /// Gets the size of the CLI metadata, or 0 if the COFF object does not contain metadata.
         /// </summary>
         public int MetadataSize
         {
@@ -616,7 +616,7 @@ namespace Coff
         }
 
         /// <summary>
-        /// Gets the COFF header of the image.
+        /// Gets the COFF header of the COFF object.
         /// </summary>
         public CoffHeader CoffHeader
         {
@@ -914,9 +914,9 @@ namespace Coff
         }
     }
 
-    // EditorBrowsable(Never) so that we don't clutter completion list with this type because a user that only has System.Reflection.Metadata
-    // imported and has type PE is likely looking to resolve PEReader from the System.Reflection.PortableExecutable and not looking to invoke
-    // these extensions as regular statics.
+    // EditorBrowsable(Never) so that we don't clutter the completion list with these extensions; a user
+    // is likely looking to work with the <see cref="CoffReader"/> type directly rather than invoke these
+    // extension methods as regular statics.
     [EditorBrowsable(EditorBrowsableState.Never)]
     public static class CoffReaderExtensions
     {
@@ -958,7 +958,7 @@ namespace Coff
         /// <exception cref="ArgumentException">The encoding of <paramref name="utf8Decoder"/> is not <see cref="UTF8Encoding"/>.</exception>
         /// <exception cref="PlatformNotSupportedException">The current platform is big-endian.</exception>
         /// <exception cref="IOException">IO error while reading from the underlying stream.</exception>
-        public static unsafe MetadataReader GetMetadataReader(this CoffReader coffReader, MetadataReaderOptions options, MetadataStringDecoder? utf8Decoder)
+        public static unsafe MetadataReader GetMetadataReader(this CoffReader coffReader, MetadataReaderOptions options, MetadataStringDecoder utf8Decoder)
         {
             if (coffReader is null)
             {
@@ -970,6 +970,24 @@ namespace Coff
 
             [UnsafeAccessor(UnsafeAccessorKind.Constructor)]
             extern static MetadataReader CreateMetadataReader(byte* metadata, int length, MetadataReaderOptions options, MetadataStringDecoder utf8Decoder, object memoryOwner);
+        }
+    }
+
+    // Adapted (subset) of System.Reflection.Metadata's internal Throw helper. It lives here rather
+    // than in SrmCopies.cs because it is not a verbatim copy (only the members chibil needs, and
+    // OutOfBounds uses a literal message instead of the SRM resource string).
+    internal static class Throw
+    {
+        [DoesNotReturn]
+        internal static void ArgumentOutOfRange(string parameterName)
+        {
+            throw new ArgumentOutOfRangeException(parameterName);
+        }
+
+        [DoesNotReturn]
+        internal static void OutOfBounds()
+        {
+            throw new BadImageFormatException("Out of bounds read.");
         }
     }
 
@@ -1271,7 +1289,12 @@ namespace Coff
             if (_sectionTable.PeekByte(offset) == (byte)'/')
             {
                 ReadOnlySpan<byte> digits = _sectionTable.PeekBytesSpan(offset + 1, CoffSectionNameHandle.Size - 1);
-                if (!System.Buffers.Text.Utf8Parser.TryParse(digits, out int stringTableOffset, out _))
+
+                // The "/<decimalOffset>" name is NUL-padded to the fixed 8-byte name field. TryParse
+                // stops at the first non-digit and reports how many bytes it consumed; require that the
+                // digits are followed by either the end of the field or NUL padding (and reject empty).
+                if (!Utf8Parser.TryParse(digits, out int stringTableOffset, out int consumed) ||
+                    (consumed != digits.Length && digits[consumed] != 0))
                 {
                     throw new BadImageFormatException();
                 }
@@ -1285,7 +1308,7 @@ namespace Coff
 
     public static class RelocationDecodingExtensions
     {
-        public static CoffSymbolHandle ReadSymbolHandle(this BlobReader reader)
+        public static CoffSymbolHandle ReadSymbolHandle(this ref BlobReader reader)
         {
             return new CoffSymbolHandle(reader.ReadInt32());
         }

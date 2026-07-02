@@ -525,21 +525,6 @@ namespace Coff
         }
     }
 
-    internal static class Throw
-    {
-        [DoesNotReturn]
-        internal static void ArgumentOutOfRange(string parameterName)
-        {
-            throw new ArgumentOutOfRangeException(parameterName);
-        }
-
-        [DoesNotReturn]
-        internal static void OutOfBounds()
-        {
-            throw new BadImageFormatException("Out of bounds read.");
-        }
-    }
-
     /// <summary>
     /// Represents data read from a stream.
     /// </summary>
