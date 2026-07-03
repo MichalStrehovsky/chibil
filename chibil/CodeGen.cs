@@ -21,8 +21,9 @@ public class CodeGen
     private readonly Dictionary<Obj, int> _localSlots;
     private readonly Dictionary<Obj, int> _paramSlots;
     private readonly List<(CType ty, int slot)> _scratchLocals;
-    private readonly int _scratchLocalBase;
     private readonly LabelHandle[] _labels;
+
+    private int _nextLocalSlot;
 
     public CodeGen(TypeSystem types, MsilObjectEmitter emit, Obj fn, bool optimize)
     {
@@ -41,17 +42,6 @@ public class CodeGen
         int argIdx = 0;
         for (Obj param = fn.Params; param != null; param = param.Next)
             _paramSlots[param] = argIdx++;
-
-        // Assign local slots for user locals
-        int localIdx = 0;
-        for (Obj local = fn.Locals; local != null; local = local.Next)
-        {
-            if (local.IsLocal && !_paramSlots.ContainsKey(local))
-            {
-                _localSlots[local] = localIdx++;
-            }
-        }
-        _scratchLocalBase = localIdx;
     }
 
     public static CompiledMethod EmitFunction(TypeSystem types, MsilObjectEmitter emit, Obj fn, bool optimize)
@@ -104,24 +94,21 @@ public class CodeGen
         }
 
         // Build locals signature
-        int totalLocals = _scratchLocalBase + _scratchLocals.Count;
+        var localsBySlot = new Dictionary<int, CType>();
+        foreach (var kvp in _localSlots)
+            localsBySlot.Add(kvp.Value, _types.FlexibleAggregateStorageType(kvp.Key.Ty));
+        foreach (var kvp in _scratchLocals)
+            localsBySlot.Add(kvp.slot, kvp.ty);
+
         StandaloneSignatureHandle localsSig = default;
-        if (totalLocals > 0)
+        if (localsBySlot.Count > 0)
         {
             var localsSigBlob = new BlobBuilder();
             localsSigBlob.WriteByte(0x07); // LOCAL_SIG
-            localsSigBlob.WriteCompressedInteger(totalLocals);
+            localsSigBlob.WriteCompressedInteger(localsBySlot.Count);
 
-            // User locals
-            for (Obj local = _currentFn.Locals; local != null; local = local.Next)
-            {
-                if (_localSlots.ContainsKey(local))
-                    _emit.EncodeType(localsSigBlob, _types.FlexibleAggregateStorageType(local.Ty));
-            }
-
-            // Scratch locals
-            foreach (var (ty, _) in _scratchLocals)
-                _emit.EncodeType(localsSigBlob, ty);
+            for (int i = 0; i < localsBySlot.Count; i++)
+                _emit.EncodeType(localsSigBlob, localsBySlot[i]);
 
             localsSig = _emit.AddStandaloneSignature(localsSigBlob);
         }
@@ -140,6 +127,17 @@ public class CodeGen
         var realized = _enc.Realize();
         return new CompiledMethod(realized.Instructions, realized.MaxStack, localsSig,
             localSlotList.Count > 0 ? localSlotList.ToArray() : null, realized.LocalScopes);
+    }
+
+    private int GetLocalSlot(Obj local)
+    {
+        if (!_localSlots.TryGetValue(local, out int slot))
+        {
+            slot = _nextLocalSlot++;
+            _localSlots.Add(local, slot);
+        }
+
+        return slot;
     }
 
     private LabelHandle GetLabel(int label) => _labels[label - 1];
@@ -222,7 +220,7 @@ public class CodeGen
 
     private int AddFreshScratchLocal(CType ty)
     {
-        int newSlot = _scratchLocalBase + _scratchLocals.Count;
+        int newSlot = _nextLocalSlot++;
         _scratchLocals.Add((ty, newSlot));
         return newSlot;
     }
@@ -254,9 +252,9 @@ public class CodeGen
                     {
                         _enc.LoadArgumentAddress(argIdx);
                     }
-                    else if (_localSlots.TryGetValue(node.Var, out int localIdx))
+                    else
                     {
-                        _enc.LoadLocalAddress(localIdx);
+                        _enc.LoadLocalAddress(GetLocalSlot(node.Var));
                     }
                     return;
                 }
@@ -318,10 +316,7 @@ public class CodeGen
                 break;
 
             case NodeKind.VlaPtr:
-                if (_localSlots.TryGetValue(node.Var, out int vlaSlot))
-                {
-                    _enc.LoadLocalAddress(vlaSlot);
-                }
+                _enc.LoadLocalAddress(GetLocalSlot(node.Var));
                 return;
         }
         Util.ErrorTok(node.Tok, "not an lvalue");
@@ -405,9 +400,9 @@ public class CodeGen
         {
             _enc.LoadArgument(argIdx);
         }
-        else if (_localSlots.TryGetValue(var, out int localIdx))
+        else
         {
-            _enc.LoadLocal(localIdx);
+            _enc.LoadLocal(GetLocalSlot(var));
         }
     }
 
@@ -417,9 +412,9 @@ public class CodeGen
         {
             _enc.StoreArgument(argIdx);
         }
-        else if (_localSlots.TryGetValue(var, out int localIdx))
+        else
         {
-            _enc.StoreLocal(localIdx);
+            _enc.StoreLocal(GetLocalSlot(var));
         }
     }
 
