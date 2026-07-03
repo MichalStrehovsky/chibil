@@ -1211,12 +1211,8 @@ public class CodeGen
                 var brkLabel = GetLabel(node.BrkLabelId);
 
                 if (node.Init != null) GenStmt(node.Init);
-                _enc.MarkLabel(beginLabel);
-                if (node.Cond != null)
-                {
-                    GenCondBranch(node.Cond, brkLabel, false);
-                }
-                GenStmt(node.Then);
+                _enc.Branch(ILOpCode.Br, beginLabel);
+
                 _enc.MarkLabel(contLabel);
                 if (node.Inc != null)
                 {
@@ -1224,7 +1220,15 @@ public class CodeGen
                     GenExprDiscard(node.Inc);
                     Debug.Assert(_enc.StackDepth == incDepth);
                 }
-                _enc.Branch(ILOpCode.Br, beginLabel);
+
+                _enc.MarkLabel(beginLabel);
+                if (node.Cond != null)
+                {
+                    GenCondBranch(node.Cond, brkLabel, false);
+                }
+                GenStmt(node.Then);
+
+                _enc.Branch(ILOpCode.Br, contLabel);
                 _enc.MarkLabel(brkLabel);
                 return;
             }
