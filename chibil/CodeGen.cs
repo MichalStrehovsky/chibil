@@ -1192,13 +1192,20 @@ public class CodeGen
             case NodeKind.If:
             {
                 var elseLabel = _enc.DefineLabel();
-                var endLabel = _enc.DefineLabel();
                 GenCondBranch(node.Cond, elseLabel, false);
                 GenStmt(node.Then);
-                _enc.Branch(ILOpCode.Br, endLabel);
-                _enc.MarkLabel(elseLabel);
-                if (node.Els != null) GenStmt(node.Els);
-                _enc.MarkLabel(endLabel);
+                if (node.Els != null)
+                {
+                    var endLabel = _enc.DefineLabel();
+                    _enc.Branch(ILOpCode.Br, endLabel);
+                    _enc.MarkLabel(elseLabel);
+                    if (node.Els != null) GenStmt(node.Els);
+                    _enc.MarkLabel(endLabel);
+                }
+                else
+                {
+                    _enc.MarkLabel(elseLabel);
+                }
                 return;
             }
 
