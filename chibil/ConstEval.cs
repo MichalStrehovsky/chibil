@@ -350,6 +350,8 @@ public sealed class ConstEval
 
                 case NodeKind.Lt:
                 case NodeKind.Le:
+                case NodeKind.Gt:
+                case NodeKind.Ge:
                 {
                     bool res;
                     if (TypeSystem.IsFlonum(node.Lhs.Ty))
@@ -358,16 +360,34 @@ public sealed class ConstEval
                         if (!rl.IsSuccess) return rl;
                         EvalResult rr = EvalDouble(node.Rhs, strict, out double r);
                         if (!rr.IsSuccess) return rr;
-                        res = node.Kind == NodeKind.Lt ? l < r : l <= r;
+                        res = node.Kind switch
+                        {
+                            NodeKind.Lt => l < r,
+                            NodeKind.Le => l <= r,
+                            NodeKind.Gt => l > r,
+                            _ => l >= r,
+                        };
                     }
                     else
                     {
                         EvalResult r = EvalBothInt(node, strict, out long a, out long b);
                         if (!r.IsSuccess) return r;
                         if (node.Lhs.Ty.IsUnsigned)
-                            res = node.Kind == NodeKind.Lt ? (ulong)a < (ulong)b : (ulong)a <= (ulong)b;
+                            res = node.Kind switch
+                            {
+                                NodeKind.Lt => (ulong)a < (ulong)b,
+                                NodeKind.Le => (ulong)a <= (ulong)b,
+                                NodeKind.Gt => (ulong)a > (ulong)b,
+                                _ => (ulong)a >= (ulong)b,
+                            };
                         else
-                            res = node.Kind == NodeKind.Lt ? a < b : a <= b;
+                            res = node.Kind switch
+                            {
+                                NodeKind.Lt => a < b,
+                                NodeKind.Le => a <= b,
+                                NodeKind.Gt => a > b,
+                                _ => a >= b,
+                            };
                     }
                     value = res ? 1 : 0;
                     return EvalResult.Success;

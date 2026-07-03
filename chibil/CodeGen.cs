@@ -489,15 +489,15 @@ public class CodeGen
             case NodeKind.Ne:
             case NodeKind.Lt:
             case NodeKind.Le:
+            case NodeKind.Gt:
+            case NodeKind.Ge:
             {
                 CType opTy = cond.Lhs.Ty;
                 bool isUnsigned = opTy.IsUnsigned;
                 bool isFloat = TypeSystem.IsFlonum(opTy);
-                // Map the comparison (Eq/Ne/Lt/Le, with > and >= canonicalized to
-                // swapped Lt/Le by the parser) plus branch sense to a fused CIL branch.
-                // For floats, ordered comparisons (<, <=, ==) use ordered branches while
-                // their negations (>=, >, !=) use the unordered (.un) variants so that any
-                // NaN operand makes the original positive comparison false, matching C.
+                // Map the comparison plus branch sense to a fused CIL branch.
+                // For floats, ordered branches preserve false-on-NaN positive comparisons;
+                // their negations use unordered (.un) branches so false conditions include NaN.
                 ILOpCode op = cond.Kind switch
                 {
                     NodeKind.Eq => branchIfTrue ? ILOpCode.Beq : ILOpCode.Bne_un,
@@ -505,9 +505,15 @@ public class CodeGen
                     NodeKind.Lt => branchIfTrue
                         ? (isUnsigned ? ILOpCode.Blt_un : ILOpCode.Blt)
                         : ((isUnsigned || isFloat) ? ILOpCode.Bge_un : ILOpCode.Bge),
-                    _ /* Le */ => branchIfTrue
+                    NodeKind.Le => branchIfTrue
                         ? (isUnsigned ? ILOpCode.Ble_un : ILOpCode.Ble)
                         : ((isUnsigned || isFloat) ? ILOpCode.Bgt_un : ILOpCode.Bgt),
+                    NodeKind.Gt => branchIfTrue
+                        ? (isUnsigned ? ILOpCode.Bgt_un : ILOpCode.Bgt)
+                        : ((isUnsigned || isFloat) ? ILOpCode.Ble_un : ILOpCode.Ble),
+                    _ /* Ge */ => branchIfTrue
+                        ? (isUnsigned ? ILOpCode.Bge_un : ILOpCode.Bge)
+                        : ((isUnsigned || isFloat) ? ILOpCode.Blt_un : ILOpCode.Blt),
                 };
                 GenExpr(cond.Lhs);
                 GenExpr(cond.Rhs);
@@ -829,13 +835,22 @@ public class CodeGen
                 return;
             case NodeKind.Lt:
                 // clt already returns 0 for NaN (unordered), which is correct for C's
-                // "NaN < x is false". Only Le needs the _un variant (via inverted cgt.un).
+                // "NaN < x is false". Inverted float comparisons use _un.
                 _enc.OpCode(node.Lhs.Ty.IsUnsigned ? ILOpCode.Clt_un : ILOpCode.Clt); return;
             case NodeKind.Le:
                 // a <= b  ≡  !(a > b)  ≡  (cgt_un == 0) for unsigned/float
                 // For floats, must use Cgt_un so NaN comparisons return unordered=1→false
                 _enc.OpCode((node.Lhs.Ty.IsUnsigned || TypeSystem.IsFlonum(node.Lhs.Ty))
                     ? ILOpCode.Cgt_un : ILOpCode.Cgt);
+                EmitConstI4(0);
+                _enc.OpCode(ILOpCode.Ceq);
+                return;
+            case NodeKind.Gt:
+                _enc.OpCode(node.Lhs.Ty.IsUnsigned ? ILOpCode.Cgt_un : ILOpCode.Cgt); return;
+            case NodeKind.Ge:
+                // a >= b  ≡  !(a < b)  ≡  (clt_un == 0) for unsigned/float
+                _enc.OpCode((node.Lhs.Ty.IsUnsigned || TypeSystem.IsFlonum(node.Lhs.Ty))
+                    ? ILOpCode.Clt_un : ILOpCode.Clt);
                 EmitConstI4(0);
                 _enc.OpCode(ILOpCode.Ceq);
                 return;

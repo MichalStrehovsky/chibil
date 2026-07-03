@@ -29,7 +29,7 @@ public enum NodeKind
 {
     NullExpr, Add, Sub, Mul, Div, Neg, Mod,
     BitAnd, BitOr, BitXor, Shl, Shr,
-    Eq, Ne, Lt, Le,
+    Eq, Ne, Lt, Le, Gt, Ge,
     Assign, Cond, Comma, Member,
     Addr, Deref, Not, BitNot, LogAnd, LogOr,
     Return, If, For, Do, Switch, Case,
