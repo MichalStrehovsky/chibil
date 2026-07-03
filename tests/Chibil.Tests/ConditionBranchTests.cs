@@ -134,6 +134,29 @@ public sealed class ConditionBranchTests : ChibiTestBase
     }
 
     [Fact]
+    public void GreaterComparisonsEvaluateOperandsInSourceOrder()
+    {
+        Compile("""
+            int state;
+            int left(void) { state = 10; return 5; }
+            int right(void) { return state; }
+            int gt_value(void) { state = 0; return left() > right(); }
+            int ge_value(void) { state = 0; return left() >= right(); }
+            int gt_branch(void) { state = 0; if (left() > right()) return 1; return 0; }
+            int ge_branch(void) { state = 0; if (left() >= right()) return 1; return 0; }
+            int main(void) {
+                if (gt_value() != 0) return 1;
+                if (ge_value() != 0) return 2;
+                if (gt_branch() != 0) return 3;
+                if (ge_branch() != 0) return 4;
+                return 0;
+            }
+            """)
+        .Link(ConsoleMain)
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
     public void PointerAndNullTruthTests()
     {
         Compile("""

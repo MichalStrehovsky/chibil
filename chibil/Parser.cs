@@ -886,8 +886,8 @@ public class Parser
             Token s = tok;
             if (Util.Equal(tok, "<")) { n = NewBinary(NodeKind.Lt, n, Shift(ref tok, tok.Next), s); continue; }
             if (Util.Equal(tok, "<=")) { n = NewBinary(NodeKind.Le, n, Shift(ref tok, tok.Next), s); continue; }
-            if (Util.Equal(tok, ">")) { n = NewBinary(NodeKind.Lt, Shift(ref tok, tok.Next), n, s); continue; }
-            if (Util.Equal(tok, ">=")) { n = NewBinary(NodeKind.Le, Shift(ref tok, tok.Next), n, s); continue; }
+            if (Util.Equal(tok, ">")) { n = NewBinary(NodeKind.Gt, n, Shift(ref tok, tok.Next), s); continue; }
+            if (Util.Equal(tok, ">=")) { n = NewBinary(NodeKind.Ge, n, Shift(ref tok, tok.Next), s); continue; }
             rest = tok; return n;
         }
     }

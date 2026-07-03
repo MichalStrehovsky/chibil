@@ -330,6 +330,8 @@ public class TypeSystem
             case NodeKind.Ne:
             case NodeKind.Lt:
             case NodeKind.Le:
+            case NodeKind.Gt:
+            case NodeKind.Ge:
                 UsualArithConv(ref node.Lhs, ref node.Rhs);
                 node.Ty = TyInt;
                 return;
