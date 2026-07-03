@@ -22,6 +22,8 @@ public class CodeGen
     private readonly Dictionary<Obj, int> _paramSlots;
     private readonly List<(CType ty, int slot)> _scratchLocals;
     private readonly LabelHandle[] _labels;
+    private readonly LabelHandle _returnLabel;
+    private readonly int _returnSlot = -1;
 
     private int _nextLocalSlot;
 
@@ -37,6 +39,10 @@ public class CodeGen
         _labels = new LabelHandle[fn.LabelCount];
         for (int i = 0; i < _labels.Length; i++)
             _labels[i] = _enc.DefineLabel();
+        _returnLabel = _enc.DefineLabel();
+
+        if (fn.Ty.ReturnTy.Kind != TypeKind.Void)
+            _returnSlot = _nextLocalSlot++;
 
         // Assign parameter slots
         int argIdx = 0;
@@ -72,29 +78,15 @@ public class CodeGen
         GenStmt(_currentFn.Body);
 
         CType returnTy = _currentFn.Ty.ReturnTy;
-        if (_enc.IsReachable)
-        {
-            // TODO: Should consider generating a throw (except for `main`).
-            if (returnTy.Kind != TypeKind.Void)
-            {
-                if (IsStructOrUnion(returnTy))
-                {
-                    // For struct return, push a zeroed struct.
-                    int scratch = GetOrAddScratchLocal(returnTy);
-                    _enc.LoadLocalAddress(scratch);
-                    _enc.OpCode(ILOpCode.Initobj); _enc.Token(_emit.GetStructTypeHandle(returnTy));
-                    _enc.LoadLocal(scratch);
-                }
-                else
-                {
-                    EmitTypedZero(returnTy);
-                }
-            }
-            _enc.EmitRet();
-        }
+        _enc.MarkLabel(_returnLabel);
+        if (returnTy.Kind != TypeKind.Void)
+            _enc.LoadLocal(_returnSlot);
+        _enc.EmitRet();
 
         // Build locals signature
         var localsBySlot = new Dictionary<int, CType>();
+        if (returnTy.Kind != TypeKind.Void)
+            localsBySlot.Add(_returnSlot, returnTy);
         foreach (var kvp in _localSlots)
             localsBySlot.Add(kvp.Value, _types.FlexibleAggregateStorageType(kvp.Key.Ty));
         foreach (var kvp in _scratchLocals)
@@ -1330,9 +1322,9 @@ public class CodeGen
                 if (node.Lhs != null)
                 {
                     GenByValueOperand(node.Lhs, _currentFn.Ty.ReturnTy);
- // ret consumes
+                    _enc.StoreLocal(_returnSlot);
                 }
-                _enc.EmitRet();
+                _enc.Branch(ILOpCode.Br, _returnLabel);
                 return;
 
             case NodeKind.ExprStmt:
