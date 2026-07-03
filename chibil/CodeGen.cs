@@ -1225,7 +1225,7 @@ public class CodeGen
                     GenCondBranch(node.Cond, brkLabel, false);
                 }
                 GenStmt(node.Then);
-                
+
                 _enc.Branch(ILOpCode.Br, contLabel);
                 _enc.MarkLabel(brkLabel);
                 return;
