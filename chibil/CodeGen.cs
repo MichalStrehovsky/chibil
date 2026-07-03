@@ -1265,12 +1265,57 @@ public class CodeGen
             case NodeKind.Switch:
             {
                 var brkLabel = GetLabel(node.BrkLabelId);
+                LabelHandle defaultLabel = node.DefaultCase != null
+                    ? GetLabel(node.DefaultCase.LabelId)
+                    : brkLabel;
+                bool is64 = node.Cond.Ty.Size == 8;
 
-                // x64: always if/else chain (no IL switch)
+                // Determine the span [min, max] covered by the case labels and how
+                // many labels there are, to decide between a jump table (IL switch)
+                // and a linear if/else comparison chain.
+                long min = long.MaxValue, max = long.MinValue;
+                int numCases = 0;
+                for (Node c = node.CaseNext; c != null; c = c.CaseNext)
+                {
+                    numCases++;
+                    if (c.Begin < min) min = c.Begin;
+                    if (c.End > max) max = c.End;
+                }
+                long span = numCases > 0 ? max - min + 1 : 0;
+
+                // Match MSVC /clr codegen: emit a jump table only when there are at
+                // least 6 case labels and the table (max - min + 1 entries) is no
+                // larger than 255 slots; otherwise fall back to the comparison chain.
+                if (numCases >= 6 && span >= 1 && span <= 255)
+                {
+                    var targets = new LabelHandle[span];
+                    for (int i = 0; i < span; i++)
+                        targets[i] = defaultLabel;
+                    for (Node c = node.CaseNext; c != null; c = c.CaseNext)
+                    {
+                        var caseLabel = GetLabel(c.LabelId);
+                        for (long v = c.Begin; v <= c.End; v++)
+                            targets[v - min] = caseLabel;
+                    }
+
+                    GenExpr(node.Cond);
+                    if (min != 0)
+                    {
+                        if (is64) EmitConstI8(min); else EmitConstI4(min);
+                        _enc.OpCode(ILOpCode.Sub);
+                    }
+                    _enc.Switch(targets);
+                    _enc.Branch(ILOpCode.Br, defaultLabel);
+
+                    GenStmt(node.Then);
+                    _enc.MarkLabel(brkLabel);
+                    return;
+                }
+
+                // Comparison-chain lowering (fewer cases or a table that is too wide).
                 GenExpr(node.Cond);
                 int condScratch = GetOrAddScratchLocal(node.Cond.Ty);
                 _enc.StoreLocal(condScratch);
-                bool is64 = node.Cond.Ty.Size == 8;
 
                 for (Node c = node.CaseNext; c != null; c = c.CaseNext)
                 {
@@ -1292,15 +1337,7 @@ public class CodeGen
                     }
                 }
 
-                if (node.DefaultCase != null)
-                {
-                    var defaultLabel = GetLabel(node.DefaultCase.LabelId);
-                    _enc.Branch(ILOpCode.Br, defaultLabel);
-                }
-                else
-                {
-                    _enc.Branch(ILOpCode.Br, brkLabel);
-                }
+                _enc.Branch(ILOpCode.Br, defaultLabel);
 
                 GenStmt(node.Then);
                 _enc.MarkLabel(brkLabel);

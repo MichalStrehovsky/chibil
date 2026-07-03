@@ -899,9 +899,13 @@ public sealed class ILBuilder
             default:
                 if (block is SwitchBlock sw)
                 {
+                    // Capture the switch instruction's end offset *before* writing the
+                    // opcode and count into the block buffer: once those 5 bytes are
+                    // written they inflate RegularLength, and TotalSize would then
+                    // double-count them, skewing every target by 5.
+                    int switchEnd = block.Start + block.TotalSize;
                     WriteOpCode(block, ILOpCode.Switch);
                     block.WriteInt32(sw.BranchLabelIds.Length);
-                    int switchEnd = block.Start + block.TotalSize;
                     foreach (int labelId in sw.BranchLabelIds)
                         block.WriteInt32(_labels[labelId - 1].Block.Start - switchEnd);
                 }
