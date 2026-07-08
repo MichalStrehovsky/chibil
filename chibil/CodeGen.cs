@@ -254,9 +254,9 @@ public class CodeGen
                     {
                         _enc.LoadArgumentAddress(argIdx);
                     }
-                    else if (_localSlots.TryGetValue(node.Var, out int localIdx))
+                    else
                     {
-                        _enc.LoadLocalAddress(localIdx);
+                        _enc.LoadLocalAddress(_localSlots[node.Var]);
                     }
                     return;
                 }
@@ -318,10 +318,7 @@ public class CodeGen
                 break;
 
             case NodeKind.VlaPtr:
-                if (_localSlots.TryGetValue(node.Var, out int vlaSlot))
-                {
-                    _enc.LoadLocalAddress(vlaSlot);
-                }
+                _enc.LoadLocalAddress(_localSlots[node.Var]);
                 return;
         }
         Util.ErrorTok(node.Tok, "not an lvalue");
@@ -405,9 +402,9 @@ public class CodeGen
         {
             _enc.LoadArgument(argIdx);
         }
-        else if (_localSlots.TryGetValue(var, out int localIdx))
+        else
         {
-            _enc.LoadLocal(localIdx);
+            _enc.LoadLocal(_localSlots[var]);
         }
     }
 
@@ -417,9 +414,9 @@ public class CodeGen
         {
             _enc.StoreArgument(argIdx);
         }
-        else if (_localSlots.TryGetValue(var, out int localIdx))
+        else
         {
-            _enc.StoreLocal(localIdx);
+            _enc.StoreLocal(_localSlots[var]);
         }
     }
 
