@@ -574,8 +574,6 @@ public sealed class ConstEval
 
             case NodeKind.Lt:
             case NodeKind.Le:
-            case NodeKind.Gt:
-            case NodeKind.Ge:
             {
                 bool res;
                 if (flonum)
@@ -585,7 +583,6 @@ public sealed class ConstEval
                     {
                         NodeKind.Lt => l < r,
                         NodeKind.Le => l <= r,
-                        NodeKind.Gt => l > r,
                         _ => l >= r,
                     };
                 }
@@ -596,7 +593,6 @@ public sealed class ConstEval
                     {
                         NodeKind.Lt => l < r,
                         NodeKind.Le => l <= r,
-                        NodeKind.Gt => l > r,
                         _ => l >= r,
                     };
                 }
@@ -607,7 +603,6 @@ public sealed class ConstEval
                     {
                         NodeKind.Lt => l < r,
                         NodeKind.Le => l <= r,
-                        NodeKind.Gt => l > r,
                         _ => l >= r,
                     };
                 }

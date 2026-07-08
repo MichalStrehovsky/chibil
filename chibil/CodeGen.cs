@@ -524,8 +524,6 @@ public class CodeGen
             case NodeKind.Ne:
             case NodeKind.Lt:
             case NodeKind.Le:
-            case NodeKind.Gt:
-            case NodeKind.Ge:
             {
                 // The result and operand types must both be plain numeric scalars.
                 // This excludes pointer arithmetic / pointer differences, whose
