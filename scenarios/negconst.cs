@@ -391,37 +391,37 @@ public class NegconstTest
         // ─── IJW machinery for exported methods ───────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(negOneMethod), "neg_one", "?neg_one@@$$J0YAHXZ");
+            negOneMethod, "neg_one", "?neg_one@@$$J0YAHXZ");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(intMinMethod), "int_min", "?int_min@@$$J0YAHXZ");
+            intMinMethod, "int_min", "?int_min@@$$J0YAHXZ");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(uintMaxMethod), "uint_max", "?uint_max@@$$J0YAIXZ");
+            uintMaxMethod, "uint_max", "?uint_max@@$$J0YAIXZ");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(llMaxMethod), "ll_max", "?ll_max@@$$J0YA_JXZ");
+            llMaxMethod, "ll_max", "?ll_max@@$$J0YA_JXZ");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(llMinMethod), "ll_min", "?ll_min@@$$J0YA_JXZ");
+            llMinMethod, "ll_min", "?ll_min@@$$J0YA_JXZ");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(smallNegMethod), "small_neg", "?small_neg@@$$J0YAHXZ");
+            smallNegMethod, "small_neg", "?small_neg@@$$J0YAHXZ");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(zeroMethod), "zero", "?zero@@$$J0YAHXZ");
+            zeroMethod, "zero", "?zero@@$$J0YAHXZ");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(smallPosMethod), "small_pos", "?small_pos@@$$J0YAHXZ");
+            smallPosMethod, "small_pos", "?small_pos@@$$J0YAHXZ");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mediumPosMethod), "medium_pos", "?medium_pos@@$$J0YAHXZ");
+            mediumPosMethod, "medium_pos", "?medium_pos@@$$J0YAHXZ");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(largePosMethod), "large_pos", "?large_pos@@$$J0YAHXZ");
+            largePosMethod, "large_pos", "?large_pos@@$$J0YAHXZ");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

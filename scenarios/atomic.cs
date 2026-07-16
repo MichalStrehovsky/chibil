@@ -301,13 +301,13 @@ public class AtomicTest
         // ─── IJW machinery for all 3 user functions ──────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(xchgMethod), "atomic_xchg", $"?atomic_xchg@@$$J0YAHP{e}CHH@Z");
+            xchgMethod, "atomic_xchg", $"?atomic_xchg@@$$J0YAHP{e}CHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(casMethod), "atomic_cas", $"?atomic_cas@@$$J0YAHP{e}CHHH@Z");
+            casMethod, "atomic_cas", $"?atomic_cas@@$$J0YAHP{e}CHHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

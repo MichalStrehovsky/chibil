@@ -39,7 +39,7 @@ public struct EcmaSignatureRewriter
     private void RewriteCustomModifier(SignatureTypeCode typeCode, CustomModifiersEncoder encoder)
     {
         encoder.AddModifier(
-            _tokenMap.MapEntity(_blobReader.ReadTypeHandle()),
+            _tokenMap.MapReference(_blobReader.ReadTypeHandle()),
             typeCode == SignatureTypeCode.OptionalModifier);
     }
 
@@ -87,7 +87,7 @@ public struct EcmaSignatureRewriter
                     byte classOrValueType = _blobReader.ReadByte();
                     System.Diagnostics.Debug.Assert(classOrValueType == 0x12 || classOrValueType == 0x11);
                     encoder.Type(
-                        _tokenMap.MapEntity(_blobReader.ReadTypeHandle()),
+                        _tokenMap.MapReference(_blobReader.ReadTypeHandle()),
                         isValueType: classOrValueType == 0x11);
                 }
                 break;
@@ -151,7 +151,7 @@ public struct EcmaSignatureRewriter
                     int numGenericArgs = _blobReader.ReadCompressedInteger();
 
                     GenericTypeArgumentsEncoder genericArgsEncoder = encoder.GenericInstantiation(
-                        _tokenMap.MapEntity(genericTypeDefHandle),
+                        _tokenMap.MapReference(genericTypeDefHandle),
                         numGenericArgs,
                         isValueType: classOrValueType == 0x11);
 

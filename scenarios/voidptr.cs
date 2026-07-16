@@ -365,19 +365,19 @@ public class VoidPtrTest
         // ─── IJW machinery for exported methods ───────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(identityMethod), "identity", $"?identity@@$$J0YAP{e}AXP{e}AX@Z");
+            identityMethod, "identity", $"?identity@@$$J0YAP{e}AXP{e}AX@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(derefViaCastMethod), "deref_via_cast", $"?deref_via_cast@@$$J0YAHP{e}AX@Z");
+            derefViaCastMethod, "deref_via_cast", $"?deref_via_cast@@$$J0YAHP{e}AX@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(writeViaCastMethod), "write_via_cast", $"?write_via_cast@@$$J0YAXP{e}AXH@Z");
+            writeViaCastMethod, "write_via_cast", $"?write_via_cast@@$$J0YAXP{e}AXH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(copyBytesMethod), "copy_bytes", $"?copy_bytes@@$$J0YAXP{e}AX0H@Z");
+            copyBytesMethod, "copy_bytes", $"?copy_bytes@@$$J0YAXP{e}AX0H@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

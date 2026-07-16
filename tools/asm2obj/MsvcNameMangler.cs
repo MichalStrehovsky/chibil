@@ -71,7 +71,7 @@ public sealed class MsvcNameMangler
 
     /// <summary>
     /// Mangle a MemberReference (must be a method member ref) into its MSVC
-    /// decorated name. Used for ForwardRef extern declarations.
+    /// decorated name. Used for synthesized method references.
     /// </summary>
     public string MangleMemberRef(MemberReferenceHandle handle) => MangleMemberRef(handle, injections: null);
 

@@ -24,8 +24,8 @@ public sealed partial class MetadataCopier
 
             var inputH = MetadataTokens.MethodDefinitionHandle(inputRow);
             var outputH = TokenMap.MapMethodDef(inputH);
+            var referenceH = TokenMap.MapMethodDefReference(inputH);
             int outRow = MetadataTokens.GetRowNumber(outputH);
-            int methodToken = MetadataTokens.GetToken(outputH);
 
             string mangled = _outputMethodDecoratedNames[outRow];
             string bareName = _outputMethodBareNames[outRow];
@@ -34,7 +34,7 @@ public sealed partial class MetadataCopier
                 machine, _ptrSize, _symPrefix,
                 coffHeader, symtab,
                 dataSection, nepSection, ilFixupSection,
-                methodToken, bareName, mangled);
+                referenceH, bareName, mangled);
         }
     }
 }

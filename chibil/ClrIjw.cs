@@ -82,7 +82,7 @@ internal static class ClrIjw
         CoffSectionWithContentBuilder dataSectionBuilder,
         CoffSectionWithContentBuilder nepSectionBuilder,
         CoffSectionWithContentBuilder ilFixupSectionBuilder,
-        int methodToken, string bareName, string mangledSuffix)
+        Handle methodToken, string bareName, string mangledSuffix)
     {
         // (1) __mep@?fn slot in .data, zero-initialized. The linker stamps
         //     the MethodDef token bytes here via the TOKEN reloc below.
@@ -91,7 +91,7 @@ internal static class ClrIjw
 
         var mepDataSym = symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, dataSectionBuilder, slotOffset);
 
-        var tokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(methodToken.ToString("X8"));
+        var tokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(methodToken);
         new CoffRelocationEncoder(coffHeader, dataSectionBuilder.Relocations).AddTokenRelocation(slotOffset, tokenSym);
 
         // (2) NEP thunk in .nep, single indirect jump through the __mep@?fn slot.
@@ -138,7 +138,7 @@ internal static class ClrIjw
         Machine machine, int ptrSize, string symPrefix,
         CoffHeaderBuilder coffHeader, ManagedCoffSymbolTableBuilder symtab,
         ICollection<CoffSectionBuilder> sections,
-        int methodToken, string bareName, string mangledSuffix)
+        Handle methodToken, string bareName, string mangledSuffix)
     {
         SectionCharacteristics pointerAlign = CoffSectionBuilder.AlignmentCharacteristics(ptrSize);
 
@@ -152,7 +152,7 @@ internal static class ClrIjw
         symtab.AddComdatSectionSymbol(dataSection);
         var mepDataSym = symtab.AddExternalDataSymbol("__mep@" + mangledSuffix, dataSection, 0);
 
-        var tokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(methodToken.ToString("X8"));
+        var tokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(methodToken);
         new CoffRelocationEncoder(coffHeader, dataSection.Relocations).AddTokenRelocation(0, tokenSym);
 
         var nepSection = new CoffSectionWithContentBuilder(

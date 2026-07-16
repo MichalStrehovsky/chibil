@@ -158,7 +158,7 @@ public class DefAndRefTest
             // ─── IJW machinery for arith (NEP thunk + __mep@ slot + ilfixup) ─
             ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
                 dataSection, nepSection, ilFixupSection,
-                methodToken: MetadataTokens.GetToken(arithMethod),
+                methodToken: arithMethod,
                 bareName: "arith",
                 mangledSuffix: "?arith@@$$J0YAHHH@Z");
 
@@ -208,7 +208,8 @@ public class DefAndRefTest
             var ilFixupSection = new CoffSectionWithContentBuilder(".rdata$ilfixup", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
 
             // Register the external arith symbol BEFORE emitting IL that calls it.
-            symtab.AddExternalClrToken("?arith@@$$J0YAHHH@Z", arithMemberRef);
+            symtab.AddUndefinedExternalSymbol("?arith@@$$J0YAHHH@Z");
+            symtab.GetOrAddUndefinedClrTokenSymbol(arithMemberRef, CoffSymbolType.Function);
 
             // ─── CodeView ────────────────────────────────────────────────
             var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
@@ -249,7 +250,7 @@ public class DefAndRefTest
             // ─── IJW machinery for main (NEP thunk + __mep@ slot + ilfixup) ─
             ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
                 dataSection, nepSection, ilFixupSection,
-                methodToken: MetadataTokens.GetToken(mainMethod),
+                methodToken: mainMethod,
                 bareName: "main",
                 mangledSuffix: "?main@@$$J0YAHXZ");
 

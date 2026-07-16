@@ -265,10 +265,10 @@ public class SwitchTest
 
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(classifyMethod), "classify", "?classify@@$$J0YAHH@Z");
+            classifyMethod, "classify", "?classify@@$$J0YAHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
         if (ilSection.Content.Count > 0) sections.Add(ilSection);

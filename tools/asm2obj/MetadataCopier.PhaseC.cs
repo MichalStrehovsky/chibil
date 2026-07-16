@@ -35,7 +35,7 @@ public sealed partial class MetadataCopier
         }
     }
 
-    // ─── TypeRef (including synthesized forward-ref TypeRefs) ───────────────
+    // ─── TypeRef (copied and synthesized) ──────────────────────────────────
     private void EmitTypeRefs()
     {
         // Has to be preceded by Assembly/ModuleRef so ResolutionScope mapping works.
@@ -47,7 +47,7 @@ public sealed partial class MetadataCopier
             var tr = _reader.GetTypeReference(MetadataTokens.TypeReferenceHandle(r));
             EntityHandle outScope = tr.ResolutionScope.IsNil
                 ? default
-                : TokenMap.MapEntity(tr.ResolutionScope);
+                : TokenMap.MapReference(tr.ResolutionScope);
             var outH = _outputMd.AddTypeReference(
                 outScope,
                 _outputMd.GetOrAddString(_reader.GetString(tr.Namespace)),
@@ -70,6 +70,23 @@ public sealed partial class MetadataCopier
                 int expectedRow = _modifierTypeRefOutputRow[kind];
                 TokenMap.AssertHandle(expectedRow, outH);
             }
+        }
+
+        foreach (int inputRow in _localTypeRefSourceRows)
+        {
+            var inputH = MetadataTokens.TypeDefinitionHandle(inputRow);
+            var td = _reader.GetTypeDefinition(inputH);
+            var enclosing = td.GetDeclaringType();
+            EntityHandle scope = enclosing.IsNil
+                ? default
+                : TokenMap.MapTypeDefReference(enclosing);
+            var outH = _outputMd.AddTypeReference(
+                scope,
+                _outputMd.GetOrAddString(_reader.GetString(td.Namespace)),
+                _outputMd.GetOrAddString(_reader.GetString(td.Name)));
+            TokenMap.AssertHandle(
+                MetadataTokens.GetRowNumber(TokenMap.MapTypeDefReference(inputH)),
+                outH);
         }
     }
 
@@ -130,7 +147,7 @@ public sealed partial class MetadataCopier
                 td.Attributes,
                 _outputMd.GetOrAddString(_reader.GetString(td.Namespace)),
                 _outputMd.GetOrAddString(_reader.GetString(td.Name)),
-                td.BaseType.IsNil ? default : TokenMap.MapEntity(td.BaseType),
+                td.BaseType.IsNil ? default : TokenMap.MapReference(td.BaseType),
                 MetadataTokens.FieldDefinitionHandle(_outTypeDefFieldFirst[outRow]),
                 MetadataTokens.MethodDefinitionHandle(_outTypeDefMethodFirst[outRow]));
             TokenMap.AssertHandle(outRow, outH);
@@ -209,7 +226,7 @@ public sealed partial class MetadataCopier
         }
     }
 
-    // ─── MemberRef (input copies + synthesized ForwardRef) ──────────────────
+    // ─── MemberRef (input copies + synthesized local references) ───────────
     private void EmitMemberRefs()
     {
         for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.MemberRef); r++)
@@ -219,7 +236,9 @@ public sealed partial class MetadataCopier
             var sigBuilder = new BlobBuilder();
             EcmaSignatureRewriter.RewriteMemberReferenceSignature(sigReader, TokenMap, sigBuilder);
 
-            EntityHandle parent = TokenMap.MapEntity(mr.Parent);
+            EntityHandle parent = mr.Parent.Kind == HandleKind.MethodDefinition
+                ? TokenMap.MapMethodDef((MethodDefinitionHandle)mr.Parent)
+                : TokenMap.MapReference(mr.Parent);
             var outH = _outputMd.AddMemberReference(
                 parent,
                 _outputMd.GetOrAddString(_reader.GetString(mr.Name)),
@@ -227,10 +246,25 @@ public sealed partial class MetadataCopier
             TokenMap.AssertHandle(r, outH);
         }
 
-        // Synthesized MemberRefs for ForwardRef externs.
-        for (int i = 0; i < _forwardRefSourceMethodRows.Count; i++)
+        foreach (int fieldRow in _localFieldRefSourceRows)
         {
-            int methodRow = _forwardRefSourceMethodRows[i];
+            var fieldH = MetadataTokens.FieldDefinitionHandle(fieldRow);
+            var fd = _reader.GetFieldDefinition(fieldH);
+            var sigReader = _reader.GetBlobReader(fd.Signature);
+            var sigBuilder = new BlobBuilder();
+            EcmaSignatureRewriter.RewriteFieldSignature(sigReader, TokenMap, sigBuilder);
+
+            var outH = _outputMd.AddMemberReference(
+                GetLocalMemberReferenceParent(fd.GetDeclaringType()),
+                _outputMd.GetOrAddString(_reader.GetString(fd.Name)),
+                _outputMd.GetOrAddBlob(sigBuilder));
+            TokenMap.AssertHandle(
+                MetadataTokens.GetRowNumber(TokenMap.MapFieldReference(fieldH)),
+                outH);
+        }
+
+        foreach (int methodRow in _localMethodRefSourceRows)
+        {
             var md = _reader.GetMethodDefinition(MetadataTokens.MethodDefinitionHandle(methodRow));
             string name = _reader.GetString(md.Name);
             var sigReader = _reader.GetBlobReader(md.Signature);
@@ -241,36 +275,31 @@ public sealed partial class MetadataCopier
                 : null;
             EcmaSignatureRewriter.RewriteMethodSignature(sigReader, TokenMap, sigBuilder, injector);
 
-            // Parent the synthesized MemberRef on the output <Module> TypeDef,
-            // matching scenarios/pinvoke.cs and how chibil emits extern
-            // function references for the linker to resolve.
-            var moduleParent = MetadataTokens.TypeDefinitionHandle(OutputModuleTypeDefRow);
             var outH = _outputMd.AddMemberReference(
-                moduleParent,
+                GetLocalMemberReferenceParent(md.GetDeclaringType()),
                 _outputMd.GetOrAddString(name),
                 _outputMd.GetOrAddBlob(sigBuilder));
-            TokenMap.AssertHandle(_forwardRefMemberRefRows[i], outH);
+            TokenMap.AssertHandle(
+                MetadataTokens.GetRowNumber(TokenMap.MapMethodDefReference(
+                    MetadataTokens.MethodDefinitionHandle(methodRow))),
+                outH);
 
-            // Compute / capture decorated name for this extern. Auto-mangle or use [DecoratedName].
-            // Apply the x86 underscore rule consistently with PhaseD's
-            // ComputeFunctionSymbolName / ComputeMemberRefSymbolName.
-            string explicitName = _methodInfo[methodRow].DecoratedName;
-            string decName = explicitName != null
-                ? ApplyX86UnderscoreRule(explicitName)
-                : _mangler.MangleMethod(MetadataTokens.MethodDefinitionHandle(methodRow), _methodInjections[methodRow]);
-            _forwardRefDecoratedNames.Add(decName);
-
-            // Queue the synthesized DecoratedNameAttribute for emission during
-            // the sorted CustomAttribute pass. Adding it inline here would
-            // violate the HasCustomAttribute coded-index sort order required
-            // by ECMA.
-            _synthesizedForwardRefCAs.Add((outH, decName));
+            _synthesizedDecoratedNameCAs.Add(
+                (outH, _methodReferenceDecoratedNames[methodRow]));
         }
     }
 
-    // List of (MemberRef parent, decorated-name value) for synthesized
-    // DecoratedName CAs that EmitMemberRefs queued for the sorted pass.
-    private readonly List<(EntityHandle parent, string value)> _synthesizedForwardRefCAs = new();
+    private EntityHandle GetLocalMemberReferenceParent(TypeDefinitionHandle inputOwner)
+    {
+        int ownerRow = MetadataTokens.GetRowNumber(inputOwner);
+        return _typeInfo[ownerRow].Disposition == TypeDisposition.Flatten
+            ? MetadataTokens.TypeDefinitionHandle(OutputModuleTypeDefRow)
+            : TokenMap.MapTypeDefReference(inputOwner);
+    }
+
+    // List of (MemberRef parent, decorated-name value) for synthesized method
+    // references, queued for the sorted CustomAttribute pass.
+    private readonly List<(EntityHandle parent, string value)> _synthesizedDecoratedNameCAs = new();
 
     private AssemblyReferenceHandle _coreLibAssemblyRefField;
     private AssemblyReferenceHandle _coreLibAssemblyRef
@@ -314,7 +343,7 @@ public sealed partial class MetadataCopier
             var sigBuilder = new BlobBuilder();
             EcmaSignatureRewriter.RewriteMethodSpecSignature(sigReader, TokenMap, sigBuilder);
 
-            EntityHandle method = TokenMap.MapEntity(ms.Method);
+            EntityHandle method = TokenMap.MapReference(ms.Method);
             var outH = _outputMd.AddMethodSpecification(method, _outputMd.GetOrAddBlob(sigBuilder));
             TokenMap.AssertHandle(r, outH);
         }
@@ -326,10 +355,22 @@ public sealed partial class MetadataCopier
         for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.Constant); r++)
         {
             var c = _reader.GetConstant(MetadataTokens.ConstantHandle(r));
-            EntityHandle parent = TokenMap.MapEntity(c.Parent);
+            EntityHandle parent = MapConstantParent(c.Parent);
             if (parent.IsNil) continue;
             _outputMd.AddConstant(parent, GetConstantValue(c));
         }
+    }
+
+    private EntityHandle MapConstantParent(EntityHandle parent)
+    {
+        return parent.Kind switch
+        {
+            HandleKind.FieldDefinition => TokenMap.MapField((FieldDefinitionHandle)parent),
+            HandleKind.Parameter => TokenMap.MapEntity(parent),
+            HandleKind.PropertyDefinition => TokenMap.MapEntity(parent),
+            _ => throw new BadImageFormatException(
+                $"Unexpected Constant parent kind {parent.Kind}.")
+        };
     }
 
     private static object GetConstantValue(Constant c)
@@ -407,7 +448,7 @@ public sealed partial class MetadataCopier
                 var ii = _reader.GetInterfaceImplementation(iiH);
                 _outputMd.AddInterfaceImplementation(
                     MetadataTokens.TypeDefinitionHandle(outRow),
-                    TokenMap.MapEntity(ii.Interface));
+                    TokenMap.MapReference(ii.Interface));
             }
         }
     }
@@ -424,9 +465,12 @@ public sealed partial class MetadataCopier
             foreach (var miH in td.GetMethodImplementations())
             {
                 var mi = _reader.GetMethodImplementation(miH);
+                EntityHandle body = mi.MethodBody.Kind == HandleKind.MethodDefinition
+                    ? TokenMap.MapMethodDef((MethodDefinitionHandle)mi.MethodBody)
+                    : TokenMap.MapEntity(mi.MethodBody);
                 _outputMd.AddMethodImplementation(
                     MetadataTokens.TypeDefinitionHandle(outRow),
-                    TokenMap.MapEntity(mi.MethodBody),
+                    body,
                     TokenMap.MapEntity(mi.MethodDeclaration));
             }
         }
@@ -464,7 +508,9 @@ public sealed partial class MetadataCopier
             var inputH = MetadataTokens.GenericParameterHandle(r);
             var gp = _reader.GetGenericParameter(inputH);
             if (!OwnerSurvives(gp.Parent)) continue;
-            EntityHandle owner = TokenMap.MapEntity(gp.Parent);
+            EntityHandle owner = gp.Parent.Kind == HandleKind.TypeDefinition
+                ? TokenMap.MapTypeDef((TypeDefinitionHandle)gp.Parent)
+                : TokenMap.MapMethodDef((MethodDefinitionHandle)gp.Parent);
             var outH = _outputMd.AddGenericParameter(
                 owner,
                 gp.Attributes,
@@ -488,7 +534,7 @@ public sealed partial class MetadataCopier
                 TokenMap.SetGenericParamConstraint(inputH, 0);
                 continue;
             }
-            var outH = _outputMd.AddGenericParameterConstraint(ownerOut, TokenMap.MapEntity(gpc.Type));
+            var outH = _outputMd.AddGenericParameterConstraint(ownerOut, TokenMap.MapReference(gpc.Type));
             // Re-set the TokenMap with the actually-issued row, in case any
             // earlier constraint was dropped and the running counter diverged
             // from the predicted 1:1 mapping.
@@ -527,7 +573,7 @@ public sealed partial class MetadataCopier
             EntityHandle outParent = RemapCustomAttributeParent(ca.Parent);
             if (outParent.IsNil) continue;
 
-            EntityHandle outCtor = TokenMap.MapEntity(ca.Constructor);
+            EntityHandle outCtor = TokenMap.MapReference(ca.Constructor);
             if (outCtor.IsNil) continue;
 
             BlobHandle outValue = ca.Value.IsNil
@@ -538,13 +584,13 @@ public sealed partial class MetadataCopier
             entries.Add((sortKey, outParent, outCtor, outValue));
         }
 
-        // Add synthesized DecoratedName CAs (one per ForwardRef extern). These
+        // Add synthesized DecoratedName CAs for local method references. These
         // must participate in the same sort to preserve HasCustomAttribute
         // monotonicity required by ECMA.
-        if (_synthesizedForwardRefCAs.Count > 0)
+        if (_synthesizedDecoratedNameCAs.Count > 0)
         {
             var ctorRef = EnsureDecoratedNameCtorRef();
-            foreach (var (parent, value) in _synthesizedForwardRefCAs)
+            foreach (var (parent, value) in _synthesizedDecoratedNameCAs)
             {
                 var valueBlob = new BlobBuilder();
                 valueBlob.WriteUInt16(0x0001);
@@ -586,10 +632,8 @@ public sealed partial class MetadataCopier
     }
 
     /// <summary>
-    /// Remap a CustomAttribute parent handle, accounting for ForwardRef methods
-    /// that become MemberRefs in the output. A CA on an input MethodDef whose
-    /// disposition is ForwardRefMemberRef must move to the corresponding output
-    /// MemberRef.
+    /// Remap a CustomAttribute parent handle. Definition parents stay attached
+    /// to surviving definitions; reference-only methods use their MemberRef.
     /// </summary>
     private EntityHandle RemapCustomAttributeParent(EntityHandle inputParent)
     {
@@ -597,12 +641,10 @@ public sealed partial class MetadataCopier
         {
             int row = MetadataTokens.GetRowNumber((MethodDefinitionHandle)inputParent);
             if (row > 0 && _methodInfo[row].Disposition == MethodDisposition.ForwardRefMemberRef)
-            {
-                int idx = _forwardRefSourceMethodRows.IndexOf(row);
-                return MetadataTokens.MemberReferenceHandle(_forwardRefMemberRefRows[idx]);
-            }
+                return TokenMap.MapMethodDefReference((MethodDefinitionHandle)inputParent);
             if (row > 0 && _methodInfo[row].Disposition == MethodDisposition.Drop)
                 return default;
+            return TokenMap.MapMethodDef((MethodDefinitionHandle)inputParent);
         }
         if (inputParent.Kind == HandleKind.TypeDefinition)
         {
@@ -610,7 +652,10 @@ public sealed partial class MetadataCopier
             var disp = _typeInfo[row].Disposition;
             if (disp == TypeDisposition.Drop) return default;
             if (disp == TypeDisposition.Flatten) return default;
+            return TokenMap.MapTypeDef((TypeDefinitionHandle)inputParent);
         }
+        if (inputParent.Kind == HandleKind.FieldDefinition)
+            return TokenMap.MapField((FieldDefinitionHandle)inputParent);
         // Drop CAs whose parent is the Assembly/Module level — we're not
         // producing an assembly, so assembly-level attributes have no home.
         if (inputParent.Kind == HandleKind.AssemblyDefinition) return default;

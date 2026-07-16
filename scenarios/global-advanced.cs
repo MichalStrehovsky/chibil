@@ -364,10 +364,8 @@ public class GlobalAdvancedTest
 
         // ─── Stamp MethodDef tokens into __mep@?fn data slots via TOKEN relocs ─
         // (after AddMethodBody, the "06000001"/"06000002" CLR-token symbols exist.)
-        int getMethodToken  = MetadataTokens.GetToken(getMethod);
-        int mainMethodToken = MetadataTokens.GetToken(mainMethod);
-        var getTokenSym  = symtab.GetOrAddUndefinedClrTokenSymbol(getMethodToken.ToString("X8"));
-        var mainTokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(mainMethodToken.ToString("X8"));
+        var getTokenSym  = symtab.GetOrAddUndefinedClrTokenSymbol(getMethod);
+        var mainTokenSym = symtab.GetOrAddUndefinedClrTokenSymbol(mainMethod);
         new CoffRelocationEncoder(coffHeader, dataSection.Relocations).AddTokenRelocation(mepGetOffset,  getTokenSym);
         new CoffRelocationEncoder(coffHeader, dataSection.Relocations).AddTokenRelocation(mepMainOffset, mainTokenSym);
 

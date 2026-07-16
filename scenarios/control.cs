@@ -408,19 +408,19 @@ public class ControlTest
 
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(sumLoopMethod), "sum_loop", "?sum_loop@@$$J0YAHH@Z");
+            sumLoopMethod, "sum_loop", "?sum_loop@@$$J0YAHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(countWhileMethod), "count_while", "?count_while@@$$J0YAHH@Z");
+            countWhileMethod, "count_while", "?count_while@@$$J0YAHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(countDoMethod), "count_do", "?count_do@@$$J0YAHH@Z");
+            countDoMethod, "count_do", "?count_do@@$$J0YAHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(useGotoMethod), "use_goto", "?use_goto@@$$J0YAHH@Z");
+            useGotoMethod, "use_goto", "?use_goto@@$$J0YAHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
         if (ilSection.Content.Count > 0) sections.Add(ilSection);

@@ -515,4 +515,32 @@ public class FieldBackedAggregateTests : ChibiTestBase
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 14);
     }
+
+    [Fact]
+    public void FieldBackedForwardTypeAndFieldReferencesLink()
+    {
+        Compile("""
+            struct Value;
+
+            struct Value *identity(struct Value *value) {
+                return value;
+            }
+
+            struct Value {
+                int number;
+            };
+
+            int read_value(struct Value *value) {
+                return value->number;
+            }
+
+            int main(void) {
+                struct Value value;
+                value.number = 42;
+                return read_value(identity(&value));
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
 }

@@ -402,34 +402,34 @@ public class LonglongTest
         // ─── IJW machinery for exported methods ───────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(llAddMethod), "ll_add", "?ll_add@@$$J0YA_J_J0@Z");
+            llAddMethod, "ll_add", "?ll_add@@$$J0YA_J_J0@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(llMulMethod), "ll_mul", "?ll_mul@@$$J0YA_J_J0@Z");
+            llMulMethod, "ll_mul", "?ll_mul@@$$J0YA_J_J0@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(llDivMethod), "ll_div", "?ll_div@@$$J0YA_J_J0@Z");
+            llDivMethod, "ll_div", "?ll_div@@$$J0YA_J_J0@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(llShlMethod), "ll_shl", "?ll_shl@@$$J0YA_J_JH@Z");
+            llShlMethod, "ll_shl", "?ll_shl@@$$J0YA_J_JH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(llShrMethod), "ll_shr", "?ll_shr@@$$J0YA_J_JH@Z");
+            llShrMethod, "ll_shr", "?ll_shr@@$$J0YA_J_JH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(ullShrMethod), "ull_shr", "?ull_shr@@$$J0YA_K_KH@Z");
+            ullShrMethod, "ull_shr", "?ull_shr@@$$J0YA_K_KH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(llCompareMethod), "ll_compare", "?ll_compare@@$$J0YAH_J0@Z");
+            llCompareMethod, "ll_compare", "?ll_compare@@$$J0YAH_J0@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(intToLlMethod), "int_to_ll", "?int_to_ll@@$$J0YA_JH@Z");
+            intToLlMethod, "int_to_ll", "?int_to_ll@@$$J0YA_JH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(llToIntMethod), "ll_to_int", "?ll_to_int@@$$J0YAH_J@Z");
+            llToIntMethod, "ll_to_int", "?ll_to_int@@$$J0YAH_J@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

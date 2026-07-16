@@ -475,16 +475,16 @@ public class FloatTest
         // ─── IJW machinery for exported methods ───────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(floatArithMethod), "float_arith", "?float_arith@@$$J0YAMMM@Z");
+            floatArithMethod, "float_arith", "?float_arith@@$$J0YAMMM@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(doubleArithMethod), "double_arith", "?double_arith@@$$J0YANNN@Z");
+            doubleArithMethod, "double_arith", "?double_arith@@$$J0YANNN@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(floatCmpMethod), "float_compare", "?float_compare@@$$J0YAHMM@Z");
+            floatCmpMethod, "float_compare", "?float_compare@@$$J0YAHMM@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

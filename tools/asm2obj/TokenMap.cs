@@ -21,8 +21,11 @@ public sealed class TokenMap
     // A zero value means "not mapped" (entity was dropped).
     private readonly int[] _typeRef;
     private readonly int[] _typeDef;
+    private readonly int[] _typeDefReference;
     private readonly int[] _field;
+    private readonly int[] _fieldReference;
     private readonly int[] _methodDef;
+    private readonly int[] _methodDefReference;
     private readonly int[] _param;
     private readonly int[] _memberRef;
     private readonly int[] _typeSpec;
@@ -41,10 +44,6 @@ public sealed class TokenMap
 
     private readonly Dictionary<UserStringHandle, UserStringHandle> _userStringCache = new();
 
-    // ForwardRef methods that are demoted to MemberRefs in the output: map
-    // input MethodDef row → output MemberRef row.
-    private readonly Dictionary<int, int> _methodDefAsMemberRef = new();
-
     public TokenMap(MetadataReader reader, MetadataBuilder builder)
     {
         _reader = reader;
@@ -52,8 +51,11 @@ public sealed class TokenMap
 
         _typeRef = new int[reader.GetTableRowCount(TableIndex.TypeRef) + 1];
         _typeDef = new int[reader.GetTableRowCount(TableIndex.TypeDef) + 1];
+        _typeDefReference = new int[_typeDef.Length];
         _field = new int[reader.GetTableRowCount(TableIndex.Field) + 1];
+        _fieldReference = new int[_field.Length];
         _methodDef = new int[reader.GetTableRowCount(TableIndex.MethodDef) + 1];
+        _methodDefReference = new int[_methodDef.Length];
         _param = new int[reader.GetTableRowCount(TableIndex.Param) + 1];
         _memberRef = new int[reader.GetTableRowCount(TableIndex.MemberRef) + 1];
         _typeSpec = new int[reader.GetTableRowCount(TableIndex.TypeSpec) + 1];
@@ -75,18 +77,12 @@ public sealed class TokenMap
 
     public void SetTypeRef(TypeReferenceHandle input, int outputRow) => _typeRef[MetadataTokens.GetRowNumber(input)] = outputRow;
     public void SetTypeDef(TypeDefinitionHandle input, int outputRow) => _typeDef[MetadataTokens.GetRowNumber(input)] = outputRow;
+    public void SetTypeDefReference(TypeDefinitionHandle input, int outputTypeRefRow) => _typeDefReference[MetadataTokens.GetRowNumber(input)] = outputTypeRefRow;
     public void SetTypeDefUnmappedReason(TypeDefinitionHandle input, string reason) => _typeDefUnmappedReasons[MetadataTokens.GetRowNumber(input)] = reason;
     public void SetField(FieldDefinitionHandle input, int outputRow) => _field[MetadataTokens.GetRowNumber(input)] = outputRow;
+    public void SetFieldReference(FieldDefinitionHandle input, int outputMemberRefRow) => _fieldReference[MetadataTokens.GetRowNumber(input)] = outputMemberRefRow;
     public void SetMethodDef(MethodDefinitionHandle input, int outputRow) => _methodDef[MetadataTokens.GetRowNumber(input)] = outputRow;
-
-    /// <summary>
-    /// Records that an input MethodDef is demoted to a MemberRef in the
-    /// output (the ForwardRef case). IL token-rewriting will redirect
-    /// references to the input MethodDef to the corresponding output
-    /// MemberRef token.
-    /// </summary>
-    public void SetMethodDefAsMemberRef(MethodDefinitionHandle input, int memberRefOutputRow)
-        => _methodDefAsMemberRef[MetadataTokens.GetRowNumber(input)] = memberRefOutputRow;
+    public void SetMethodDefReference(MethodDefinitionHandle input, int outputMemberRefRow) => _methodDefReference[MetadataTokens.GetRowNumber(input)] = outputMemberRefRow;
     public void SetParam(ParameterHandle input, int outputRow) => _param[MetadataTokens.GetRowNumber(input)] = outputRow;
     public void SetMemberRef(MemberReferenceHandle input, int outputRow) => _memberRef[MetadataTokens.GetRowNumber(input)] = outputRow;
     public void SetTypeSpec(TypeSpecificationHandle input, int outputRow) => _typeSpec[MetadataTokens.GetRowNumber(input)] = outputRow;
@@ -112,8 +108,20 @@ public sealed class TokenMap
                 $"Input TypeDef '{GetTypeDefFullName(h)}' is not emitted by asm2obj and cannot be referenced.");
         return MetadataTokens.TypeDefinitionHandle(outputRow);
     }
+    public TypeReferenceHandle MapTypeDefReference(TypeDefinitionHandle h)
+    {
+        int inputRow = MetadataTokens.GetRowNumber(h);
+        int outputRow = _typeDefReference[inputRow];
+        if (outputRow == 0)
+            throw new NotSupportedException(
+                _typeDefUnmappedReasons[inputRow] ??
+                $"Input TypeDef '{GetTypeDefFullName(h)}' has no emitted reference.");
+        return MetadataTokens.TypeReferenceHandle(outputRow);
+    }
     public FieldDefinitionHandle MapField(FieldDefinitionHandle h) => MetadataTokens.FieldDefinitionHandle(_field[MetadataTokens.GetRowNumber(h)]);
+    public MemberReferenceHandle MapFieldReference(FieldDefinitionHandle h) => MetadataTokens.MemberReferenceHandle(_fieldReference[MetadataTokens.GetRowNumber(h)]);
     public MethodDefinitionHandle MapMethodDef(MethodDefinitionHandle h) => MetadataTokens.MethodDefinitionHandle(_methodDef[MetadataTokens.GetRowNumber(h)]);
+    public MemberReferenceHandle MapMethodDefReference(MethodDefinitionHandle h) => MetadataTokens.MemberReferenceHandle(_methodDefReference[MetadataTokens.GetRowNumber(h)]);
     public MemberReferenceHandle MapMemberRef(MemberReferenceHandle h) => MetadataTokens.MemberReferenceHandle(_memberRef[MetadataTokens.GetRowNumber(h)]);
     public TypeSpecificationHandle MapTypeSpec(TypeSpecificationHandle h) => MetadataTokens.TypeSpecificationHandle(_typeSpec[MetadataTokens.GetRowNumber(h)]);
     public MethodSpecificationHandle MapMethodSpec(MethodSpecificationHandle h) => MetadataTokens.MethodSpecificationHandle(_methodSpec[MetadataTokens.GetRowNumber(h)]);
@@ -121,9 +129,7 @@ public sealed class TokenMap
     public AssemblyReferenceHandle MapAssemblyRef(AssemblyReferenceHandle h) => MetadataTokens.AssemblyReferenceHandle(_assemblyRef[MetadataTokens.GetRowNumber(h)]);
     public ModuleReferenceHandle MapModuleRef(ModuleReferenceHandle h) => (ModuleReferenceHandle)MetadataTokens.Handle(TableIndex.ModuleRef, _moduleRef[MetadataTokens.GetRowNumber(h)]);
 
-    /// <summary>
-    /// Generic dispatch over EntityHandle by kind.
-    /// </summary>
+    /// <summary>Maps an entity used as a metadata definition or owner.</summary>
     public EntityHandle MapEntity(EntityHandle handle)
     {
         if (handle.IsNil) return default;
@@ -134,10 +140,11 @@ public sealed class TokenMap
             case HandleKind.FieldDefinition: return MapField((FieldDefinitionHandle)handle);
             case HandleKind.MethodDefinition:
                 {
-                    int inputRow = MetadataTokens.GetRowNumber((MethodDefinitionHandle)handle);
-                    if (_methodDefAsMemberRef.TryGetValue(inputRow, out int memberRefRow))
-                        return MetadataTokens.MemberReferenceHandle(memberRefRow);
-                    return MapMethodDef((MethodDefinitionHandle)handle);
+                    var method = (MethodDefinitionHandle)handle;
+                    int row = _methodDef[MetadataTokens.GetRowNumber(method)];
+                    return row != 0
+                        ? MetadataTokens.MethodDefinitionHandle(row)
+                        : MapMethodDefReference(method);
                 }
             case HandleKind.MemberReference: return MapMemberRef((MemberReferenceHandle)handle);
             case HandleKind.TypeSpecification: return MapTypeSpec((TypeSpecificationHandle)handle);
@@ -176,14 +183,17 @@ public sealed class TokenMap
         }
     }
 
-    /// <summary>
-    /// Convenience to read the int token form (used by IL operand rewriting).
-    /// </summary>
-    public int MapToken(int inputToken)
+    /// <summary>Maps an entity used from a signature, IL operand, or other reference context.</summary>
+    public EntityHandle MapReference(EntityHandle handle)
     {
-        if (inputToken == 0) return 0;
-        EntityHandle h = MetadataTokens.EntityHandle(inputToken);
-        return MetadataTokens.GetToken(MapEntity(h));
+        if (handle.IsNil) return default;
+        return handle.Kind switch
+        {
+            HandleKind.TypeDefinition => MapTypeDefReference((TypeDefinitionHandle)handle),
+            HandleKind.FieldDefinition => MapFieldReference((FieldDefinitionHandle)handle),
+            HandleKind.MethodDefinition => MapMethodDefReference((MethodDefinitionHandle)handle),
+            _ => MapEntity(handle),
+        };
     }
 
     // ─── User strings ────────────────────────────────────────────────────────
@@ -201,13 +211,6 @@ public sealed class TokenMap
         var output = _builder.GetOrAddUserString(s);
         _userStringCache[input] = output;
         return output;
-    }
-
-    public int MapUserStringToken(int inputToken)
-    {
-        // 0x70xxxxxx
-        var input = MetadataTokens.UserStringHandle(inputToken & 0x00FFFFFF);
-        return MetadataTokens.GetToken(MapUserString(input));
     }
 
     // ─── Assertion helpers ───────────────────────────────────────────────────

@@ -545,8 +545,6 @@ namespace Coff
                 if (handlerLength < 0) throw new ArgumentOutOfRangeException(nameof(handlerLength));
             }
 
-            int catchTokenOrOffset;
-            bool isToken;
             switch (kind)
             {
                 case ExceptionRegionKind.Catch:
@@ -554,9 +552,6 @@ namespace Coff
                     {
                         throw new ArgumentException(nameof(catchType));
                     }
-
-                    catchTokenOrOffset = MetadataTokens.GetToken(catchType);
-                    isToken = true;
                     break;
 
                 case ExceptionRegionKind.Filter:
@@ -564,22 +559,17 @@ namespace Coff
                     {
                         throw new ArgumentOutOfRangeException(nameof(filterOffset));
                     }
-
-                    catchTokenOrOffset = filterOffset;
-                    isToken = false;
                     break;
 
                 case ExceptionRegionKind.Finally:
                 case ExceptionRegionKind.Fault:
-                    catchTokenOrOffset = 0;
-                    isToken = false;
                     break;
 
                 default:
                     throw new ArgumentOutOfRangeException(nameof(kind));
             }
 
-            AddUnchecked(kind, tryOffset, tryLength, handlerOffset, handlerLength, catchTokenOrOffset, isToken);
+            AddUnchecked(kind, tryOffset, tryLength, handlerOffset, handlerLength, filterOffset, catchType);
             return this;
         }
 
@@ -589,8 +579,8 @@ namespace Coff
             int tryLength,
             int handlerOffset,
             int handlerLength,
-            int catchTokenOrOffset,
-            bool isToken)
+            int filterOffset,
+            EntityHandle catchType)
         {
             if (HasSmallFormat)
             {
@@ -609,15 +599,15 @@ namespace Coff
                 Builder.WriteInt32(handlerLength);
             }
 
-            if (isToken)
+            if (kind == ExceptionRegionKind.Catch)
             {
                 new ManagedCoffRelocationEncoder(HeaderBuilder, Builder, SymbolTableBuilder)
-                    .AddClrRelocation(Builder.Count, catchTokenOrOffset);
+                    .AddClrRelocation(Builder.Count, catchType);
                 Builder.WriteInt32(0);
             }
             else
             {
-                Builder.WriteInt32(catchTokenOrOffset);
+                Builder.WriteInt32(kind == ExceptionRegionKind.Filter ? filterOffset : 0);
             }
         }
     }
@@ -995,21 +985,16 @@ namespace Coff
                     throw new InvalidOperationException();
                 }
 
-                int catchTokenOrOffset = handler.Kind switch
-                {
-                    ExceptionRegionKind.Catch => MetadataTokens.GetToken(handler.CatchType),
-                    ExceptionRegionKind.Filter => GetLabelOffsetChecked(handler.FilterStart),
-                    _ => 0,
-                };
-
                 regionEncoder.AddUnchecked(
                     handler.Kind,
                     tryStart,
                     tryEnd - tryStart,
                     handlerStart,
                     handlerEnd - handlerStart,
-                    catchTokenOrOffset,
-                    handler.Kind == ExceptionRegionKind.Catch);
+                    handler.Kind == ExceptionRegionKind.Filter
+                        ? GetLabelOffsetChecked(handler.FilterStart)
+                        : 0,
+                    handler.CatchType);
             }
         }
 
@@ -1040,15 +1025,15 @@ namespace Coff
         private struct Relocation
         {
             public readonly int Offset;
-            public readonly int Token;
-            public Relocation(int offset, int token) => (Offset, Token) = (offset, token);
+            public readonly Handle Token;
+            public Relocation(int offset, Handle token) => (Offset, Token) = (offset, token);
         }
 
         private List<Relocation> _relocations = new List<Relocation>();
 
         public void Reset() => _relocations.Clear();
 
-        public void AddTokenRelocation(int offset, int token) => _relocations.Add(new Relocation(offset, token));
+        public void AddTokenRelocation(int offset, Handle token) => _relocations.Add(new Relocation(offset, token));
 
         internal void Append(BlobBuilder relocationStream, int delta, CoffHeaderBuilder headerBuilder, ManagedCoffSymbolTableBuilder symbolTableBuilder)
         {
@@ -1131,13 +1116,11 @@ namespace Coff
         public ManagedCoffRelocationEncoder(CoffHeaderBuilder headerBuilder, BlobBuilder builder, ManagedCoffSymbolTableBuilder symbolTableBuilder)
             => (HeaderBuilder, Builder, SymbolTableBuilder) = (headerBuilder, builder, symbolTableBuilder);
 
-        public void AddClrRelocation(int offset, int token)
+        public void AddClrRelocation(int offset, Handle token)
         {
-            string symbolName = token.ToString("X8");
-
             // CLR token symbols for inline IL references use section 0 (undefined).
             // The linker resolves them by the token value encoded in the symbol name.
-            CoffSymbolHandle tokenSymbol = SymbolTableBuilder.GetOrAddUndefinedClrTokenSymbol(symbolName);
+            CoffSymbolHandle tokenSymbol = SymbolTableBuilder.GetOrAddUndefinedClrTokenSymbol(token);
 
             new CoffRelocationEncoder(HeaderBuilder, Builder)
                 .AddTokenRelocation(offset, tokenSymbol);
@@ -1178,12 +1161,7 @@ namespace Coff
             }
         }
 
-        public void Token(EntityHandle handle)
-        {
-            Token(MetadataTokens.GetToken(handle));
-        }
-
-        public void Token(int token)
+        public void Token(Handle token)
         {
             GetRelocationBuilder().AddTokenRelocation(CodeBuilder.Count, token);
             CodeBuilder.WriteInt32(0);
@@ -1192,7 +1170,7 @@ namespace Coff
         public void LoadString(UserStringHandle handle)
         {
             OpCode(ILOpCode.Ldstr);
-            Token(MetadataTokens.GetToken(handle));
+            Token(handle);
         }
 
         public void Call(EntityHandle methodHandle)
@@ -1619,7 +1597,7 @@ namespace Coff
                 if (!localVariablesSignature.IsNil)
                 {
                     new ManagedCoffRelocationEncoder(HeaderBuilder, RelocationBuilder, SymbolTableBuilder)
-                        .AddClrRelocation(Builder.Count, MetadataTokens.GetToken(localVariablesSignature));
+                        .AddClrRelocation(Builder.Count, localVariablesSignature);
                 }
                 Builder.WriteInt32(0);
                 
@@ -1790,143 +1768,33 @@ namespace Coff
         {
         }
 
-        private readonly Dictionary<int, (Blob valuePatch, Blob tokenValuePatch, CoffSymbolHandle methodSymbol, CoffSymbolHandle tokenSymbol)> _preRegisteredFunctions = new();
-
-        /// <summary>
-        /// Pre-registers COFF symbols for a function MethodDef before any IL is emitted.
-        /// The body offset (value field) is a placeholder patched later by AddMethodBody.
-        /// This prevents conflicts when forward-referencing calls create undefined token symbols.
-        /// </summary>
-        public void PreRegisterFunctionClrToken(CoffSectionBuilder section, string name, EntityHandle handle)
-        {
-            int token = MetadataTokens.GetToken(handle);
-            string tokenSymbolName = token.ToString("X8");
-
-            if (_coffSymbols.ContainsKey(tokenSymbolName))
-                return; // Already registered
-
-            // Create decorated-name symbol with deferred value + section
-            Blob methodValuePatch;
-            CoffSymbolHandle methodSymbol = GetOrAddCoffSymbolCoreDeferred(name,
-                section, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0,
-                out methodValuePatch);
-
-            // Create CLR token symbol with deferred value + section + aux record
-            Blob tokenValuePatch;
-            CoffSymbolHandle tokenSymbol = GetOrAddCoffSymbolCoreDeferred(tokenSymbolName,
-                section, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 1,
-                out tokenValuePatch);
-
-            // Write aux record linking token → method symbol
-            _coffSymbolTableBuilder.WriteByte(1);
-            _coffSymbolTableBuilder.WriteByte(0);
-            _coffSymbolTableBuilder.WriteInt32(methodSymbol._value);
-            _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
-
-            _preRegisteredFunctions[token] = (methodValuePatch, tokenValuePatch, methodSymbol, tokenSymbol);
-        }
-
-        private CoffSymbolHandle GetOrAddCoffSymbolCoreDeferred(string name, CoffSectionBuilder section,
-            CoffSymbolType type, CoffSymbolStorageClass storageClass, byte numberOfAuxSymbols,
-            out Blob valuePatch)
-        {
-            if (_coffSymbols.TryGetValue(name, out CoffSymbolHandle result))
-            {
-                valuePatch = default;
-                return result;
-            }
-
-            result = new CoffSymbolHandle(Count);
-
-            WriteSymbolName(name);
-
-            // Reserve value field for later patching
-            valuePatch = _coffSymbolTableBuilder.ReserveBytes(4);
-
-            // Deferred section number
-            Blob sectionPatch = _coffSymbolTableBuilder.ReserveBytes(2);
-            _sectionFixups.Add((sectionPatch, section));
-
-            _coffSymbolTableBuilder.WriteUInt16((ushort)type);
-            _coffSymbolTableBuilder.WriteByte((byte)storageClass);
-            _coffSymbolTableBuilder.WriteByte(numberOfAuxSymbols);
-
-            _coffSymbols.Add(name, result);
-            return result;
-        }
-
         public CoffSymbolHandle AddFunctionClrToken(CoffSectionBuilder section, string name, EntityHandle handle, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol)
         {
-            int token = MetadataTokens.GetToken(handle);
-
-            // Check if pre-registered — patch body offset instead of creating new symbols
-            if (_preRegisteredFunctions.TryGetValue(token, out var preReg))
-            {
-                new BlobWriter(preReg.valuePatch).WriteUInt32((uint)sectionOffset);
-                new BlobWriter(preReg.tokenValuePatch).WriteUInt32((uint)sectionOffset);
-                tokenCoffSymbol = preReg.tokenSymbol;
-                return preReg.methodSymbol;
-            }
-
             CoffSymbolHandle index = GetOrAddCoffSymbol(name, (uint)sectionOffset, section, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0);
-
-            string tokenSymbolName = token.ToString("X8");
-            if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
-            {
-                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, (uint)sectionOffset, section, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 1);
-                _coffSymbolTableBuilder.WriteByte(1);
-                _coffSymbolTableBuilder.WriteByte(0);
-                _coffSymbolTableBuilder.WriteInt32(index._value);
-                _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
-            }
-            else
-            {
-                // A prior undefined CLR token symbol exists (created by an IL relocation
-                // before this function token was registered). This means the caller violated
-                // the ordering requirement: AddFunctionClrToken must be called before any IL
-                // that references this token is emitted.
-                throw new InvalidOperationException(
-                    $"CLR token symbol '{tokenSymbolName}' for function '{name}' was already created as undefined. " +
-                    $"Register function tokens before emitting IL that references them.");
-            }
+            tokenCoffSymbol = AddClrTokenDefinitionSymbol(
+                handle, (uint)sectionOffset, section, CoffSymbolType.Function, index, $"function '{name}'");
 
             return index;
         }
 
-        /// <summary>
-        /// Creates an undefined CLR token symbol (section 0) for inline IL references.
-        /// Used internally by relocation encoders.
-        /// </summary>
-        public CoffSymbolHandle GetOrAddUndefinedClrTokenSymbol(string name)
-        {
-            return GetOrAddCoffSymbol(name, 0, CoffBuilder.UndefinedSection, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 0);
-        }
+        public CoffSymbolHandle GetOrAddUndefinedClrTokenSymbol(Handle handle, CoffSymbolType type = CoffSymbolType.Null) =>
+            GetOrAddCoffSymbol(
+                MetadataTokens.GetToken(handle).ToString("X8"),
+                0,
+                CoffBuilder.UndefinedSection,
+                type,
+                CoffSymbolStorageClass.ClrToken,
+                0);
 
         /// <summary>
         /// Adds a CLR token symbol for a field definition.
         /// </summary>
         public CoffSymbolHandle AddDataClrToken(string name, EntityHandle handle, CoffSectionBuilder section, int sectionOffset, out CoffSymbolHandle tokenCoffSymbol, bool isExternal = false)
         {
-            int token = MetadataTokens.GetToken(handle);
-
             var storageClass = isExternal ? CoffSymbolStorageClass.External : CoffSymbolStorageClass.Static;
             CoffSymbolHandle index = GetOrAddCoffSymbol(name, (uint)sectionOffset, section, CoffSymbolType.Null, storageClass, 0);
-
-            string tokenSymbolName = token.ToString("X8");
-            if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
-            {
-                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, (uint)sectionOffset, section, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 1);
-                _coffSymbolTableBuilder.WriteByte(1);
-                _coffSymbolTableBuilder.WriteByte(0);
-                _coffSymbolTableBuilder.WriteInt32(index._value);
-                _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
-            }
-            else
-            {
-                throw new InvalidOperationException(
-                    $"CLR token symbol '{tokenSymbolName}' for data '{name}' was already created as undefined. " +
-                    $"Register data tokens before emitting IL that references them.");
-            }
+            tokenCoffSymbol = AddClrTokenDefinitionSymbol(
+                handle, (uint)sectionOffset, section, CoffSymbolType.Null, index, $"data '{name}'");
 
             return index;
         }
@@ -1966,39 +1834,42 @@ namespace Coff
         /// </summary>
         public CoffSymbolHandle AddCommonDataClrToken(string name, EntityHandle handle, int size, out CoffSymbolHandle tokenCoffSymbol)
         {
-            int token = MetadataTokens.GetToken(handle);
-
             CoffSymbolHandle index = GetOrAddCoffSymbol(name, (uint)size, CoffBuilder.UndefinedSection, CoffSymbolType.Null, CoffSymbolStorageClass.External, 0);
-
-            string tokenSymbolName = token.ToString("X8");
-            if (!_coffSymbols.TryGetValue(tokenSymbolName, out tokenCoffSymbol))
-            {
-                tokenCoffSymbol = GetOrAddCoffSymbol(tokenSymbolName, (uint)size, CoffBuilder.UndefinedSection, CoffSymbolType.Null, CoffSymbolStorageClass.ClrToken, 1);
-                _coffSymbolTableBuilder.WriteByte(1);
-                _coffSymbolTableBuilder.WriteByte(0);
-                _coffSymbolTableBuilder.WriteInt32(index._value);
-                _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
-            }
-            else
-            {
-                throw new InvalidOperationException(
-                    $"CLR token symbol '{tokenSymbolName}' for common data '{name}' was already created. " +
-                    $"Register common data tokens before any IL that references them.");
-            }
+            tokenCoffSymbol = AddClrTokenDefinitionSymbol(
+                handle, (uint)size, CoffBuilder.UndefinedSection, CoffSymbolType.Null, index, $"common data '{name}'");
 
             return index;
         }
 
-        /// <summary>
-        /// Adds an external (undefined) CLR token symbol for an imported member reference.
-        /// The symbol has section=0 (IMAGE_SYM_UNDEFINED) and no aux record.
-        /// </summary>
-        public void AddExternalClrToken(string name, EntityHandle handle)
+        private CoffSymbolHandle AddClrTokenDefinitionSymbol(
+            EntityHandle handle,
+            uint value,
+            CoffSectionBuilder section,
+            CoffSymbolType type,
+            CoffSymbolHandle targetSymbol,
+            string description)
         {
             int token = MetadataTokens.GetToken(handle);
+            string tokenSymbolName = token.ToString("X8");
+            if (_coffSymbols.ContainsKey(tokenSymbolName))
+            {
+                throw new InvalidOperationException(
+                    $"CLR token symbol '{tokenSymbolName}' for {description} was already created. " +
+                    "Definition tokens must be registered before anything references them.");
+            }
 
-            GetOrAddCoffSymbol(name, 0, CoffBuilder.UndefinedSection, CoffSymbolType.Function, CoffSymbolStorageClass.External, 0);
-            GetOrAddCoffSymbol(token.ToString("X8"), 0, CoffBuilder.UndefinedSection, CoffSymbolType.Function, CoffSymbolStorageClass.ClrToken, 0);
+            CoffSymbolHandle tokenSymbol = GetOrAddCoffSymbol(
+                tokenSymbolName, value, section, type, CoffSymbolStorageClass.ClrToken, 1);
+            WriteClrTokenAuxRecord(targetSymbol);
+            return tokenSymbol;
+        }
+
+        private void WriteClrTokenAuxRecord(CoffSymbolHandle targetSymbol)
+        {
+            _coffSymbolTableBuilder.WriteByte(1);
+            _coffSymbolTableBuilder.WriteByte(0);
+            _coffSymbolTableBuilder.WriteInt32(targetSymbol._value);
+            _coffSymbolTableBuilder.PadTo(_coffSymbolTableBuilder.Count + 12);
         }
     }
 

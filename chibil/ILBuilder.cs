@@ -74,7 +74,7 @@ public sealed class ILBuilder
         public readonly EHRegion EnclosingHandler;
 
         // Block-relative token relocations: (offsetWithinRegularBytes, token).
-        public List<(int offset, int token)> Relocations;
+        public List<(int offset, Handle token)> Relocations;
 
         // Block-relative sequence points: (offsetWithinRegularBytes, file, line).
         public List<(int offset, CodeViewFileHandle file, int line)> Lines;
@@ -540,9 +540,7 @@ public sealed class ILBuilder
         GetCurrentBlock().WriteByte(value);
     }
 
-    public void Token(EntityHandle handle) => Token(MetadataTokens.GetToken(handle));
-
-    public void Token(int token)
+    public void Token(Handle token)
     {
         var block = GetCurrentBlock();
         (block.Relocations ??= new()).Add((block.Count, token));
@@ -552,7 +550,7 @@ public sealed class ILBuilder
     public void LoadString(UserStringHandle handle)
     {
         OpCode(ILOpCode.Ldstr);
-        Token(MetadataTokens.GetToken(handle));
+        Token(handle);
     }
 
     // Variable-stack-behavior opcodes take an explicit net stack adjustment.
@@ -567,7 +565,7 @@ public sealed class ILBuilder
     {
         AdjustStack(stackAdjustment);
         WriteOpCode(GetCurrentBlock(), ILOpCode.Calli);
-        Token(MetadataTokens.GetToken(signature));
+        Token(signature);
     }
 
     public void LoadConstantI4(int value)

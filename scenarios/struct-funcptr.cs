@@ -352,13 +352,13 @@ public class StructFuncptrTest
         // ─── IJW machinery for all 3 user functions ──────────────────────
         var doubleBareSym = ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(doubleMethod), "double_it", "?double_it@@$$J0YAHH@Z");
+            doubleMethod, "double_it", "?double_it@@$$J0YAHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(invokeMethod), "invoke", $"?invoke@@$$J0YAHP{e}AU_Handler@@@Z");
+            invokeMethod, "invoke", $"?invoke@@$$J0YAHP{e}AU_Handler@@@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // Stamp the __unep slot with an ADDR reloc to the bare-name NEP thunk.
         new CoffRelocationEncoder(coffHeader, dataSection.Relocations).AddAddressRelocation(unepDoubleOffset, doubleBareSym);

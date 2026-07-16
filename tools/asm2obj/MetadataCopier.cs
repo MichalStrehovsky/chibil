@@ -66,11 +66,11 @@ public sealed partial class MetadataCopier
     // Output TypeDef #1 is always <Module>.
     private const int OutputModuleTypeDefRow = 1;
 
-    // Synthesized rows for ForwardRef methods (one MemberRef per, parented on
-    // the output <Module> TypeDef).
-    private List<int> _forwardRefSourceMethodRows;       // input MethodDef row
-    private List<string> _forwardRefDecoratedNames;       // computed COFF symbol name
-    private List<int> _forwardRefMemberRefRows;           // output MemberRef row
+    // Synthesized reference rows for local definitions.
+    private List<int> _localTypeRefSourceRows;
+    private List<int> _localFieldRefSourceRows;
+    private List<int> _localMethodRefSourceRows;
+    private string[] _methodReferenceDecoratedNames;
 
     // Per-output-TypeDef ordered lists of input field/method handles. Built in
     // Phase A so Phase B can predict FieldList/MethodList first-row values.

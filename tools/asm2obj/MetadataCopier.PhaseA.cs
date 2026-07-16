@@ -111,6 +111,7 @@ public sealed partial class MetadataCopier
 
         // ─── Validate: no duplicate .cctor across flattened classes ──────────
         ValidateNoCctorCollisions();
+        ValidateMethodDefMemberRefParents();
 
         // HasFieldRVA fields are accepted; their data is emitted in Phase D.
 
@@ -124,6 +125,26 @@ public sealed partial class MetadataCopier
         // - ExportedType: type forwarders (only meaningful in the Assembly table)
         // - ImplMap: P/Invoke metadata (not needed for managed-only methods)
         // - FieldMarshal: P/Invoke marshalling info
+    }
+
+    private void ValidateMethodDefMemberRefParents()
+    {
+        for (int row = 1; row <= _reader.GetTableRowCount(TableIndex.MemberRef); row++)
+        {
+            var memberRef = _reader.GetMemberReference(MetadataTokens.MemberReferenceHandle(row));
+            if (memberRef.Parent.Kind != HandleKind.MethodDefinition)
+                continue;
+
+            var parent = (MethodDefinitionHandle)memberRef.Parent;
+            int parentRow = MetadataTokens.GetRowNumber(parent);
+            if (_methodInfo[parentRow].Disposition == MethodDisposition.Regular)
+                continue;
+
+            string methodName = _reader.GetString(_reader.GetMethodDefinition(parent).Name);
+            throw new NotSupportedException(
+                $"MemberRef row {row} is parented by method '{methodName}', which is not emitted as a MethodDef. " +
+                "Vararg call sites parented by ForwardRef or dropped methods are not supported.");
+        }
     }
 
     /// <summary>

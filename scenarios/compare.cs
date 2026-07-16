@@ -264,10 +264,10 @@ public class CompareTest
 
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(compareMethod), "compare", "?compare@@$$J0YAHHH@Z");
+            compareMethod, "compare", "?compare@@$$J0YAHHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
         if (ilSection.Content.Count > 0) sections.Add(ilSection);

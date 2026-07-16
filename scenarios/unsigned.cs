@@ -425,28 +425,28 @@ public class UnsignedTest
         // ─── IJW machinery for unsigned methods ──────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(udivMethod), "udiv", "?udiv@@$$J0YAIII@Z");
+            udivMethod, "udiv", "?udiv@@$$J0YAIII@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(umodMethod), "umod", "?umod@@$$J0YAIII@Z");
+            umodMethod, "umod", "?umod@@$$J0YAIII@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(ushrMethod), "ushr", "?ushr@@$$J0YAIIH@Z");
+            ushrMethod, "ushr", "?ushr@@$$J0YAIIH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(ultMethod), "ult", "?ult@@$$J0YAHII@Z");
+            ultMethod, "ult", "?ult@@$$J0YAHII@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(uleMethod), "ule", "?ule@@$$J0YAHII@Z");
+            uleMethod, "ule", "?ule@@$$J0YAHII@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(ugtMethod), "ugt", "?ugt@@$$J0YAHII@Z");
+            ugtMethod, "ugt", "?ugt@@$$J0YAHII@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(ugeMethod), "uge", "?uge@@$$J0YAHII@Z");
+            ugeMethod, "uge", "?uge@@$$J0YAHII@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

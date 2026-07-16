@@ -28,6 +28,8 @@ using Asm2Obj;
 [CompilerGlobalScope]
 unsafe static class Cases
 {
+    static int s_value;
+
     // ═══════════════════════════════════════════════════════════════════
     //   Direction 1: extern in C# (ForwardRef), body in C
     // ═══════════════════════════════════════════════════════════════════
@@ -143,6 +145,55 @@ unsafe static class Cases
         return x * 3;
     }
 
+    static int call_later_regular(int x)
+    {
+        return later_regular(x);
+    }
+
+    static int later_regular(int x)
+    {
+        return x + 7;
+    }
+
+    static int recursive_factorial(int x)
+    {
+        return x <= 1 ? 1 : x * recursive_factorial(x - 1);
+    }
+
+    static int static_field_roundtrip(int x)
+    {
+        s_value = x;
+        return s_value + 2;
+    }
+
+    static ValueContainer.Pair transform_pair(ValueContainer.Pair value)
+    {
+        ValueContainer.Pair local = value;
+        local.Left += local.Right;
+        local.Right += 2;
+        return local;
+    }
+
+    static int value_type_roundtrip()
+    {
+        ValueContainer.Pair value;
+        value.Left = 3;
+        value.Right = 4;
+        value = transform_pair(value);
+        return value.Left * 10 + value.Right;
+    }
+
+    static int address_target(int x)
+    {
+        return x * 3;
+    }
+
+    static int address_taking(int x)
+    {
+        Unary function = address_target;
+        return function(x);
+    }
+
     // Direction 1 trampolines that the C side defines and which call
     // back into the Direction 2 C# bodies above.
     [MethodImpl(MethodImplOptions.ForwardRef)]
@@ -203,8 +254,26 @@ unsafe static class Cases
 
         sum += call_cs_stdcall_triple(4);           // 12
 
+        // ── Same-assembly reference-first cases ────────────────────────
+        sum += call_later_regular(10);               // 17
+        sum += recursive_factorial(4);               // 24
+        sum += static_field_roundtrip(40);           // 42
+        sum += value_type_roundtrip();                // 76
+        sum += address_taking(6);                     // 18
+
         // Expected total:
-        //   5 + 88 + 65 + 65 + 65 + 65 + 100 + 42 + 7 + 22 + 5 + 9 + 12 = 550
+        //   550 + 17 + 24 + 42 + 76 + 18 = 727
         return sum;
+    }
+}
+
+delegate int Unary(int x);
+
+struct ValueContainer
+{
+    public struct Pair
+    {
+        public int Left;
+        public int Right;
     }
 }

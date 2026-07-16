@@ -227,7 +227,7 @@ public class InitTest
         // ─── IJW machinery for main (NEP thunk + __mep@ slot + ilfixup) ─
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            methodToken: MetadataTokens.GetToken(mainMethod),
+            methodToken: mainMethod,
             bareName: "main",
             mangledSuffix: "?main@@$$J0YAHXZ");
 

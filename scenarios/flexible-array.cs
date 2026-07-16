@@ -278,10 +278,10 @@ public class FlexibleArrayTest
         // ─── IJW machinery for sum_flex and main ──────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(sumFlexMethod), "sum_flex", $"?sum_flex@@$$J0YAHP{e}AU_FlexBuf@@@Z");
+            sumFlexMethod, "sum_flex", $"?sum_flex@@$$J0YAHP{e}AU_FlexBuf@@@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

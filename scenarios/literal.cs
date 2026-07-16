@@ -262,7 +262,7 @@ public class LiteralTest
         // ─── IJW machinery for main ──────────────────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF ───────────────────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

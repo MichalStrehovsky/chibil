@@ -401,16 +401,16 @@ public class FuncptrTest
         // against them below.
         var addBareSym = ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(addMethod), "add", "?add@@$$J0YAHHH@Z");
+            addMethod, "add", "?add@@$$J0YAHHH@Z");
         var subBareSym = ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(subMethod), "sub_fn", "?sub_fn@@$$J0YAHHH@Z");
+            subMethod, "sub_fn", "?sub_fn@@$$J0YAHHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(applyMethod), "apply", "?apply@@$$J0YAHP6AHHH@ZHH@Z");
+            applyMethod, "apply", "?apply@@$$J0YAHP6AHHH@ZHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // Stamp the pre-allocated __unep slots with ADDR relocs to the
         // matching bare-name NEP thunk symbols. The linker fills the slots

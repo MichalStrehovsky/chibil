@@ -255,10 +255,10 @@ public class CompoundLiteralTest
         // ─── IJW machinery for sum_point and main ─────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(sumPointMethod), "sum_point", $"?sum_point@@$$J0YAHP{e}AU_Point@@@Z");
+            sumPointMethod, "sum_point", $"?sum_point@@$$J0YAHP{e}AU_Point@@@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

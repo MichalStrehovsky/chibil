@@ -33,21 +33,23 @@ The pipeline is a strict two-pass metadata copier:
    unresolved MemberRef* (when annotated with `MethodImplOptions.ForwardRef`),
    or *dropped*. Reject inputs we can't safely convert in v1 (see below).
 2. **Phase B — row prediction.** Walk input tables in deterministic order
-   counting surviving rows per output table; record the prediction in the
-   `TokenMap`. Synthesise one `MemberRef` parented on `<Module>` per
-   ForwardRef method.
+   counting surviving rows per output table; record definition and reference
+   predictions separately in the `TokenMap`. Synthesise local `TypeRef` rows
+   for copied types and `MemberRef` rows for every surviving field and method.
+   Flattened members are parented on `<Module>`; copied-type members are
+   parented on the corresponding local `TypeRef`.
 3. **Phase C — table population.** Emit each output table in the order
    predicted by Phase B, asserting that the returned handle matches the
    prediction. Signatures are rewritten through `EcmaSignatureRewriter` and
    metadata-token coded indices are remapped via `TokenMap`. The
    `CustomAttribute` rows are sorted by their `HasCustomAttribute` coded
    index before emission (ECMA requires it).
-4. **Phase D — IL body emission.** Pre-register every surviving MethodDef
-   in the COFF symbol table (so undefined-CLR-token ordering invariants
-   hold), pre-register all external MemberRefs, then walk each MethodDef
-   with a body, copy its bytes verbatim into `.text$mn` while remapping
-   every token operand (metadata tokens + `ldstr` UserString tokens) and
-   the fat-header local-var sig token via CLR-token relocations.
+4. **Phase D — IL body emission.** Register typed undefined CLR-token symbols
+   for references, then walk each MethodDef with a body and copy its bytes
+   verbatim into `.text$mn` while remapping every token operand (metadata
+   tokens + `ldstr` UserString tokens) and the fat-header local-var sig token
+   via CLR-token relocations. Decorated external names are finalized only
+   after body symbols have been defined.
 5. **Phase E — NEP thunks.** For each method whose return-type slot
    carries `modopt(CallConvCdecl)` or `modopt(CallConvStdcall)` —
    either already in the input signature blob or scheduled to be
@@ -97,7 +99,7 @@ chibil-emitted symbols agree at link time, including:
 | Attribute | Effect |
 |-----------|--------|
 | `System.Runtime.CompilerServices.CompilerGlobalScopeAttribute` on a type | Type is *flattened*: its members become members of the output `<Module>` TypeDef. The type itself is dropped. |
-| `System.Runtime.CompilerServices.DecoratedNameAttribute` on a method | Overrides auto-mangling. The string is the literal COFF symbol name. Reattached to the synthesised MemberRef when the method also has `ForwardRef`. |
+| `System.Runtime.CompilerServices.DecoratedNameAttribute` on a method | Overrides auto-mangling. The string is the literal COFF symbol name. The synthesized method MemberRef receives a matching attribute; regular methods use the same value for their body symbol. |
 | `MethodImplOptions.ForwardRef` (set via `[MethodImpl]`) | A method with no body and the ForwardRef flag is converted to an *unresolved MemberRef* parented on the `<Module>` TypeDef (matching the pattern MSVC emits for extern C functions under `/clr`). `link.exe` resolves the CLR token to the matching MethodDef in another object. |
 
 ## v1 limitations (rejected loudly)
@@ -115,6 +117,8 @@ These inputs cause asm2obj to fail with a clear `NotSupportedException`:
 - Metadata tokens that still name a flattened `[CompilerGlobalScope]` type
   (for example `typeof(TheGlobalScopeType)`).
 - `ForwardRef` on a method that *has* a body.
+- Vararg call-site `MemberRef` rows parented by a `ForwardRef` or dropped
+  `MethodDef`.
 - `HasFieldRVA` fields whose type is neither a primitive nor a value
   type with an explicit `ClassLayout` size (asm2obj cannot determine
   the data size to copy).
