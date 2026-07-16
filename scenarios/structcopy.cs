@@ -429,19 +429,19 @@ public class StructCopyTest
         // ─── IJW machinery for exported methods ───────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(copySmallMethod), "copy_small", $"?copy_small@@$$J0YAXP{e}AUSmall@@0@Z");
+            copySmallMethod, "copy_small", $"?copy_small@@$$J0YAXP{e}AUSmall@@0@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(copyBigMethod), "copy_big", $"?copy_big@@$$J0YAXP{e}AUBig@@0@Z");
+            copyBigMethod, "copy_big", $"?copy_big@@$$J0YAXP{e}AUBig@@0@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(makeSmallMethod), "make_small", "?make_small@@$$J0YA?AUSmall@@HH@Z");
+            makeSmallMethod, "make_small", "?make_small@@$$J0YA?AUSmall@@HH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(assignLocalMethod), "assign_local", "?assign_local@@$$J0YAXXZ");
+            assignLocalMethod, "assign_local", "?assign_local@@$$J0YAXXZ");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

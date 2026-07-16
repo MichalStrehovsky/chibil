@@ -443,22 +443,22 @@ public class PtrsubTest
         // ─── IJW machinery for managed exports ────────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(ptrSubIntMethod), "ptr_subtract_int", $"?ptr_subtract_int@@$$J0YAHP{e}AH0@Z");
+            ptrSubIntMethod, "ptr_subtract_int", $"?ptr_subtract_int@@$$J0YAHP{e}AH0@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(ptrSubCharMethod), "ptr_subtract_char", $"?ptr_subtract_char@@$$J0YAHP{e}AD0@Z");
+            ptrSubCharMethod, "ptr_subtract_char", $"?ptr_subtract_char@@$$J0YAHP{e}AD0@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(ptrSubDblMethod), "ptr_subtract_double", $"?ptr_subtract_double@@$$J0YA_JP{e}AN0@Z");
+            ptrSubDblMethod, "ptr_subtract_double", $"?ptr_subtract_double@@$$J0YA_JP{e}AN0@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(ptrLessMethod), "ptr_less", $"?ptr_less@@$$J0YAHP{e}AH0@Z");
+            ptrLessMethod, "ptr_less", $"?ptr_less@@$$J0YAHP{e}AH0@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(ptrEqualMethod), "ptr_equal", $"?ptr_equal@@$$J0YAHP{e}AH0@Z");
+            ptrEqualMethod, "ptr_equal", $"?ptr_equal@@$$J0YAHP{e}AH0@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

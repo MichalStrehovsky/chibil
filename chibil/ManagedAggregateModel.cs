@@ -5,7 +5,6 @@ namespace Chibil;
 public enum ManagedAggregateRepresentationKind
 {
     TypeDefinition,
-    ForwardDeclaredTypeReference,
     AddressOnly,
 }
 
@@ -35,9 +34,6 @@ public abstract class ManagedAggregateModel
 
         if (canonical.Kind is not (TypeKind.Struct or TypeKind.Union))
             throw new InvalidOperationException("Internal error: expected aggregate type");
-
-        if (canonical.Members == null)
-            return ManagedAggregateRepresentationKind.ForwardDeclaredTypeReference;
 
         return IsAddressOnlyStructOrUnion(canonical)
             ? ManagedAggregateRepresentationKind.AddressOnly

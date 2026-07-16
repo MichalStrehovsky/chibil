@@ -273,13 +273,13 @@ public class LongModTest
         // ─── IJW machinery for add_long, add_ulong and main ───────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(addLongMethod), "add_long", "?add_long@@$$J0YAJJJ@Z");
+            addLongMethod, "add_long", "?add_long@@$$J0YAJJJ@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(addUlongMethod), "add_ulong", "?add_ulong@@$$J0YAKKK@Z");
+            addUlongMethod, "add_ulong", "?add_ulong@@$$J0YAKKK@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

@@ -335,10 +335,10 @@ public class StructTest
         // ─── IJW machinery for sum_struct and main ────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(sumStructMethod), "sum_struct", $"?sum_struct@@$$J0YAHP{e}AU_MyStruct@@@Z");
+            sumStructMethod, "sum_struct", $"?sum_struct@@$$J0YAHP{e}AU_MyStruct@@@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

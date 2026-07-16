@@ -1,8 +1,8 @@
 // Phase B — Row prediction. Walks input tables in deterministic order and
 // populates the TokenMap with predicted output row numbers for every entity
 // that survives Phase A. Also computes per-output-TypeDef ordered member
-// lists, synthesizes TypeRef + MemberRef rows for ForwardRef extern methods,
-// and pre-allocates parameter rows.
+// lists, synthesizes reference rows for local definitions, and pre-allocates
+// parameter rows.
 
 using System;
 using System.Collections.Generic;
@@ -62,20 +62,19 @@ public sealed partial class MetadataCopier
         // block so the 1:1 prediction for input TypeRefs stays correct.
         PredictSignatureModifierTypeRefs();
 
-        // ─── ForwardRef extern methods ──────────────────────────────────────
-        // Each ForwardRef method becomes a MemberRef parented on the output
-        // <Module> TypeDef. No synthesized TypeRef is needed — chibil and
-        // MSVC produce extern function references with parent = <Module>
-        // (see scenarios/pinvoke.cs and scenarios/pinvoke-forwardref.cs:
-        // the null-scope TypeRef in the latter is for the forward-declared
-        // struct *parameter type*, not for the MemberRef parent).
-        _forwardRefSourceMethodRows = new List<int>();
-        _forwardRefDecoratedNames = new List<string>();
-        _forwardRefMemberRefRows = new List<int>();
-        for (int r = 1; r < _methodInfo.Length; r++)
+        // ─── Local TypeRefs for copied TypeDefs ─────────────────────────────
+        // Metadata references name local types through TypeRefs. Top-level
+        // local TypeRefs have a nil scope; nested TypeRefs are scoped through
+        // the enclosing local TypeRef when populated in Phase C.
+        _localTypeRefSourceRows = new List<int>();
+        for (int r = 1; r <= typeDefCount; r++)
         {
-            if (_methodInfo[r].Disposition != MethodDisposition.ForwardRefMemberRef) continue;
-            _forwardRefSourceMethodRows.Add(r);
+            if (_typeInfo[r].Disposition != TypeDisposition.Copy) continue;
+            _outTypeRefRow++;
+            _localTypeRefSourceRows.Add(r);
+            TokenMap.SetTypeDefReference(
+                MetadataTokens.TypeDefinitionHandle(r),
+                _outTypeRefRow);
         }
 
         // ─── TypeSpec (signature rewritten, 1:1) ────────────────────────────
@@ -134,7 +133,7 @@ public sealed partial class MetadataCopier
                 int mrow = MetadataTokens.GetRowNumber(mh);
                 if (_methodInfo[mrow].Disposition == MethodDisposition.Regular)
                     moduleMembers.Methods.Add(mrow);
-                // ForwardRefMemberRef methods don't get a MethodDef row.
+                // ForwardRef methods don't get a MethodDef row.
             }
         }
 
@@ -180,21 +179,35 @@ public sealed partial class MetadataCopier
             }
         }
 
-        // ─── MemberRef predictions: copies first, then synthesized ForwardRef rows ─
+        PlanMethodSymbolNames();
+
+        // ─── MemberRef predictions: copies, then local fields and methods ────
         for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.MemberRef); r++)
         {
             _outMemberRefRow++;
             TokenMap.SetMemberRef(MetadataTokens.MemberReferenceHandle(r), _outMemberRefRow);
         }
-        for (int i = 0; i < _forwardRefSourceMethodRows.Count; i++)
+
+        _localFieldRefSourceRows = new List<int>();
+        for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.Field); r++)
         {
+            var fieldH = MetadataTokens.FieldDefinitionHandle(r);
+            var owner = _reader.GetFieldDefinition(fieldH).GetDeclaringType();
+            if (_typeInfo[MetadataTokens.GetRowNumber(owner)].Disposition == TypeDisposition.Drop)
+                continue;
             _outMemberRefRow++;
-            _forwardRefMemberRefRows.Add(_outMemberRefRow);
-            // Register the MethodDef→MemberRef remapping so that any IL token
-            // referencing the original MethodDef is rewritten to the
-            // synthesized MemberRef.
-            TokenMap.SetMethodDefAsMemberRef(
-                MetadataTokens.MethodDefinitionHandle(_forwardRefSourceMethodRows[i]),
+            _localFieldRefSourceRows.Add(r);
+            TokenMap.SetFieldReference(fieldH, _outMemberRefRow);
+        }
+
+        _localMethodRefSourceRows = new List<int>();
+        for (int r = 1; r < _methodInfo.Length; r++)
+        {
+            if (_methodInfo[r].Disposition == MethodDisposition.Drop) continue;
+            _outMemberRefRow++;
+            _localMethodRefSourceRows.Add(r);
+            TokenMap.SetMethodDefReference(
+                MetadataTokens.MethodDefinitionHandle(r),
                 _outMemberRefRow);
         }
 
@@ -226,6 +239,52 @@ public sealed partial class MetadataCopier
             TokenMap.SetProperty(MetadataTokens.PropertyDefinitionHandle(r), r);
         for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.Event); r++)
             TokenMap.SetEvent(MetadataTokens.EventDefinitionHandle(r), r);
+    }
+
+    private void PlanMethodSymbolNames()
+    {
+        _outputMethodDecoratedNames = new string[_outMethodRow + 1];
+        _outputMethodBareNames = new string[_outMethodRow + 1];
+        _methodReferenceDecoratedNames = new string[_methodInfo.Length];
+
+        var seenDefinitionNames = new HashSet<string>();
+        for (int inputRow = 1; inputRow < _methodInfo.Length; inputRow++)
+        {
+            var disposition = _methodInfo[inputRow].Disposition;
+            if (disposition == MethodDisposition.Drop) continue;
+
+            string decoratedName;
+            if (disposition == MethodDisposition.Regular)
+            {
+                decoratedName = ComputeFunctionSymbolName(inputRow);
+                if (!seenDefinitionNames.Add(decoratedName))
+                {
+                    string baseName = decoratedName;
+                    int suffix = 0;
+                    do
+                    {
+                        suffix++;
+                        decoratedName = $"{baseName}${suffix}";
+                    } while (!seenDefinitionNames.Add(decoratedName));
+                }
+
+                int outputRow = MetadataTokens.GetRowNumber(
+                    TokenMap.MapMethodDef(MetadataTokens.MethodDefinitionHandle(inputRow)));
+                _outputMethodDecoratedNames[outputRow] = decoratedName;
+                _outputMethodBareNames[outputRow] = ComputeBareName(inputRow);
+            }
+            else
+            {
+                string explicitName = _methodInfo[inputRow].DecoratedName;
+                decoratedName = explicitName != null
+                    ? ApplyX86UnderscoreRule(explicitName)
+                    : _mangler.MangleMethod(
+                        MetadataTokens.MethodDefinitionHandle(inputRow),
+                        _methodInjections[inputRow]);
+            }
+
+            _methodReferenceDecoratedNames[inputRow] = decoratedName;
+        }
     }
 
     // Per-modifier-kind output TypeRef row, populated in Phase B's

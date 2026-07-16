@@ -387,13 +387,13 @@ public class FuncptrArrayTest
         // ─── IJW machinery for all 3 user functions ──────────────────────
         var addBareSym = ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(addMethod), "add", "?add@@$$J0YAHHH@Z");
+            addMethod, "add", "?add@@$$J0YAHHH@Z");
         var subBareSym = ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(subMethod), "sub_fn", "?sub_fn@@$$J0YAHHH@Z");
+            subMethod, "sub_fn", "?sub_fn@@$$J0YAHHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // Stamp the pre-allocated __unep slots with ADDR relocs to the
         // bare-name NEP thunk symbols (link-time fill).

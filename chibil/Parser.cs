@@ -25,6 +25,7 @@ public class Parser
     private int _labelCount;
     private bool _inGvarInitializer;
     private Dictionary<string, bool> _typenameMap;
+    private readonly Dictionary<string, Obj> _linkedObjects = new(StringComparer.Ordinal);
     private readonly Tokenizer _tokenizer;
     private readonly CompilerOptions _options;
     private readonly TypeSystem _types;
@@ -1792,9 +1793,7 @@ public class Parser
 
     private Obj FindFunc(string name)
     {
-        Scope sc = _scope; while (sc.Next != null) sc = sc.Next;
-        if (sc.Vars.TryGetValue(name, out VarScope vs) && vs.Var != null && vs.Var.IsFunction) return vs.Var;
-        return null;
+        return _linkedObjects.TryGetValue(name, out Obj obj) && obj.IsFunction ? obj : null;
     }
 
     private void MarkLive(Obj var)
@@ -1819,7 +1818,7 @@ public class Parser
         if (ty.Name == null) Util.ErrorTok(ty.NamePos, "function name omitted");
         string nameStr = GetIdent(ty.Name);
         bool hasBody = Util.Equal(tok, "{");
-        Obj fn = FindFunc(nameStr);
+        _linkedObjects.TryGetValue(nameStr, out Obj fn);
         if (fn != null)
         {
             if (!fn.IsFunction) Util.ErrorTok(tok, "redeclared as a different kind of symbol");
@@ -1861,6 +1860,7 @@ public class Parser
             fn.IsFunction = true;
             fn.IsDefinition = false;
             fn.IsStatic = attr.IsStatic;
+            _linkedObjects.Add(nameStr, fn);
         }
 
         if (attr.IsInline) fn.IsInline = true;
@@ -1889,28 +1889,114 @@ public class Parser
             if (!first) tok = Util.Skip(tok, ","); first = false;
             CType ty = Declarator(ref tok, tok, basety, attr.PendingCallConv);
             if (ty.Name == null) Util.ErrorTok(ty.NamePos, "variable name omitted");
-            Obj v = NewGvar(GetIdent(ty.Name), ty);
-            v.IsDefinition = !attr.IsExtern; v.IsStatic = attr.IsStatic;
-            v.IsTls = attr.IsTls;
-            if (attr.Align != 0) v.Align = attr.Align;
-            if (Util.Equal(tok, "=")) GvarInitializer(ref tok, tok.Next, v);
-            else if (!attr.IsExtern && !attr.IsTls) v.IsTentative = true;
+            string name = GetIdent(ty.Name);
+            bool hasInitializer = Util.Equal(tok, "=");
+            Obj v = GetOrMergeLinkedGlobal(name, ty, attr, hasInitializer, ty.Name);
+            if (hasInitializer)
+            {
+                GvarInitializer(ref tok, tok.Next, v);
+                v.IsDefinition = true;
+                v.IsTentative = false;
+            }
+            else if (!attr.IsExtern && !attr.IsTls && v.InitData == null)
+            {
+                v.IsDefinition = true;
+                v.IsTentative = true;
+            }
         }
         return tok;
     }
 
-    private void ScanGlobals()
+    private Obj GetOrMergeLinkedGlobal(string name, CType ty, VarAttr attr, bool hasInitializer, Token tok)
     {
-        Obj head = new(); Obj cur = head;
-        for (Obj v = _globals; v != null; v = v.Next)
+        if (!_linkedObjects.TryGetValue(name, out Obj v))
         {
-            if (!v.IsTentative) { cur = cur.Next = v; continue; }
-            bool found = false;
-            for (Obj v2 = _globals; v2 != null; v2 = v2.Next)
-                if (v != v2 && v2.IsDefinition && v.Name == v2.Name) { found = true; break; }
-            if (!found) cur = cur.Next = v;
+            v = NewGvar(name, ty);
+            v.IsDefinition = false;
+            v.IsStatic = attr.IsStatic;
+            v.IsTls = attr.IsTls;
+            _linkedObjects.Add(name, v);
         }
-        cur.Next = null; _globals = head.Next;
+        else
+        {
+            if (v.IsFunction)
+                Util.ErrorTok(tok, "redeclared as a different kind of symbol");
+            if (!TypeSystem.IsCompatible(v.Ty, ty))
+                Util.ErrorTok(tok, "conflicting types");
+            if (!v.IsStatic && attr.IsStatic)
+                Util.ErrorTok(tok, "static declaration follows a non-static declaration");
+            if (v.IsTls != attr.IsTls)
+                Util.ErrorTok(tok, "thread-local declaration follows non-thread-local declaration");
+            if (hasInitializer && v.InitData != null)
+                Util.ErrorTok(tok, $"redefinition of {name}");
+
+            v.Ty = CompositeGlobalType(v.Ty, ty);
+        }
+
+        PushScope(name).Var = v;
+        v.Align = Math.Max(v.Align, attr.Align != 0 ? attr.Align : ty.Align);
+        return v;
+    }
+
+    private static CType CompositeGlobalType(CType current, CType declaration)
+    {
+        if (current.Kind == TypeKind.Func)
+        {
+            CType returnType = CompositeGlobalType(current.ReturnTy, declaration.ReturnTy);
+            CType parameters = CompositeParameterTypes(current.Params, declaration.Params);
+            if (ReferenceEquals(returnType, current.ReturnTy) &&
+                ReferenceEquals(parameters, current.Params))
+            {
+                return current;
+            }
+
+            CType compositeFunction = TypeSystem.CopyType(current);
+            compositeFunction.Origin = null;
+            compositeFunction.ReturnTy = returnType;
+            compositeFunction.Params = parameters;
+            return compositeFunction;
+        }
+
+        if (current.Kind is not (TypeKind.Ptr or TypeKind.Array))
+            return current;
+
+        CType compositeBase = CompositeGlobalType(current.Base, declaration.Base);
+        int arrayLen = current.Kind == TypeKind.Array
+            ? current.ArrayLen >= 0 ? current.ArrayLen : declaration.ArrayLen
+            : current.ArrayLen;
+
+        if (ReferenceEquals(compositeBase, current.Base) && arrayLen == current.ArrayLen)
+            return current;
+
+        CType composite = TypeSystem.CopyType(current);
+        composite.Origin = null;
+        composite.Base = compositeBase;
+        composite.ArrayLen = arrayLen;
+        if (composite.Kind == TypeKind.Array)
+        {
+            composite.Size = compositeBase.Size * arrayLen;
+            composite.Align = compositeBase.Align;
+        }
+        return composite;
+    }
+
+    private static CType CompositeParameterTypes(CType current, CType declaration)
+    {
+        if (current == null)
+            return null;
+
+        CType parameter = CompositeGlobalType(current, declaration);
+        CType next = CompositeParameterTypes(current.Next, declaration.Next);
+        if (ReferenceEquals(parameter, current) && ReferenceEquals(next, current.Next))
+            return current;
+
+        if (ReferenceEquals(parameter, current))
+        {
+            parameter = TypeSystem.CopyType(current);
+            parameter.Origin = null;
+        }
+        parameter.Next = next;
+        return parameter;
     }
 
     private void DeclareBuiltinFunctions()
@@ -1939,7 +2025,6 @@ public class Parser
         }
         for (Obj v = _globals; v != null; v = v.Next)
             if (v.IsRoot) MarkLive(v);
-        ScanGlobals();
         return _globals;
     }
 }

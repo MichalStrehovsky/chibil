@@ -363,13 +363,13 @@ public class ConstParamTest
 
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(sumArrayMethod), "sum_array", $"?sum_array@@$$J0YAHP{e}BHH@Z");
+            sumArrayMethod, "sum_array", $"?sum_array@@$$J0YAHP{e}BHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(readVolMethod), "read_volatile", $"?read_volatile@@$$J0YAHP{e}CH@Z");
+            readVolMethod, "read_volatile", $"?read_volatile@@$$J0YAHP{e}CH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

@@ -162,7 +162,8 @@ public class PinvokeForwardrefTest
         var nepSection = new CoffSectionWithContentBuilder(".nep", SectionCharacteristics.ContainsCode | SectionCharacteristics.MemRead | SectionCharacteristics.MemExecute | SectionCharacteristics.Align4Bytes);
         var ilFixupSection = new CoffSectionWithContentBuilder(".rdata$ilfixup", SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes);
 
-        symtab.AddExternalClrToken(messageBoxWDecoratedName, messageBoxWRef);
+        symtab.AddUndefinedExternalSymbol(messageBoxWDecoratedName);
+        symtab.GetOrAddUndefinedClrTokenSymbol(messageBoxWRef, CoffSymbolType.Function);
 
         // ─── CodeView debug info ──────────────────────────────────────────
         var codeviewSymbols = new CodeViewSymbolBuilder(coffHeader);
@@ -212,7 +213,7 @@ public class PinvokeForwardrefTest
         // ─── IJW machinery for main ──────────────────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
@@ -228,4 +229,3 @@ public class PinvokeForwardrefTest
         return output.ToArray();
     }
 }
-

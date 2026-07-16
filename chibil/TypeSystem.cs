@@ -102,8 +102,7 @@ public class TypeSystem
             }
             case TypeKind.Array:
                 if (!IsCompatible(t1.Base, t2.Base)) return false;
-                return t1.ArrayLen < 0 && t2.ArrayLen < 0 &&
-                       t1.ArrayLen == t2.ArrayLen;
+                return t1.ArrayLen < 0 || t2.ArrayLen < 0 || t1.ArrayLen == t2.ArrayLen;
         }
         return false;
     }

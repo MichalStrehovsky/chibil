@@ -495,22 +495,22 @@ public class CastTest
         // IJW machinery for cast functions and main
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(castWidenMethod), "cast_widen", "?cast_widen@@$$J0YAHDF@Z");
+            castWidenMethod, "cast_widen", "?cast_widen@@$$J0YAHDF@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(castNarrowMethod), "cast_narrow", "?cast_narrow@@$$J0YAHH@Z");
+            castNarrowMethod, "cast_narrow", "?cast_narrow@@$$J0YAHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(castUnsignedMethod), "cast_unsigned", "?cast_unsigned@@$$J0YAHI@Z");
+            castUnsignedMethod, "cast_unsigned", "?cast_unsigned@@$$J0YAHI@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(castFloatMethod), "cast_float", "?cast_float@@$$J0YAHHMN@Z");
+            castFloatMethod, "cast_float", "?cast_float@@$$J0YAHHMN@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(castBoolMethod), "cast_bool", "?cast_bool@@$$J0YAHH@Z");
+            castBoolMethod, "cast_bool", "?cast_bool@@$$J0YAHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

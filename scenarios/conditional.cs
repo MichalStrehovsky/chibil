@@ -229,13 +229,13 @@ public class ConditionalTest
 
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(absValMethod), "abs_val", "?abs_val@@$$J0YAHH@Z");
+            absValMethod, "abs_val", "?abs_val@@$$J0YAHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(commaMethod), "comma_test", "?comma_test@@$$J0YAHHH@Z");
+            commaMethod, "comma_test", "?comma_test@@$$J0YAHHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
         if (ilSection.Content.Count > 0) sections.Add(ilSection);

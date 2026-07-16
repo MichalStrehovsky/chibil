@@ -453,7 +453,6 @@ public class Driver
 
         var codegen = new MsilObjectEmitter(
             Options,
-            tokenizer,
             types,
             nameMangler,
             aggregateModel);

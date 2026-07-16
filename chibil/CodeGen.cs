@@ -617,7 +617,7 @@ public class CodeGen
         else
         {
             // unmanaged: load the native function pointer from __unep@ field
-            FieldDefinitionHandle unepField = _emit.GetOrReserveUnepFieldToken(fn);
+            FieldDefinitionHandle unepField = _emit.GetOrCreateUnepFieldToken(fn);
             _enc.OpCode(ILOpCode.Ldsfld); _enc.Token(unepField);
         }
     }

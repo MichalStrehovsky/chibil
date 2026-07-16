@@ -202,10 +202,10 @@ public class CharTypesTest
 
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(charFuncMethod), "char_func", "?char_func@@$$J0YAHDCE@Z");
+            charFuncMethod, "char_func", "?char_func@@$$J0YAHDCE@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
         if (ilSection.Content.Count > 0) sections.Add(ilSection);

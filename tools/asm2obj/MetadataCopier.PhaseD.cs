@@ -1,9 +1,7 @@
-// Phase D — IL body emission. Pre-registers all surviving MethodDef COFF
-// symbols and external MemberRef CLR tokens, then walks each MethodDef with a
-// body, copies the body bytes verbatim into the .text$mn section, and emits a
-// CLR-token relocation for every metadata-token operand.
+// Phase D — IL body emission. Registers typed reference-token symbols, emits
+// each surviving method body, then finalizes decorated external names after
+// local body symbols are known to be definitions.
 
-using System.Collections.Generic;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
@@ -25,82 +23,31 @@ public sealed partial class MetadataCopier
         CoffHeaderBuilder coffHeader,
         PEReader peReader)
     {
-        // Allocate symbol-name arrays indexed by output method row.
-        _outputMethodDecoratedNames = new string[_outMethodRow + 1];
-        _outputMethodBareNames = new string[_outMethodRow + 1];
-
-        // ─── Pre-register all surviving MethodDef COFF symbols ──────────────
-        // This must happen before any IL is emitted because the symbol-table
-        // guards in coffobjectemitter throw if an undefined CLR-token symbol
-        // already exists when AddFunctionClrToken is called.
-        var seenNames = new System.Collections.Generic.HashSet<string>();
-        for (int inputRow = 1; inputRow < _methodInfo.Length; inputRow++)
-        {
-            if (_methodInfo[inputRow].Disposition != MethodDisposition.Regular) continue;
-
-            var inputH = MetadataTokens.MethodDefinitionHandle(inputRow);
-            var outputH = TokenMap.MapMethodDef(inputH);
-            int outRow = MetadataTokens.GetRowNumber(outputH);
-
-            string decoratedName = ComputeFunctionSymbolName(inputRow);
-
-            // Collision-handling: if the auto-mangled name (or an explicit
-            // [DecoratedName]) collides with one we already issued, append
-            // a uniquifying suffix. The body symbol just needs to be unique
-            // inside this .obj; native callers reach methods via
-            // [DecoratedName] or NEP bare-name aliases instead.
-            if (!seenNames.Add(decoratedName))
-            {
-                string baseName = decoratedName;
-                int suffix = 0;
-                do
-                {
-                    suffix++;
-                    decoratedName = $"{baseName}${suffix}";
-                } while (!seenNames.Add(decoratedName));
-            }
-
-            _outputMethodDecoratedNames[outRow] = decoratedName;
-            _outputMethodBareNames[outRow] = ComputeBareName(inputRow);
-
-            symtab.PreRegisterFunctionClrToken(ilSection, decoratedName, outputH);
-        }
-
-        // ─── Register external CLR tokens for MemberRefs that need native
-        //     link-time resolution. A MemberRef needs an External COFF
-        //     symbol only when it represents an unresolved C function call
-        //     parented on <Module> (the chibil/MSVC convention for extern-C
-        //     references). MemberRefs whose parent is a TypeRef pointing
-        //     into mscorlib (managed-only calls like Attribute::.ctor or
-        //     Marshal::FreeHGlobal) are resolved by the CLR loader at
-        //     runtime; for those we skip External registration. The IL
-        //     writer still creates a CLR-token COFF symbol (storage
-        //     class 107) on demand the first time the token is referenced.
+        // Reference tokens are always undefined in this object. The linker
+        // resolves local MemberRefs to their definitions just like references
+        // imported from another object.
         for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.MemberRef); r++)
         {
             var inputH = MetadataTokens.MemberReferenceHandle(r);
             var outputH = TokenMap.MapMemberRef(inputH);
-            var mr = _reader.GetMemberReference(inputH);
-
-            // Only Module-parented MemberRefs need a native external symbol.
-            EntityHandle outParent = TokenMap.MapEntity(mr.Parent);
-            if (outParent.Kind != HandleKind.TypeDefinition) continue;
-            if (MetadataTokens.GetRowNumber(outParent) != OutputModuleTypeDefRow) continue;
-
-            string name = ComputeMemberRefSymbolName(inputH);
-            if (name != null)
-                symtab.AddExternalClrToken(name, outputH);
+            var symbolType = _reader.GetMemberReference(inputH).GetKind() == MemberReferenceKind.Method
+                ? CoffSymbolType.Function
+                : CoffSymbolType.Null;
+            symtab.GetOrAddUndefinedClrTokenSymbol(outputH, symbolType);
         }
-        // And for the synthesized ForwardRef MemberRefs.
-        for (int i = 0; i < _forwardRefSourceMethodRows.Count; i++)
+        foreach (int fieldRow in _localFieldRefSourceRows)
         {
-            int methodRow = _forwardRefSourceMethodRows[i];
-            string name = _forwardRefDecoratedNames[i];
-            var memberRef = MetadataTokens.MemberReferenceHandle(_forwardRefMemberRefRows[i]);
-            symtab.AddExternalClrToken(name, memberRef);
+            symtab.GetOrAddUndefinedClrTokenSymbol(
+                TokenMap.MapFieldReference(MetadataTokens.FieldDefinitionHandle(fieldRow)),
+                CoffSymbolType.Null);
+        }
+        foreach (int methodRow in _localMethodRefSourceRows)
+        {
+            symtab.GetOrAddUndefinedClrTokenSymbol(
+                TokenMap.MapMethodDefReference(MetadataTokens.MethodDefinitionHandle(methodRow)),
+                CoffSymbolType.Function);
         }
 
-        // ─── Emit IL bodies ─────────────────────────────────────────────────
         for (int inputRow = 1; inputRow < _methodInfo.Length; inputRow++)
         {
             if (_methodInfo[inputRow].Disposition != MethodDisposition.Regular) continue;
@@ -109,6 +56,38 @@ public sealed partial class MetadataCopier
             if (md.RelativeVirtualAddress == 0) continue; // abstract/runtime/no body
 
             EmitBody(symtab, ilSection, coffHeader, peReader, inputRow, md);
+        }
+
+        // Decorated names are added only after body symbols. For a regular
+        // local method GetOrAdd observes the existing definition; only true
+        // externs remain undefined.
+        for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.MemberRef); r++)
+        {
+            var inputH = MetadataTokens.MemberReferenceHandle(r);
+            var mr = _reader.GetMemberReference(inputH);
+            if (mr.GetKind() != MemberReferenceKind.Method) continue;
+
+            EntityHandle outParent = mr.Parent.Kind == HandleKind.MethodDefinition
+                ? TokenMap.MapMethodDef((MethodDefinitionHandle)mr.Parent)
+                : TokenMap.MapReference(mr.Parent);
+            if (outParent.Kind != HandleKind.TypeDefinition ||
+                MetadataTokens.GetRowNumber(outParent) != OutputModuleTypeDefRow)
+                continue;
+
+            string name = ComputeMemberRefSymbolName(inputH);
+            if (name != null)
+                symtab.AddUndefinedExternalSymbol(name, CoffSymbolType.Function);
+        }
+        foreach (int methodRow in _localMethodRefSourceRows)
+        {
+            var md = _reader.GetMethodDefinition(
+                MetadataTokens.MethodDefinitionHandle(methodRow));
+            if (_methodInfo[methodRow].Disposition == MethodDisposition.Regular &&
+                md.RelativeVirtualAddress == 0)
+                continue;
+            symtab.AddUndefinedExternalSymbol(
+                _methodReferenceDecoratedNames[methodRow],
+                CoffSymbolType.Function);
         }
     }
 
@@ -155,7 +134,9 @@ public sealed partial class MetadataCopier
             int token = System.BitConverter.ToInt32(bytes, offset);
             if (token == 0) return; // empty slot (e.g. fat header with no locals)
             new BlobWriter(bytes, offset, 4).WriteInt32(0);
-            int mapped = (token >> 24) == 0x70 ? map.MapUserStringToken(token) : map.MapToken(token);
+            Handle mapped = (token >> 24) == 0x70
+                ? map.MapUserString(MetadataTokens.UserStringHandle(token & 0x00FFFFFF))
+                : map.MapReference(MetadataTokens.EntityHandle(token));
             reloc.AddClrRelocation(baseOffset + offset, mapped);
         }
 

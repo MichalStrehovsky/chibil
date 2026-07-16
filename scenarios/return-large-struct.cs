@@ -311,10 +311,10 @@ public class ReturnLargeStructTest
         // ─── IJW machinery for make_large and main ────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(makeLargeMethod), "make_large", "?make_large@@$$J0YA?AU_Large@@H@Z");
+            makeLargeMethod, "make_large", "?make_large@@$$J0YA?AU_Large@@H@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", "?main@@$$J0YAHXZ");
+            mainMethod, "main", "?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();

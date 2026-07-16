@@ -17,7 +17,6 @@ public class MsilObjectEmitter
 {
     private readonly CompilerOptions _options;
     private readonly TypeSystem _types;
-    private readonly Tokenizer _tokenizer;
     private readonly DataModel _dm;
     private readonly NameMangler _nameMangler;
     private readonly ManagedAggregateModel _aggregateModel;
@@ -39,15 +38,10 @@ public class MsilObjectEmitter
 
     private TypeDefinitionHandle _moduleTypeDef;
 
-    // Metadata row tracking
-    private int _nextFieldRow = 1, _nextMethodRow = 1, _nextParamRow = 1;
-    private int _nextTypeDefRow = 2; // starts at 2 since <Module> is row 1
-
-    // Function/field registrations
-    private readonly Dictionary<Obj, MethodDefinitionHandle> _methodDefs = new();
-    private readonly Dictionary<Obj, FieldDefinitionHandle> _fieldDefs = new();
-    private readonly Dictionary<string, MemberReferenceHandle> _externalFuncRefs = new();
-    private readonly Dictionary<string, FieldDefinitionHandle> _globalFieldsByName = new();
+    // Metadata references and emitted definitions
+    private readonly Dictionary<Obj, MemberReferenceHandle> _objectRefs = new();
+    private readonly Dictionary<Obj, string> _globalFieldNames = new();
+    private readonly List<Obj> _globalsWithRelocations = new();
 
     // Bare-name NEP COFF symbols (func name → COFF symbol for the NEP thunk alias)
     private readonly Dictionary<string, CoffSymbolHandle> _nepBareNameSymbols = new();
@@ -70,13 +64,11 @@ public class MsilObjectEmitter
 
     public MsilObjectEmitter(
         CompilerOptions options,
-        Tokenizer tokenizer,
         TypeSystem types,
         NameMangler nameMangler,
         ManagedAggregateModel aggregateModel)
     {
         _options = options;
-        _tokenizer = tokenizer;
         _types = types;
         _dm = options.DataModel;
         _nameMangler = nameMangler;
@@ -89,48 +81,47 @@ public class MsilObjectEmitter
     public StandaloneSignatureHandle AddStandaloneSignature(BlobBuilder blob)
         => _md.AddStandaloneSignature(_md.GetOrAddBlob(blob));
 
-    internal TypeDefinitionHandle ReserveTypeDefinition() =>
-        MetadataTokens.TypeDefinitionHandle(_nextTypeDefRow++);
+    internal BlobBuilder CreateFieldSignature(CType type)
+    {
+        var signature = new BlobBuilder();
+        signature.WriteByte(0x06); // FIELD
+        EncodeType(signature, type);
+        return signature;
+    }
 
-    internal FieldDefinitionHandle ReserveFieldDefinition() =>
-        MetadataTokens.FieldDefinitionHandle(_nextFieldRow++);
-
-    internal void AddAggregateTypeDefinition(
-        TypeDefinitionHandle predicted,
+    internal TypeDefinitionHandle AddAggregateTypeDefinition(
         TypeAttributes attributes,
         string name,
-        FieldDefinitionHandle? fieldList,
         ushort packingSize,
         uint size)
     {
-        var actual = _md.AddTypeDefinition(
+        var handle = _md.AddTypeDefinition(
             attributes,
             default,
             _md.GetOrAddString(name),
             _binder.GetValueTypeRef(),
-            fieldList ?? MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
-            MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
+            MetadataTokens.FieldDefinitionHandle(_md.GetRowCount(TableIndex.Field) + 1),
+            MetadataTokens.MethodDefinitionHandle(_md.GetRowCount(TableIndex.MethodDef) + 1));
 
-        Verify(actual, predicted, "TypeDef", name);
-        _md.AddTypeLayout(actual, packingSize, size);
-        AddNativeCppClassAttribute(actual);
+        _md.AddTypeLayout(handle, packingSize, size);
+        AddNativeCppClassAttribute(handle);
+        return handle;
     }
 
-    internal void AddAggregateFieldDefinition(
-        FieldDefinitionHandle predicted,
+    internal FieldDefinitionHandle AddAggregateFieldDefinition(
         FieldAttributes attributes,
         string name,
         BlobBuilder signature,
         int? offset)
     {
-        var actual = _md.AddFieldDefinition(
+        var handle = _md.AddFieldDefinition(
             attributes,
             _md.GetOrAddString(name),
             _md.GetOrAddBlob(signature));
 
-        Verify(actual, predicted, "FieldDef", name);
         if (offset is int fieldOffset)
-            _md.AddFieldLayout(actual, fieldOffset);
+            _md.AddFieldLayout(handle, fieldOffset);
+        return handle;
     }
 
     internal void AddNestedType(TypeDefinitionHandle nestedType, TypeDefinitionHandle enclosingType) =>
@@ -148,6 +139,11 @@ public class MsilObjectEmitter
             _md.GetOrAddString(name),
             _md.GetOrAddBlob(signature));
 
+    internal void EnsureMemberRefTokenSymbol(MemberReferenceHandle handle, bool isFunction) =>
+        _symtab.GetOrAddUndefinedClrTokenSymbol(
+            handle,
+            isFunction ? CoffSymbolType.Function : CoffSymbolType.Null);
+
     internal AssemblyReferenceHandle AddAssemblyReference(string name, Version version, byte[] publicKeyToken) =>
         _md.AddAssemblyReference(
             _md.GetOrAddString(name),
@@ -156,14 +152,6 @@ public class MsilObjectEmitter
             publicKeyToken is null ? default : _md.GetOrAddBlob(publicKeyToken),
             default,
             default);
-
-    private static void Verify<THandle>(THandle actual, THandle predicted, string rowKind, string name)
-        where THandle : struct, IEquatable<THandle>
-    {
-        if (!actual.Equals(predicted))
-            throw new InvalidOperationException(
-                $"{rowKind} handle mismatch for '{name}': predicted {predicted}, got {actual}");
-    }
 
     /// <summary>
     /// Encode a C type into an MSIL signature using the builder directly.
@@ -272,7 +260,7 @@ public class MsilObjectEmitter
                 else
                 {
                     // Fixed-size array → ValueType of array TypeDef
-                    EntityHandle arrayTd = _aggregates.GetSignatureTypeHandle(ty);
+                    EntityHandle arrayTd = _aggregates.GetTypeHandle(ty);
                     sig.WriteByte((byte)(SignatureTypeCode)0x11);
                     sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(arrayTd));
                 }
@@ -280,7 +268,7 @@ public class MsilObjectEmitter
             case TypeKind.Struct:
             case TypeKind.Union:
                 {
-                    EntityHandle structHandle = _aggregates.GetSignatureTypeHandle(ty);
+                    EntityHandle structHandle = _aggregates.GetTypeHandle(ty);
                     sig.WriteByte((byte)(SignatureTypeCode)0x11);
                     sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(structHandle));
                     break;
@@ -348,41 +336,8 @@ public class MsilObjectEmitter
         EncodeType(sig, funcTy.ReturnTy);
     }
 
-    private void RegisterMetadata(Obj prog, string objName)
-    {
-        _moduleTypeDef = _md.AddTypeDefinition(
-            TypeAttributes.Class, default, _md.GetOrAddString("<Module>"),
-            default,
-            MetadataTokens.FieldDefinitionHandle(_nextFieldRow),
-            MetadataTokens.MethodDefinitionHandle(_nextMethodRow));
-
-        for (Obj o = prog; o != null; o = o.Next)
-        {
-            if (o.IsFunction)
-            {
-                if (o.IsDefinition && o.IsLive)
-                    RegisterFunction(o);
-                if (o.IsLive && o.IsAddressTaken && o.Ty.CallConv != CallConv.Clrcall)
-                    RegisterUnepField(o);
-            }
-            else
-            {
-                if (o.IsDefinition)
-                    RegisterGlobalField(o);
-            }
-        }
-
-        for (Obj o = prog; o != null; o = o.Next)
-        {
-            if (!o.IsFunction && !o.IsDefinition && o.IsLive)
-                RegisterExternalField(o);
-        }
-
-        _md.AddModule(0, _md.GetOrAddString(objName), _md.GetOrAddGuid(Guid.NewGuid()), default, default);
-    }
-
     public EntityHandle GetStructTypeHandle(CType ty)
-        => _aggregates.GetTypeDefinitionHandle(ty);
+        => _aggregates.GetTypeHandle(ty);
 
     public ManagedAggregateRepresentationKind GetAggregateRepresentationKind(CType ty) =>
         _aggregateModel.GetRepresentationKind(ty);
@@ -390,7 +345,7 @@ public class MsilObjectEmitter
     public ManagedAggregateMemberAccessKind GetMemberAccessKind(CType owner, Member member) =>
         _aggregateModel.GetMemberAccessKind(owner, member);
 
-    public FieldDefinitionHandle GetAggregateFieldToken(CType owner, Member member) =>
+    public EntityHandle GetAggregateFieldToken(CType owner, Member member) =>
         _aggregates.GetFieldToken(owner, member);
 
     private MethodDefinitionHandle RegisterFunction(Obj fn, string[] parameterNames = null)
@@ -413,8 +368,7 @@ public class MsilObjectEmitter
             _md.GetOrAddString(fn.Name),
             _md.GetOrAddBlob(sig),
             0,
-            MetadataTokens.ParameterHandle(_nextParamRow));
-        _nextMethodRow++;
+            MetadataTokens.ParameterHandle(_md.GetRowCount(TableIndex.Param) + 1));
 
         // Add parameter rows
         int paramIdx = 1;
@@ -424,20 +378,11 @@ public class MsilObjectEmitter
                 ? parameterNames[paramIdx - 1]
                 : p.Name != null ? Util.GetTokenText(p.Name) : $"_a{paramIdx}";
             _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString(paramName), paramIdx);
-            _nextParamRow++;
             paramIdx++;
         }
 
-        _methodDefs[fn] = methodDef;
-
-        // Pre-register COFF symbol
-        string mangledName = _nameMangler.MangleFunctionName(fn);
-
-        // -ffunction-sections: give each function its own COMDAT .text$mn. The
-        // section-definition symbol must precede the function symbol in the symbol
-        // table, and the pre-registration binds the function symbol to this section,
-        // so both must happen here (before IL emission).
-        CoffSectionBuilder textSection = _ilSection;
+        // -ffunction-sections: give each function its own COMDAT .text$mn.
+        // Its section-definition symbol must precede the function symbol.
         if (_options.OptFunctionSections)
         {
             var fnSection = new CoffSectionWithContentBuilder(
@@ -452,10 +397,7 @@ public class MsilObjectEmitter
             _functionSections[fn] = new FunctionComdatSections(fnSection, cv);
             _symtab.AddComdatSectionSymbol(fnSection);
             _symtab.AddComdatSectionSymbol(debugSection);
-            textSection = fnSection;
         }
-        _symtab.PreRegisterFunctionClrToken(textSection, mangledName, methodDef);
-
         // If this is main, register __CxxPureMSILEntry
         if (fn.Name == "main")
         {
@@ -477,15 +419,17 @@ public class MsilObjectEmitter
     }
 
     public EntityHandle GetFunctionToken(Obj fn)
-        => _methodDefs.TryGetValue(fn, out var methodDef) ? methodDef : GetExternalFunctionToken(fn);
+        => GetObjectReference(fn);
 
     public EntityHandle GetFieldToken(Obj var)
-        => _fieldDefs.TryGetValue(var, out var fieldDef) ? fieldDef : GetExternalFieldToken(var);
+        => GetObjectReference(var);
 
-    public FieldDefinitionHandle GetOrReserveUnepFieldToken(Obj fn)
+    public FieldDefinitionHandle GetOrCreateUnepFieldToken(Obj fn)
     {
         Debug.Assert(fn.Ty.CallConv != CallConv.Clrcall);
-        return _unepSlots[fn.Name].Field;
+        return _unepSlots.TryGetValue(fn.Name, out UnepSlot slot)
+            ? slot.Field
+            : RegisterUnepField(fn);
     }
 
     private FieldDefinitionHandle RegisterUnepField(Obj fn)
@@ -499,7 +443,6 @@ public class MsilObjectEmitter
         FieldDefinitionHandle unepField = _md.AddFieldDefinition(
             FieldAttributes.Assembly | FieldAttributes.Static | FieldAttributes.HasFieldRVA,
             _md.GetOrAddString(unepName), _md.GetOrAddBlob(unepFieldSig));
-        _nextFieldRow++;
         _md.AddFieldRelativeVirtualAddress(unepField, 0);
 
         var unepSection = new CoffSectionWithContentBuilder(
@@ -514,32 +457,13 @@ public class MsilObjectEmitter
         _symtab.AddComdatSectionSymbol(unepSection);
         _symtab.AddDataClrToken(unepName, unepField, unepSection, 0, out _, isExternal: true);
 
+        CoffSymbolHandle target = fn.IsDefinition
+            ? GetOrCreateNepForDefinition(fn)
+            : _symtab.AddUndefinedExternalSymbol(SymPrefix + fn.Name, CoffSymbolType.Null);
+        new CoffRelocationEncoder(_coffHeader, unepSection.Relocations)
+            .AddAddressRelocation(0, target);
+
         return unepField;
-    }
-
-    private MemberReferenceHandle GetExternalFunctionToken(Obj fn)
-    {
-        if (_externalFuncRefs.TryGetValue(fn.Name, out MemberReferenceHandle memberRef))
-            return memberRef;
-
-        CType funcTy = fn.Ty;
-
-        // Build MemberRef signature
-        var sig = new BlobBuilder();
-        EncodeFunctionSignature(sig, funcTy);
-
-        memberRef = _md.AddMemberReference(
-            _moduleTypeDef, _md.GetOrAddString(fn.Name), _md.GetOrAddBlob(sig));
-        _externalFuncRefs[fn.Name] = memberRef;
-
-        // Add DecoratedNameAttribute
-        string mangledName = _nameMangler.MangleFunctionName(fn);
-        AddDecoratedNameAttribute(memberRef, mangledName);
-
-        // Register external CLR token
-        _symtab.AddExternalClrToken(mangledName, memberRef);
-
-        return memberRef;
     }
 
     private void AddDecoratedNameAttribute(EntityHandle target, string mangledName)
@@ -558,35 +482,38 @@ public class MsilObjectEmitter
         _md.AddCustomAttribute(target, ctorRef, _md.GetOrAddBlob(attrBlob));
     }
 
-    private void RegisterGlobalField(Obj g)
+    private void FinalizeReferencedFunctionSymbols()
     {
-        var fieldSig = new BlobBuilder();
-        fieldSig.WriteByte(0x06); // FIELD
-        EncodeType(fieldSig, _types.FlexibleAggregateStorageType(g.Ty));
+        foreach (Obj obj in _objectRefs.Keys)
+        {
+            if (obj.IsFunction)
+                _symtab.AddUndefinedExternalSymbol(_nameMangler.MangleFunctionName(obj));
+        }
+    }
 
-        string fieldName;
-        if (g.IsStringLiteral && _options.OptDataSections)
-        {
-            // Pooled string literal: the field/symbol name is the content-derived
-            // ??_C@ name the parser already assigned.
-            fieldName = g.Name;
-        }
-        else if (g.StaticLocalFn != null)
-        {
-            fieldName = _nameMangler.MangleStaticLocalName(g);
-        }
-        else if (g.IsAnonymous)
-        {
-            fieldName = _nameMangler.GenerateAnonymousGlobalName();
-        }
-        else if (g.IsStatic)
-        {
-            fieldName = _nameMangler.MangleStaticGlobalName(g.Name);
-        }
-        else
-        {
-            fieldName = g.Name;
-        }
+    private string GetGlobalFieldMetadataName(Obj g)
+    {
+        if (_globalFieldNames.TryGetValue(g, out string name))
+            return name;
+
+        name = g.IsStringLiteral && _options.OptDataSections
+            ? g.Name
+            : g.StaticLocalFn != null
+                ? _nameMangler.MangleStaticLocalName(g)
+                : g.IsAnonymous
+                    ? _nameMangler.GenerateAnonymousGlobalName()
+                    : g.IsStatic
+                        ? _nameMangler.MangleStaticGlobalName(g.Name)
+                        : g.Name;
+        _globalFieldNames.Add(g, name);
+        return name;
+    }
+
+    private FieldDefinitionHandle RegisterGlobalField(Obj g)
+    {
+        BlobBuilder fieldSig = CreateFieldSignature(_types.FlexibleAggregateStorageType(g.Ty));
+
+        string fieldName = GetGlobalFieldMetadataName(g);
 
         FieldAttributes fieldAttrs = FieldAttributes.Assembly | FieldAttributes.Static;
 
@@ -597,48 +524,40 @@ public class MsilObjectEmitter
 
         var fieldDef = _md.AddFieldDefinition(fieldAttrs,
             _md.GetOrAddString(fieldName), _md.GetOrAddBlob(fieldSig));
-        _nextFieldRow++;
 
         _md.AddFieldRelativeVirtualAddress(fieldDef, 0);
-
-        _fieldDefs[g] = fieldDef;
-        _globalFieldsByName[g.Name] = fieldDef;
-    }
-
-    private FieldDefinitionHandle GetExternalFieldToken(Obj g)
-    {
-        if (_globalFieldsByName.TryGetValue(g.Name, out FieldDefinitionHandle fieldDef))
-        {
-            _fieldDefs[g] = fieldDef;
-            return fieldDef;
-        }
-
-        return _fieldDefs[g];
-    }
-
-    private FieldDefinitionHandle RegisterExternalField(Obj g)
-    {
-        if (_globalFieldsByName.TryGetValue(g.Name, out FieldDefinitionHandle fieldDef))
-        {
-            _fieldDefs[g] = fieldDef;
-            return fieldDef;
-        }
-
-        Debug.Assert(!g.IsFunction && !g.IsDefinition);
-
-        var fieldSig = new BlobBuilder();
-        fieldSig.WriteByte(0x06); // FIELD
-        EncodeType(fieldSig, g.Ty);
-
-        FieldAttributes attrs = FieldAttributes.Assembly | FieldAttributes.Static;
-
-        fieldDef = _md.AddFieldDefinition(attrs,
-            _md.GetOrAddString(g.Name), _md.GetOrAddBlob(fieldSig));
-        _nextFieldRow++;
-
-        _fieldDefs[g] = fieldDef;
-        _globalFieldsByName[g.Name] = fieldDef;
         return fieldDef;
+    }
+
+    private MemberReferenceHandle GetObjectReference(Obj obj)
+    {
+        if (_objectRefs.TryGetValue(obj, out MemberReferenceHandle memberRef))
+            return memberRef;
+
+        BlobBuilder signature;
+        string metadataName;
+        if (obj.IsFunction)
+        {
+            signature = new BlobBuilder();
+            EncodeFunctionSignature(signature, obj.Ty);
+            metadataName = obj.Name;
+        }
+        else
+        {
+            signature = CreateFieldSignature(_types.FlexibleAggregateStorageType(obj.Ty));
+            metadataName = GetGlobalFieldMetadataName(obj);
+        }
+
+        memberRef = _md.AddMemberReference(
+            _moduleTypeDef,
+            _md.GetOrAddString(metadataName),
+            _md.GetOrAddBlob(signature));
+        _objectRefs.Add(obj, memberRef);
+
+        if (obj.IsFunction)
+            AddDecoratedNameAttribute(memberRef, _nameMangler.MangleFunctionName(obj));
+        EnsureMemberRefTokenSymbol(memberRef, obj.IsFunction);
+        return memberRef;
     }
 
     private void AddNativeCppClassAttribute(TypeDefinitionHandle handle)
@@ -685,21 +604,35 @@ public class MsilObjectEmitter
                 _functionSections[fn].Text, _symtab, _coffHeader, _functionSections[fn].CodeView)
             : _bodyEncoder;
 
-    private void EmitFunctions(Obj prog)
+    private void EmitObjects(Obj prog)
     {
-        for (Obj fn = prog; fn != null; fn = fn.Next)
+        for (Obj obj = prog; obj != null; obj = obj.Next)
         {
-            if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
+            if (!obj.IsFunction)
+            {
+                if (!obj.IsDefinition)
+                    continue;
 
-            CompiledMethod body = CodeGen.EmitFunction(_types, this, fn, _options.Optimize);
+                FieldDefinitionHandle fieldDef = RegisterGlobalField(obj);
+                EmitGlobalDataBytesAndToken(obj, fieldDef);
+                if (obj.Rel != null)
+                    _globalsWithRelocations.Add(obj);
+                continue;
+            }
+
+            if (!obj.IsDefinition || !obj.IsLive)
+                continue;
+
+            MethodDefinitionHandle methodDef = RegisterFunction(obj);
+            GetOrCreateNepForDefinition(obj);
+            CompiledMethod body = CodeGen.EmitFunction(_types, this, obj, _options.Optimize);
 
             // Finalize method body
-            var methodDef = _methodDefs[fn];
-            string mangledName = _nameMangler.MangleFunctionName(fn);
+            string mangledName = _nameMangler.MangleFunctionName(obj);
 
-            GetBodyEncoder(fn).AddMethodBody(methodDef, mangledName, body.Instructions,
+            GetBodyEncoder(obj).AddMethodBody(methodDef, mangledName, body.Instructions,
                 body.MaxStack, body.LocalVariables, attributes: MethodBodyAttributes.InitLocals,
-                debugName: fn.Name,
+                debugName: obj.Name,
                 localSlots: body.LocalDebugInfo,
                 localScopes: body.LocalScopes);
         }
@@ -732,7 +665,7 @@ public class MsilObjectEmitter
             enc.OpCode(ILOpCode.Ldarg_2); // envp
         }
 
-        enc.Call(_methodDefs[_mainObj]);
+        enc.Call(GetObjectReference(_mainObj));
 
         // If main returns void, push 0
         if (_mainObj.Ty.ReturnTy.Kind == TypeKind.Void)
@@ -745,62 +678,36 @@ public class MsilObjectEmitter
             debugName: "__CxxPureMSILEntry");
     }
 
-    private void EmitNepMachinery(Obj prog)
+    private CoffSymbolHandle GetOrCreateNepForDefinition(Obj fn)
     {
-        for (Obj fn = prog; fn != null; fn = fn.Next)
-        {
-            if (!fn.IsFunction || !fn.IsDefinition || !fn.IsLive) continue;
+        string bareName = _nameMangler.MangleFunctionBaseName(fn);
+        if (_nepBareNameSymbols.TryGetValue(bareName, out CoffSymbolHandle bareSym))
+            return bareSym;
 
-            var methodDef = _methodDefs[fn];
-            string mangledName = _nameMangler.MangleFunctionName(fn);
-            string bareName = _nameMangler.MangleFunctionBaseName(fn);
+        MemberReferenceHandle methodRef = GetObjectReference(fn);
+        bareSym = EmitNepForMethod(
+            methodRef,
+            bareName,
+            _nameMangler.MangleFunctionName(fn));
+        _nepBareNameSymbols.Add(bareName, bareSym);
 
-            var bareSym = EmitNepForMethod(
-                MetadataTokens.GetToken(methodDef), bareName, mangledName);
-
-            // Also store under original name for __unep@ relocation lookup
-            if (fn.IsStatic && !_nepBareNameSymbols.ContainsKey(fn.Name))
-                _nepBareNameSymbols[fn.Name] = bareSym;
-
-            if (fn.Ty.CallConv != CallConv.Clrcall && _unepSlots.ContainsKey(fn.Name))
-            {
-                EmitUnepSlot(fn, bareSym);
-            }
-        }
-
-        // Emit ADDR relocs for extern __unep@ fields (not defined in this TU)
-        foreach (var (funcName, unepSlot) in _unepSlots)
-        {
-            if (_nepBareNameSymbols.ContainsKey(funcName)) continue; // already handled by local NEP
-
-            // Create an undefined external bare-name symbol — linker resolves from defining TU
-            var externBareSym = _symtab.AddUndefinedExternalSymbol(SymPrefix + funcName, CoffSymbolType.Null);
-            new CoffRelocationEncoder(_coffHeader, unepSlot.Section.Relocations)
-                .AddAddressRelocation(0, externBareSym);
-        }
+        // Relocation labels use the source name for static functions.
+        if (fn.IsStatic)
+            _nepBareNameSymbols.TryAdd(fn.Name, bareSym);
+        return bareSym;
     }
 
     /// <summary>
     /// Emit NEP machinery for a single method: __mep@ slot, thunk, bare-name alias, ilfixup.
     /// </summary>
-    private CoffSymbolHandle EmitNepForMethod(int methodToken, string bareName, string mangledSuffix)
+    private CoffSymbolHandle EmitNepForMethod(EntityHandle methodToken, string bareName, string mangledSuffix)
     {
         var bareSym = ClrIjw.EmitComdatNepMachinery(
             TargetMachine, PtrSize, SymPrefix,
             _coffHeader, _symtab,
             _comdatSections,
             methodToken, bareName, mangledSuffix);
-        _nepBareNameSymbols[bareName] = bareSym;
         return bareSym;
-    }
-
-    private void EmitUnepSlot(Obj fn, CoffSymbolHandle bareSym)
-    {
-        if (!_unepSlots.TryGetValue(fn.Name, out var unepSlot)) return;
-
-        // ADDR relocation to the bare-name NEP thunk symbol
-        new CoffRelocationEncoder(_coffHeader, unepSlot.Section.Relocations)
-            .AddAddressRelocation(0, bareSym);
     }
 
     private readonly record struct UnepSlot(FieldDefinitionHandle Field, CoffSectionWithContentBuilder Section);
@@ -822,109 +729,91 @@ public class MsilObjectEmitter
     /// offset instead of recomputing a cumulative merged-.data offset.</summary>
     private readonly Dictionary<Obj, (CoffSectionWithContentBuilder Section, int Offset)> _dataPlacement = new();
 
-    /// <summary>Write data bytes and register COFF data token symbols.
-    /// Must run before IL emission so token ordering is correct.</summary>
-    private void EmitGlobalDataBytesAndTokens(Obj prog)
+    /// <summary>Write data bytes and register COFF data token symbols.</summary>
+    private void EmitGlobalDataBytesAndToken(Obj g, FieldDefinitionHandle fieldDef)
     {
-        // Register all global data symbols
-        for (Obj g = prog; g != null; g = g.Next)
+        // Pool string literals into their own read-only COMDAT under
+        // -fdata-sections (MSVC /GF behavior, matching clang); otherwise they go
+        // to the merged read-only section like before.
+        bool pooledString = g.IsStringLiteral && _options.OptDataSections;
+        // A pooled string is initialized data even when its bytes are all zero
+        // (e.g. ""), so it must not be diverted to the zero-init .bss path.
+        bool allZero = !g.IsStringLiteral && g.InitData != null && g.Rel == null &&
+            Array.TrueForAll(g.InitData, b => b == 0);
+
+        if (allZero && _options.OptDataSections)
         {
-            if (g.IsFunction) continue;
-            if (!g.IsDefinition) continue;
-            if (!_fieldDefs.TryGetValue(g, out var fieldDef)) continue;
+            var bss = new UninitializedCoffSectionBuilder(
+                ".bss",
+                SectionCharacteristics.ContainsUninitializedData | SectionCharacteristics.MemRead |
+                    SectionCharacteristics.MemWrite | CoffSectionBuilder.AlignmentCharacteristics(g.Align),
+                CoffComdatSelection.Any);
+            bss.Size = g.Ty.Size;
+            _comdatSections.Add(bss);
+            _symtab.AddComdatSectionSymbol(bss);
+            var zeroSym = _symtab.AddDataClrToken(g.Name, fieldDef, bss, 0, out _, isExternal: !g.IsStatic && !g.IsLocal);
+            _dataCoffSymbols[g.Name] = zeroSym;
+        }
+        else if (g.InitData != null && !allZero)
+        {
+            bool isExternal = pooledString || (!g.IsStatic && !g.IsLocal);
+            CoffSectionWithContentBuilder section;
+            int offset;
 
-            // Pool string literals into their own read-only COMDAT under
-            // -fdata-sections (MSVC /GF behavior, matching clang); otherwise they go
-            // to the merged read-only section like before.
-            bool pooledString = g.IsStringLiteral && _options.OptDataSections;
-            // A pooled string is initialized data even when its bytes are all zero
-            // (e.g. ""), so it must not be diverted to the zero-init .bss path.
-            bool allZero = !g.IsStringLiteral && g.InitData != null && g.Rel == null &&
-                Array.TrueForAll(g.InitData, b => b == 0);
-
-            if (allZero && _options.OptDataSections)
+            if (_options.OptDataSections)
             {
-                var bss = new UninitializedCoffSectionBuilder(
-                    ".bss",
-                    SectionCharacteristics.ContainsUninitializedData | SectionCharacteristics.MemRead |
-                        SectionCharacteristics.MemWrite | CoffSectionBuilder.AlignmentCharacteristics(g.Align),
-                    CoffComdatSelection.Any);
-                bss.Size = g.Ty.Size;
-                _comdatSections.Add(bss);
-                _symtab.AddComdatSectionSymbol(bss);
-                var zeroSym = _symtab.AddDataClrToken(g.Name, fieldDef, bss, 0, out _, isExternal: !g.IsStatic && !g.IsLocal);
-                _dataCoffSymbols[g.Name] = zeroSym;
-            }
-            else if (g.InitData != null && !allZero)
-            {
-                bool isExternal = pooledString || (!g.IsStatic && !g.IsLocal);
-                CoffSectionWithContentBuilder section;
-                int offset;
-
-                if (_options.OptDataSections)
-                {
-                    // String literals fold across TUs (selection Any); other data
-                    // items are unique per TU (NoDuplicates). Strings and const data
-                    // are read-only (.rdata); everything else is writable (.data).
-                    // For arrays the const qualifier sits on the element type, so
-                    // walk through array nesting to the element before checking
-                    // (matching MSVC, which puts const arrays in .rdata under /Gw).
-                    CType elemTy = g.Ty;
-                    while (elemTy.Kind == TypeKind.Array)
-                        elemTy = elemTy.Base;
-                    bool isReadOnly = g.IsStringLiteral || elemTy.IsConst || g.IsReadOnlyConst;
-                    var selection = g.IsStringLiteral
-                        ? CoffComdatSelection.Any
-                        : CoffComdatSelection.NoDuplicates;
-                    section = new CoffSectionWithContentBuilder(
-                        isReadOnly ? ".rdata" : ".data",
-                        SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead |
-                            (isReadOnly ? 0 : SectionCharacteristics.MemWrite) | CoffSectionBuilder.AlignmentCharacteristics(g.Align),
-                        selection);
-                    _comdatSections.Add(section);
-                    _symtab.AddComdatSectionSymbol(section);
-                    offset = 0;
-                }
-                else
-                {
-                    section = g.IsStringLiteral || g.IsReadOnlyConst ? _rdataSection : _dataSection;
-
-                    // Pad to required alignment
-                    section.Content.Align(g.Align);
-
-                    offset = section.Content.Count;
-                }
-
-                // Copy InitData, writing addends at relocation offsets
-                byte[] data = (byte[])g.InitData.Clone();
-                for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
-                {
-                    if (rel.Addend != 0)
-                        Util.WriteBuf(data, rel.Offset, rel.Addend, PtrSize);
-                }
-                section.Content.WriteBytes(data);
-
-                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, section, offset, out _,
-                    isExternal);
-                _dataCoffSymbols[g.Name] = coffSym;
-                _dataPlacement[g] = (section, offset);
-            }
-            else if (g.IsTentative && !g.IsStatic)
-            {
-                // External tentative → common symbol (linker allocates)
-                var coffSym = _symtab.AddCommonDataClrToken(g.Name, fieldDef, g.Ty.Size, out _);
-                _dataCoffSymbols[g.Name] = coffSym;
+                // String literals fold across TUs (selection Any); other data
+                // items are unique per TU (NoDuplicates). Strings and const data
+                // are read-only (.rdata); everything else is writable (.data).
+                // For arrays the const qualifier sits on the element type, so
+                // walk through array nesting to the element before checking.
+                CType elemTy = g.Ty;
+                while (elemTy.Kind == TypeKind.Array)
+                    elemTy = elemTy.Base;
+                bool isReadOnly = g.IsStringLiteral || elemTy.IsConst || g.IsReadOnlyConst;
+                var selection = g.IsStringLiteral
+                    ? CoffComdatSelection.Any
+                    : CoffComdatSelection.NoDuplicates;
+                section = new CoffSectionWithContentBuilder(
+                    isReadOnly ? ".rdata" : ".data",
+                    SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead |
+                        (isReadOnly ? 0 : SectionCharacteristics.MemWrite) | CoffSectionBuilder.AlignmentCharacteristics(g.Align),
+                    selection);
+                _comdatSections.Add(section);
+                _symtab.AddComdatSectionSymbol(section);
+                offset = 0;
             }
             else
             {
-                int bssOffset = AllocateMergedBss(g);
-                bool isExternal = !g.IsTentative && !g.IsStatic && !g.IsLocal;
-                var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, _bssSection, bssOffset, out _,
-                    isExternal);
-                _dataCoffSymbols[g.Name] = coffSym;
+                section = g.IsStringLiteral || g.IsReadOnlyConst ? _rdataSection : _dataSection;
+                section.Content.Align(g.Align);
+                offset = section.Content.Count;
             }
-        }
 
+            byte[] data = (byte[])g.InitData.Clone();
+            for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
+            {
+                if (rel.Addend != 0)
+                    Util.WriteBuf(data, rel.Offset, rel.Addend, PtrSize);
+            }
+            section.Content.WriteBytes(data);
+
+            var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, section, offset, out _, isExternal);
+            _dataCoffSymbols[g.Name] = coffSym;
+            _dataPlacement[g] = (section, offset);
+        }
+        else if (g.IsTentative && !g.IsStatic)
+        {
+            var coffSym = _symtab.AddCommonDataClrToken(g.Name, fieldDef, g.Ty.Size, out _);
+            _dataCoffSymbols[g.Name] = coffSym;
+        }
+        else
+        {
+            int bssOffset = AllocateMergedBss(g);
+            bool isExternal = !g.IsTentative && !g.IsStatic && !g.IsLocal;
+            var coffSym = _symtab.AddDataClrToken(g.Name, fieldDef, _bssSection, bssOffset, out _, isExternal);
+            _dataCoffSymbols[g.Name] = coffSym;
+        }
     }
 
     private int AllocateMergedBss(Obj g)
@@ -936,16 +825,10 @@ public class MsilObjectEmitter
 
     /// <summary>Write data relocations. Runs after NEP emission so
     /// bare-name symbols are available as relocation targets.</summary>
-    private void EmitGlobalDataRelocations(Obj prog)
+    private void EmitGlobalDataRelocations()
     {
-        for (Obj g = prog; g != null; g = g.Next)
+        foreach (Obj g in _globalsWithRelocations)
         {
-            if (g.IsFunction) continue;
-            if (!g.IsDefinition) continue;
-            if (!_fieldDefs.ContainsKey(g)) continue;
-            if (g.InitData == null) continue;
-            if (g.Rel == null) continue;
-
             var placement = _dataPlacement[g];
 
             for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
@@ -1005,24 +888,25 @@ public class MsilObjectEmitter
         _bodyEncoder = new RelocatableMethodBodyStreamEncoder(
             _ilSection, _symtab, _coffHeader, _codeviewSymbols);
 
-        // Metadata
-        RegisterMetadata(prog, objName);
+        _moduleTypeDef = _md.AddTypeDefinition(
+            TypeAttributes.Class,
+            default,
+            _md.GetOrAddString("<Module>"),
+            default,
+            MetadataTokens.FieldDefinitionHandle(_md.GetRowCount(TableIndex.Field) + 1),
+            MetadataTokens.MethodDefinitionHandle(_md.GetRowCount(TableIndex.MethodDef) + 1));
+        _md.AddModule(0, _md.GetOrAddString(objName), _md.GetOrAddGuid(Guid.NewGuid()), default, default);
 
-        // Global data bytes + COFF token registration — BEFORE IL emission
-        EmitGlobalDataBytesAndTokens(prog);
-
-        // IL Emission
-        EmitFunctions(prog);
+        EmitObjects(prog);
 
         EmitCxxPureMSILEntry();
 
         _aggregates.MaterializeAll();
 
-        // NEP machinery (creates bare-name symbols for functions)
-        EmitNepMachinery(prog);
+        FinalizeReferencedFunctionSymbols();
 
         // Global data relocations — AFTER NEP so bare-name symbols exist
-        EmitGlobalDataRelocations(prog);
+        EmitGlobalDataRelocations();
 
         // Build COFF and serialize. Sections are only emitted when they carry
         // content, matching MSVC /clr reference objects (which omit even

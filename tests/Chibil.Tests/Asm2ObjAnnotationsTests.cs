@@ -66,14 +66,16 @@ public class Asm2ObjAnnotationsTests : ChibiTestBase
             """)
         .AddAsm2ObjAssembly("Asm2ObjAssembly.dll")
         .Link(["/subsystem:console"])
-        // Expected checksum computed in Cases.mainCRTStartup (538 + 12 = 550):
+        // Expected checksum computed in Cases.mainCRTStartup:
         //   c_basic(2,3) + c_char('X') + c_charptr("A...") + c_charptrptr(&"A...")
         //   + c_const_charptr("A...") + c_const_voidptr("A...") + c_long(100)
         //   + c_volatile_intptr(&42) + c_const_intptr(&7)
         //   + call_cs_double(11) + call_cs_charptr_strlen("ABCDE") + call_cs_long_negate(-9)
         //   + call_cs_stdcall_triple(4)
-        //   = 5 + 88 + 65 + 65 + 65 + 65 + 100 + 42 + 7 + 22 + 5 + 9 + 12 = 550
-        .RunAndCheck(exitCode: 550);
+        //   Existing annotation cases = 550
+        //   Same-assembly regular call + recursion + static field + copied
+        //   nested value type + ldftn/calli = 17 + 24 + 42 + 76 + 18 = 177
+        .RunAndCheck(exitCode: 727);
     }
 }
 

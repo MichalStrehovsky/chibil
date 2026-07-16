@@ -336,10 +336,10 @@ public class FuncptrArrayClrcallTest
         // managed entry point directly from the metadata token.
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(addMethod), "add", "?add@@$$J0YMHHH@Z");
+            addMethod, "add", "?add@@$$J0YMHHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(subMethod), "sub_fn", "?sub_fn@@$$J0YMHHH@Z");
+            subMethod, "sub_fn", "?sub_fn@@$$J0YMHHH@Z");
 
         // No __unep@ ADDR relocs — __clrcall functions don't have
         // unmanaged entry-point declaration fields.

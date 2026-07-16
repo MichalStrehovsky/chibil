@@ -324,10 +324,10 @@ public class StructFuncptrClrcallTest
         // __clrcall main does NOT get a NEP thunk.
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(doubleMethod), "double_it", "?double_it@@$$J0YMHH@Z");
+            doubleMethod, "double_it", "?double_it@@$$J0YMHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(invokeMethod), "invoke", $"?invoke@@$$J0YMHP{e}AU_Handler@@@Z");
+            invokeMethod, "invoke", $"?invoke@@$$J0YMHP{e}AU_Handler@@@Z");
 
         // No __unep@ ADDR relocs — __clrcall functions don't have
         // unmanaged entry-point declaration fields.

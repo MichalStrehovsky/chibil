@@ -483,28 +483,28 @@ public class IncDecTest
         // ─── IJW machinery for exported methods ───────────────────────────
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(postIncMethod), "post_inc", $"?post_inc@@$$J0YAHH@Z");
+            postIncMethod, "post_inc", $"?post_inc@@$$J0YAHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(preIncMethod), "pre_inc", $"?pre_inc@@$$J0YAHH@Z");
+            preIncMethod, "pre_inc", $"?pre_inc@@$$J0YAHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(compAddMethod), "compound_add", $"?compound_add@@$$J0YAHHH@Z");
+            compAddMethod, "compound_add", $"?compound_add@@$$J0YAHHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(compSubMethod), "compound_sub", $"?compound_sub@@$$J0YAHHH@Z");
+            compSubMethod, "compound_sub", $"?compound_sub@@$$J0YAHHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(compMulMethod), "compound_mul", $"?compound_mul@@$$J0YAHHH@Z");
+            compMulMethod, "compound_mul", $"?compound_mul@@$$J0YAHHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(compShlMethod), "compound_shl", $"?compound_shl@@$$J0YAHHH@Z");
+            compShlMethod, "compound_shl", $"?compound_shl@@$$J0YAHHH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(ptrPostIncMethod), "ptr_post_inc", $"?ptr_post_inc@@$$J0YAXP{e}AP{e}AH@Z");
+            ptrPostIncMethod, "ptr_post_inc", $"?ptr_post_inc@@$$J0YAXP{e}AP{e}AH@Z");
         ClrIjw.EmitNepMachinery(machine, ptrSize, symPrefix, coffHeader, symtab,
             dataSection, nepSection, ilFixupSection,
-            MetadataTokens.GetToken(mainMethod), "main", $"?main@@$$J0YAHXZ");
+            mainMethod, "main", $"?main@@$$J0YAHXZ");
 
         // ─── Build COFF & Serialize ───────────────────────────────────────
         var sections = new System.Collections.Generic.List<CoffSectionBuilder>();
