@@ -1,5 +1,6 @@
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
+using Coff;
 
 namespace Chilink;
 
@@ -22,7 +23,14 @@ public static class Linker
             var reachability = new ReachabilityGraph(symbols);
             HashSet<CoffInputSection> liveSections =
                 reachability.Compute(entrySymbol, options.OptimizeReferences);
-            SectionLayoutPlan layout = SectionLayout.Plan(inputs, liveSections);
+            GlobalDataPlan globalData = GlobalDataPlanner.Plan(
+                inputs,
+                symbols,
+                liveSections);
+            SectionLayoutPlan layout = SectionLayout.Plan(
+                inputs,
+                liveSections,
+                globalData);
 
             (CoffInput EntryInput, MethodDefinitionHandle EntryMethod) =
                 FindEntryMethod(entrySymbol);
@@ -33,6 +41,7 @@ public static class Linker
                 symbols,
                 liveSections,
                 layout,
+                globalData,
                 EntryInput,
                 EntryMethod);
             MetadataMergeResult metadata = MetadataMerger.Merge(mergeRequest);
@@ -84,6 +93,7 @@ public static class Linker
         SymbolResolver symbols,
         IReadOnlySet<CoffInputSection> liveSections,
         SectionLayoutPlan layout,
+        GlobalDataPlan globalData,
         CoffInput entryInput,
         MethodDefinitionHandle entryMethod)
     {
@@ -93,6 +103,10 @@ public static class Linker
             EntityHandle[] discarded = input.DefinedClrTokens
                 .Where(pair =>
                 {
+                    if (pair.Value.Section.Kind != CoffSectionHandleKind.Physical)
+                    {
+                        return false;
+                    }
                     CoffInputSection section = input.Sections.Single(
                         candidate => candidate.Handle == pair.Value.Section);
                     return !liveSections.Contains(section);
@@ -117,6 +131,16 @@ public static class Linker
                 GetInputIdentity(pair.Key.Input),
                 pair.Key.Field),
             pair => pair.Value);
+        foreach ((MetadataSourceEntity alias, MetadataSourceEntity canonical) in
+                 globalData.FieldRvaAliases)
+        {
+            if (!fieldOffsets.TryGetValue(canonical, out int offset))
+            {
+                throw new InvalidOperationException(
+                    $"No final FieldRVA offset was supplied for canonical field '{canonical}'.");
+            }
+            fieldOffsets.Add(alias, offset);
+        }
         IReadOnlyDictionary<MetadataSourceEntity, MetadataSourceEntity> referenceBindings =
             CreateReferenceBindings(inputs, symbols, liveSections);
 
@@ -126,6 +150,9 @@ public static class Linker
         {
             MethodBodyOffsets = bodyOffsets,
             FieldRvaOffsets = fieldOffsets,
+            FieldsWithoutRva = globalData.TransformedFields,
+            FieldDefinitionBindings = globalData.FieldDefinitionBindings,
+            ModuleInitializerBodyOffset = layout.ModuleInitializerBodyOffset,
             ReferenceBindings = referenceBindings,
             EntryPoint = new MetadataSourceEntity(
                 GetInputIdentity(entryInput),
@@ -149,9 +176,16 @@ public static class Linker
                 {
                     continue;
                 }
-                CoffInputSection definitionSection = definition.Input.Sections.Single(
-                    section => section.Handle == definition.Section);
-                if (!liveSections.Contains(definitionSection))
+                if (definition.Section.Kind == CoffSectionHandleKind.Physical)
+                {
+                    CoffInputSection definitionSection = definition.Input.Sections.Single(
+                        section => section.Handle == definition.Section);
+                    if (!liveSections.Contains(symbols.GetCanonicalSection(definitionSection)))
+                    {
+                        continue;
+                    }
+                }
+                else if (!definition.IsCommon)
                 {
                     continue;
                 }

@@ -165,9 +165,7 @@ internal sealed class CoffInput : IDisposable
             symbols.Add(inputSymbol);
             symbolsByHandle.Add(handle, inputSymbol);
 
-            if (!clrToken.IsNil &&
-                symbol.SectionNumber.Kind == CoffSectionHandleKind.Physical &&
-                symbol.NumberOfAuxSymbols > 0)
+            if (!clrToken.IsNil && symbol.NumberOfAuxSymbols > 0)
             {
                 if (!definedClrTokens.TryAdd(clrToken, inputSymbol))
                 {
@@ -293,6 +291,12 @@ internal sealed record CoffInputSymbol(
     public bool IsExternal => StorageClass == CoffSymbolStorageClass.External;
 
     public bool IsClrToken => StorageClass == CoffSymbolStorageClass.ClrToken;
+
+    public bool IsCommon =>
+        IsExternal &&
+        !IsDefined &&
+        !IsClrToken &&
+        Value > 0;
 }
 
 internal readonly record struct CoffInputRelocation(

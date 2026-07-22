@@ -164,6 +164,7 @@ public static class MetadataMerger
                         new SourceRow(input, MetadataTokens.TypeDefinitionHandle(1)));
                 }
             }
+
         }
 
         private void PlanTypeDefinitions()
@@ -493,6 +494,11 @@ public static class MetadataMerger
                 type.FirstMethod = MetadataTokens.MethodDefinitionHandle(methodRow + 1);
                 var fieldsByKey = new Dictionary<string, MemberPlan>(StringComparer.Ordinal);
                 var methodsByKey = new Dictionary<string, MemberPlan>(StringComparer.Ordinal);
+                var pendingFieldBindings = new List<(
+                    InputState Input,
+                    FieldDefinitionHandle Source,
+                    MetadataSourceEntity SourceEntity,
+                    MetadataSourceEntity Target)>();
 
                 foreach (SourceRow typeSource in type.Sources)
                 {
@@ -513,6 +519,20 @@ public static class MetadataMerger
 
                         FieldDefinition fieldDefinition =
                             typeSource.Input.Reader.GetFieldDefinition(source);
+                        var sourceEntity = new MetadataSourceEntity(
+                            typeSource.Input.Input.Identity,
+                            source);
+                        if (_request.FieldDefinitionBindings.TryGetValue(
+                                sourceEntity,
+                                out MetadataSourceEntity fieldBinding))
+                        {
+                            pendingFieldBindings.Add((
+                                typeSource.Input,
+                                source,
+                                sourceEntity,
+                                fieldBinding));
+                            continue;
+                        }
                         BlobBuilder rewrittenSignature = SignatureRewriter.RewriteField(
                             typeSource.Input.Reader.GetBlobReader(fieldDefinition.Signature),
                             typeSource.Input.Map);
@@ -538,6 +558,8 @@ public static class MetadataMerger
                                 source,
                                 existingField.Output,
                                 isDuplicate: true);
+                            if (_request.FieldsWithoutRva.Contains(sourceEntity))
+                                existingField.RemoveFieldRva = true;
                             if (type != _moduleType && !suppressed)
                                 checkedFields++;
                             continue;
@@ -559,22 +581,22 @@ public static class MetadataMerger
                             new SourceRow(typeSource.Input, source),
                             output,
                             type);
-                        if ((fieldDefinition.Attributes & FieldAttributes.HasFieldRVA) != 0)
+                        plan.RemoveFieldRva =
+                            _request.FieldsWithoutRva.Contains(sourceEntity);
+                        if ((fieldDefinition.Attributes & FieldAttributes.HasFieldRVA) != 0 &&
+                            !plan.RemoveFieldRva)
                         {
-                            var key = new MetadataSourceEntity(
-                                typeSource.Input.Input.Identity,
-                                source);
                             if (!_request.FieldRvaOffsets.TryGetValue(
-                                key,
+                                sourceEntity,
                                 out int rvaOffset))
                             {
                                 throw new InvalidOperationException(
-                                    $"No final FieldRVA offset was supplied for '{key}'.");
+                                    $"No final FieldRVA offset was supplied for '{sourceEntity}'.");
                             }
                             if (rvaOffset < 0)
                                 throw new ArgumentOutOfRangeException(
                                     nameof(_request.FieldRvaOffsets),
-                                    $"FieldRVA offset for '{key}' must be non-negative.");
+                                    $"FieldRVA offset for '{sourceEntity}' must be non-negative.");
                             plan.FieldRvaOffset = rvaOffset;
                         }
                         if (!privateScope)
@@ -590,6 +612,13 @@ public static class MetadataMerger
 
                         MethodDefinition methodDefinition =
                             typeSource.Input.Reader.GetMethodDefinition(source);
+                        if (type == _moduleType &&
+                            _request.ModuleInitializerBodyOffset >= 0 &&
+                            typeSource.Input.Reader.GetString(methodDefinition.Name) == ".cctor")
+                        {
+                            throw new NotSupportedException(
+                                $"Input '{typeSource.Input.Input.Identity}' contains an existing <Module>..cctor; composing module initializers is not supported.");
+                        }
                         BlobBuilder rewrittenSignature = SignatureRewriter.RewriteMethod(
                             typeSource.Input.Reader.GetBlobReader(
                                 methodDefinition.Signature),
@@ -726,6 +755,39 @@ public static class MetadataMerger
                         }
                     }
                 }
+
+                foreach ((InputState input,
+                          FieldDefinitionHandle source,
+                          MetadataSourceEntity sourceEntity,
+                          MetadataSourceEntity target) in pendingFieldBindings)
+                {
+                    InputState targetInput = GetInput(target.InputIdentity);
+                    if (!targetInput.Map.TryGetMapping(
+                            target.Handle,
+                            out LinkTokenMap.Mapping targetMapping))
+                    {
+                        throw new InvalidOperationException(
+                            $"Canonical global field '{target}' was not planned for alias '{sourceEntity}'.");
+                    }
+                    input.Map.Set(
+                        source,
+                        targetMapping.Destination,
+                        isDuplicate: true);
+                }
+
+                if (type == _moduleType &&
+                    _request.ModuleInitializerBodyOffset >= 0)
+                {
+                    var output = MetadataTokens.MethodDefinitionHandle(++methodRow);
+                    var plan = new MemberPlan(default, output, type)
+                    {
+                        IsModuleInitializer = true,
+                        BodyOffset = _request.ModuleInitializerBodyOffset,
+                        FirstParameter = MetadataTokens.ParameterHandle(parameterRow + 1),
+                    };
+                    type.Methods.Add(plan);
+                    _methods.Add(plan);
+                }
             }
 
             void VerifyDuplicateMethod(
@@ -841,6 +903,9 @@ public static class MetadataMerger
 
             foreach (MemberPlan method in _methods)
             {
+                if (method.IsModuleInitializer)
+                    continue;
+
                 MethodDefinition definition =
                     method.Source.Input.Reader.GetMethodDefinition(
                         (MethodDefinitionHandle)method.Source.Handle);
@@ -1301,6 +1366,7 @@ public static class MetadataMerger
                     }
                 }
             }
+
         }
 
         private void PlanMethodSpecifications()
@@ -1746,7 +1812,9 @@ public static class MetadataMerger
                     plan.Source.Input.Reader.GetBlobReader(source.Signature),
                     plan.Source.Input.Map);
                 FieldDefinitionHandle output = _output.AddFieldDefinition(
-                    source.Attributes,
+                    plan.RemoveFieldRva
+                        ? source.Attributes & ~FieldAttributes.HasFieldRVA
+                        : source.Attributes,
                     GetString(plan.Source.Input.Reader.GetString(source.Name)),
                     _output.GetOrAddBlob(signature));
                 LinkTokenMap.AssertHandle(plan.Output, output);
@@ -1757,6 +1825,32 @@ public static class MetadataMerger
         {
             foreach (MemberPlan plan in _methods)
             {
+                if (plan.IsModuleInitializer)
+                {
+                    var initializerSignature = new BlobBuilder();
+                    new BlobEncoder(initializerSignature)
+                        .MethodSignature()
+                        .Parameters(
+                            0,
+                            out ReturnTypeEncoder returnType,
+                            out ParametersEncoder _);
+                    returnType.Void();
+
+                    MethodDefinitionHandle initializer = _output.AddMethodDefinition(
+                        MethodAttributes.Private |
+                            MethodAttributes.Static |
+                            MethodAttributes.HideBySig |
+                            MethodAttributes.SpecialName |
+                            MethodAttributes.RTSpecialName,
+                        MethodImplAttributes.IL | MethodImplAttributes.Managed,
+                        _output.GetOrAddString(".cctor"),
+                        _output.GetOrAddBlob(initializerSignature),
+                        plan.BodyOffset,
+                        plan.FirstParameter);
+                    LinkTokenMap.AssertHandle(plan.Output, initializer);
+                    continue;
+                }
+
                 var sourceHandle = (MethodDefinitionHandle)plan.Source.Handle;
                 MethodDefinition source =
                     plan.Source.Input.Reader.GetMethodDefinition(sourceHandle);
@@ -1855,6 +1949,8 @@ public static class MetadataMerger
                     _output.AddFieldLayout((FieldDefinitionHandle)plan.Output, offset);
 
                 if ((source.Attributes & FieldAttributes.HasFieldRVA) == 0)
+                    continue;
+                if (plan.RemoveFieldRva)
                     continue;
 
                 _output.AddFieldRelativeVirtualAddress(
@@ -3066,6 +3162,8 @@ public static class MetadataMerger
             public Dictionary<int, ParameterHandle> Parameters { get; } = new();
             public int BodyOffset { get; set; } = -1;
             public int? FieldRvaOffset { get; set; }
+            public bool RemoveFieldRva { get; set; }
+            public bool IsModuleInitializer { get; set; }
             public MethodImplAttributes? ImplAttributesOverride { get; set; }
         }
 

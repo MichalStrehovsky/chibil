@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using Xunit;
@@ -96,6 +97,213 @@ public sealed class ChilinkTests : ChibiTestBase
             """)
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 98);
+    }
+
+    [Fact]
+    public void LinksMutableInitializedGlobal()
+    {
+        LinkResult result = Compile("""
+            int value = 10;
+            int main(void) {
+                value += 32;
+                return value;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"]);
+
+        AssertTransformedGlobal(result, "value");
+        Assert.Contains(".cctor", GetMethodNames(result));
+        result.RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void LinksZeroInitializedCommonGlobal()
+    {
+        LinkResult result = Compile("""
+            int value;
+            int main(void) {
+                value = 42;
+                return value;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"]);
+
+        AssertTransformedGlobal(result, "value");
+        Assert.DoesNotContain(".cctor", GetMethodNames(result));
+        result.RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void LinksInitializedDataPointerRelocation()
+    {
+        LinkResult result = Compile("""
+            char data[] = "AB";
+            char *value = &data[1];
+            int main(void) {
+                return *value;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"]);
+
+        AssertTransformedGlobal(result, "data");
+        AssertTransformedGlobal(result, "value");
+        Assert.Contains(".cctor", GetMethodNames(result));
+        result.RunAndCheck(exitCode: 66);
+    }
+
+    [Fact]
+    public void LinksZeroInitializedBssGlobal()
+    {
+        Compile("""
+            int value;
+            int main(void) {
+                value = 42;
+                return value;
+            }
+            """, ["-fdata-sections"])
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void LinksInitializedAggregateGlobal()
+    {
+        Compile("""
+            struct Pair {
+                int first;
+                int second;
+            };
+            struct Pair value = { 19, 23 };
+            int main(void) {
+                return value.first + value.second;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void LinksCrossObjectDataRelocation()
+    {
+        Compile("""
+            extern int value;
+            int *pointer = &value;
+            int main(void) {
+                return *pointer;
+            }
+            """)
+        .Compile("""
+            int value = 42;
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void LinksInitializedStaticLocal()
+    {
+        Compile("""
+            int next(void) {
+                static int value = 40;
+                value++;
+                return value;
+            }
+            int main(void) {
+                return next() + next() - 40;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 43);
+    }
+
+    [Fact]
+    public void StrongGlobalDefinitionOverridesCommonDefinition()
+    {
+        Compile("""
+            int value;
+            int main(void) {
+                return value;
+            }
+            """)
+        .Compile("""
+            int value = 42;
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void ReadOnlyStrongDefinitionOverridesCommonDefinition()
+    {
+        Compile("""
+            int value;
+            int main(void) {
+                return value;
+            }
+            """)
+        .Compile("""
+            const int value = 42;
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void RejectsIncompatibleCommonDefinitions()
+    {
+        Chilink.ChilinkException error = Assert.Throws<Chilink.ChilinkException>(() =>
+            Compile("""
+                int values[1];
+                int main(void) {
+                    return values[0];
+                }
+                """)
+            .Compile("""
+                int values[2];
+                """)
+            .Link(["/entry:main", "/subsystem:console"]));
+
+        Assert.Contains("incompatible field definitions", error.Message);
+    }
+
+    [Fact]
+    public void CrossInputCommonAliasesBindAfterCanonicalFieldsArePlanned()
+    {
+        Compile("""
+            int left = 19;
+            int right;
+            int sum(void) {
+                return left + right;
+            }
+            """)
+        .Compile("""
+            int left;
+            int right = 23;
+            int sum(void);
+            int main(void) {
+                return sum();
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void RejectsFunctionPointerInitializerRelocation()
+    {
+        Chilink.ChilinkException error = Assert.Throws<Chilink.ChilinkException>(() =>
+            Compile("""
+                int target(void) {
+                    return 42;
+                }
+                int (*pointer)(void) = target;
+                int main(void) {
+                    return pointer();
+                }
+                """)
+            .Link(["/entry:main", "/subsystem:console"]));
+
+        Assert.Contains("function/vtfixup", error.Message);
     }
 
     [Fact]
@@ -218,5 +426,18 @@ public sealed class ChilinkTests : ChibiTestBase
         return metadata.FieldDefinitions
             .Select(handle => metadata.GetString(metadata.GetFieldDefinition(handle).Name))
             .ToArray();
+    }
+
+    private static void AssertTransformedGlobal(LinkResult result, string name)
+    {
+        using var stream = File.OpenRead(result.ExePath);
+        using var pe = new PEReader(stream);
+        MetadataReader metadata = pe.GetMetadataReader();
+        FieldDefinition field = metadata.FieldDefinitions
+            .Select(metadata.GetFieldDefinition)
+            .Single(field => metadata.GetString(field.Name) == name);
+
+        Assert.Equal(0, field.GetRelativeVirtualAddress());
+        Assert.False((field.Attributes & FieldAttributes.HasFieldRVA) != 0);
     }
 }

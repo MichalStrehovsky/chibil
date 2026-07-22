@@ -19,6 +19,23 @@ public sealed class MetadataMergerTests
     }
 
     [Fact]
+    public void ExistingModuleInitializerIsRejectedWhenSynthesizingOne()
+    {
+        using TestMetadata input = CreateModuleInitializer();
+        var request = new MetadataMergeRequest(
+            [new MetadataMergeInput("0", input.Reader)],
+            "out.exe",
+            "out")
+        {
+            ModuleInitializerBodyOffset = 0,
+        };
+
+        NotSupportedException error = Assert.Throws<NotSupportedException>(
+            () => MetadataMerger.Merge(request));
+        Assert.Contains("existing <Module>..cctor", error.Message);
+    }
+
+    [Fact]
     public void MatchingDuplicateMethodAndParameterMapToSingleRows()
     {
         using TestMetadata first = CreateTypeWithMethod("C", "M", parameterAttributes: ParameterAttributes.In);
@@ -399,6 +416,25 @@ public sealed class MetadataMergerTests
 
     private static TestMetadata CreateEmptyType(string typeName)
         => CreateType(typeName, static (_, _, _) => { });
+
+    private static TestMetadata CreateModuleInitializer()
+    {
+        var metadata = new MetadataBuilder();
+        AddModuleAndModuleType(metadata, "cctor.obj");
+        metadata.AddMethodDefinition(
+            MethodAttributes.Private |
+                MethodAttributes.Static |
+                MethodAttributes.SpecialName |
+                MethodAttributes.RTSpecialName,
+            MethodImplAttributes.IL | MethodImplAttributes.Managed,
+            metadata.GetOrAddString(".cctor"),
+            metadata.GetOrAddBlob(new byte[] { 0x00, 0x00, 0x01 }),
+            0,
+            MetadataTokens.ParameterHandle(1));
+        return TestMetadata.Create(
+            metadata,
+            new Dictionary<string, EntityHandle>());
+    }
 
     private static TestMetadata CreateTypeWithMethod(
         string typeName,

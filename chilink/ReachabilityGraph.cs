@@ -27,6 +27,13 @@ internal sealed class ReachabilityGraph
         var live = new HashSet<CoffInputSection>();
         var pending = new Queue<CoffInputSection>();
         Mark(entrySection, live, pending);
+        foreach (CoffInputSection section in _symbols.SelectedSections)
+        {
+            if (!section.IsComdat && !section.IsDebug)
+            {
+                Mark(section, live, pending);
+            }
+        }
 
         while (pending.TryDequeue(out CoffInputSection section))
         {

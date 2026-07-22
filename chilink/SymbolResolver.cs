@@ -23,6 +23,18 @@ internal sealed class SymbolResolver
     public CoffInputSection GetCanonicalSection(CoffInputSection section)
         => _canonicalSections.TryGetValue(section, out CoffInputSection canonical) ? canonical : section;
 
+    public CoffInputSymbol GetCanonicalDefinition(CoffInputSymbol symbol)
+    {
+        if (symbol.IsExternal &&
+            !symbol.IsClrToken &&
+            _externalDefinitions.TryGetValue(symbol.Name, out CoffInputSymbol definition))
+        {
+            return definition;
+        }
+
+        return symbol;
+    }
+
     public CoffInputSymbol ResolveEntryPoint(string name)
     {
         if (!_externalDefinitions.TryGetValue(name, out CoffInputSymbol symbol))
@@ -151,7 +163,7 @@ internal sealed class SymbolResolver
 
         if (symbol.IsDefined)
         {
-            return symbol;
+            return GetCanonicalDefinition(symbol);
         }
 
         if (symbol.IsClrToken)
@@ -179,7 +191,65 @@ internal sealed class SymbolResolver
             return true;
         }
 
+        MemberReference reference = source.Metadata.GetMemberReference(member);
+        if (reference.GetKind() == MemberReferenceKind.Field &&
+            IsGlobalMemberReference(source.Metadata, reference.Parent))
+        {
+            string name = source.Metadata.GetString(reference.Name);
+            if (_externalDefinitions.TryGetValue(name, out definition) &&
+                TryGetFieldDefinition(definition, out FieldDefinitionHandle field))
+            {
+                FieldDefinition target =
+                    definition.Input.Metadata.GetFieldDefinition(field);
+                if (FieldSizeCalculator.GetIdentity(
+                        source.Metadata,
+                        reference.Signature) ==
+                    FieldSizeCalculator.GetIdentity(
+                        definition.Input.Metadata,
+                        target))
+                {
+                    return true;
+                }
+            }
+        }
+
         definition = null;
+        return false;
+    }
+
+    private static bool IsGlobalMemberReference(
+        MetadataReader reader,
+        EntityHandle parent)
+    {
+        if (parent.Kind == HandleKind.TypeDefinition)
+        {
+            return MetadataTokens.GetRowNumber(parent) == 1;
+        }
+        if (parent.Kind == HandleKind.TypeReference)
+        {
+            TypeReference type = reader.GetTypeReference((TypeReferenceHandle)parent);
+            return reader.GetString(type.Namespace).Length == 0 &&
+                reader.GetString(type.Name) == "<Module>";
+        }
+        return false;
+    }
+
+    private static bool TryGetFieldDefinition(
+        CoffInputSymbol symbol,
+        out FieldDefinitionHandle field)
+    {
+        foreach ((EntityHandle token, CoffInputSymbol tokenSymbol) in
+                 symbol.Input.DefinedClrTokens)
+        {
+            if (token.Kind == HandleKind.FieldDefinition &&
+                tokenSymbol.ClrTokenTarget == symbol.Handle)
+            {
+                field = (FieldDefinitionHandle)token;
+                return true;
+            }
+        }
+
+        field = default;
         return false;
     }
 
@@ -349,22 +419,48 @@ internal sealed class SymbolResolver
     {
         foreach (CoffInputSymbol symbol in _inputs.SelectMany(input => input.Symbols))
         {
-            if (!symbol.IsDefined || !symbol.IsExternal || symbol.IsClrToken)
+            if (!symbol.IsExternal || symbol.IsClrToken)
             {
                 continue;
             }
 
-            CoffInputSection section = symbol.Input.Sections.Single(candidate => candidate.Handle == symbol.Section);
-            CoffInputSection canonical = GetCanonicalSection(section);
-            if (!_selectedSections.Contains(canonical) || !ReferenceEquals(section, canonical))
+            if (symbol.IsDefined)
+            {
+                CoffInputSection section = symbol.Input.Sections.Single(
+                    candidate => candidate.Handle == symbol.Section);
+                CoffInputSection canonical = GetCanonicalSection(section);
+                if (!_selectedSections.Contains(canonical) ||
+                    !ReferenceEquals(section, canonical))
+                {
+                    continue;
+                }
+            }
+            else if (!symbol.IsCommon)
             {
                 continue;
             }
 
-            if (!_externalDefinitions.TryAdd(symbol.Name, symbol))
+            if (!_externalDefinitions.TryGetValue(symbol.Name, out CoffInputSymbol existing))
             {
-                throw new ChilinkException($"multiply defined external symbol '{symbol.Name}'");
+                _externalDefinitions.Add(symbol.Name, symbol);
+                continue;
             }
+
+            if (existing.IsCommon)
+            {
+                if (symbol.IsDefined || symbol.Value > existing.Value)
+                {
+                    _externalDefinitions[symbol.Name] = symbol;
+                }
+                continue;
+            }
+
+            if (symbol.IsCommon)
+            {
+                continue;
+            }
+
+            throw new ChilinkException($"multiply defined external symbol '{symbol.Name}'");
         }
     }
 
@@ -381,6 +477,12 @@ internal sealed class SymbolResolver
         if (handle.Kind == HandleKind.UserString)
         {
             return null;
+        }
+        if (handle.Kind is HandleKind.FieldDefinition or HandleKind.MethodDefinition &&
+            source.DefinedClrTokens.TryGetValue((EntityHandle)handle, out CoffInputSymbol definitionToken) &&
+            definitionToken.ClrTokenTarget is CoffSymbolHandle targetHandle)
+        {
+            return GetCanonicalDefinition(source.SymbolsByHandle[targetHandle]);
         }
         if (handle.Kind != HandleKind.MemberReference)
         {

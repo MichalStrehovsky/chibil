@@ -39,7 +39,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return p->prefix + p->anon.x + p->anon.inner.y + p->suffix;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 20);
     }
 
@@ -68,7 +68,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 }
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 12);
     }
 
@@ -117,7 +117,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                     device.status.error + device.status.reserved;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 15);
     }
 
@@ -147,7 +147,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return flags.enabled + flags.signedByte + flags.unsignedByte;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 200);
     }
 
@@ -182,7 +182,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return values[0].c + values[1].c;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 3);
     }
 
@@ -212,7 +212,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return packet.length + packet.values[0] + packet.values[1] + packet.values[2];
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 18);
     }
 
@@ -240,7 +240,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return packet.length + packet.values[0] + packet.values[1] + packet.values[2];
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 18);
     }
 
@@ -274,7 +274,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return 7;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 7);
     }
 
@@ -313,7 +313,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
             .AssertErrorContains("aligned struct members");
 #else
         Compile(source)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 3);
 #endif
     }
@@ -357,7 +357,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
             .AssertErrorContains("aligned aggregate types");
 #else
         Compile(source)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 6);
 #endif
     }
@@ -395,7 +395,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return o.prefix + o.anon.x + o.anon.y + o.suffix;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 10);
     }
 
@@ -421,7 +421,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return first(packet) + packet.values[0] + packet.values[2];
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 13);
     }
 
@@ -448,7 +448,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return copy.a + copy.b + packet.values[1];
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 20);
     }
 
@@ -479,7 +479,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return copy.length + copy.values[0] + copy.values[1] + copy.values[2];
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 18);
     }
 
@@ -512,7 +512,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return copy[0].x + copy[1].x;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 14);
     }
 
@@ -540,7 +540,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return read_value(identity(&value));
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 }

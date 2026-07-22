@@ -10,27 +10,50 @@ internal sealed class SectionLayoutPlan
 {
     private readonly IReadOnlyList<PlannedSection> _codeSections;
     private readonly IReadOnlyList<PlannedSection> _dataSections;
+    private readonly SyntheticMethodBody _moduleInitializer;
 
     internal SectionLayoutPlan(
         IReadOnlyList<PlannedSection> codeSections,
         IReadOnlyList<PlannedSection> dataSections,
         IReadOnlyDictionary<(CoffInput Input, MethodDefinitionHandle Method), int> methodBodyOffsets,
-        IReadOnlyDictionary<(CoffInput Input, FieldDefinitionHandle Field), int> fieldDataOffsets)
+        IReadOnlyDictionary<(CoffInput Input, FieldDefinitionHandle Field), int> fieldDataOffsets,
+        SyntheticMethodBody moduleInitializer,
+        int moduleInitializerBodyOffset)
     {
         _codeSections = codeSections;
         _dataSections = dataSections;
+        _moduleInitializer = moduleInitializer;
         MethodBodyOffsets = methodBodyOffsets;
         FieldDataOffsets = fieldDataOffsets;
+        ModuleInitializerBodyOffset = moduleInitializerBodyOffset;
     }
 
     public IReadOnlyDictionary<(CoffInput Input, MethodDefinitionHandle Method), int> MethodBodyOffsets { get; }
 
     public IReadOnlyDictionary<(CoffInput Input, FieldDefinitionHandle Field), int> FieldDataOffsets { get; }
 
+    public int ModuleInitializerBodyOffset { get; }
+
     public SectionStreams Materialize(Func<CoffInput, int, int> mapToken)
         => new(
-            MaterializeStream(_codeSections, mapToken),
+            MaterializeCodeStream(mapToken),
             MaterializeStream(_dataSections, mapToken));
+
+    private BlobBuilder MaterializeCodeStream(Func<CoffInput, int, int> mapToken)
+    {
+        BlobBuilder output = MaterializeStream(_codeSections, mapToken);
+        if (_moduleInitializer != null)
+        {
+            output.Align(4);
+            if (output.Count != ModuleInitializerBodyOffset)
+            {
+                throw new InvalidOperationException(
+                    "Module initializer layout changed during materialization.");
+            }
+            output.WriteBytes(_moduleInitializer.Materialize(mapToken));
+        }
+        return output;
+    }
 
     private static BlobBuilder MaterializeStream(
         IReadOnlyList<PlannedSection> sections,
@@ -102,7 +125,8 @@ internal static class SectionLayout
 {
     public static SectionLayoutPlan Plan(
         IReadOnlyList<CoffInput> inputs,
-        IReadOnlySet<CoffInputSection> liveSections)
+        IReadOnlySet<CoffInputSection> liveSections,
+        GlobalDataPlan globalData)
     {
         var codeSections = new List<PlannedSection>();
         var dataSections = new List<PlannedSection>();
@@ -115,6 +139,7 @@ internal static class SectionLayout
             if (!liveSections.Contains(section) ||
                 section.IsDebug ||
                 section.IsNativeTransitionSection ||
+                globalData.HandledSections.Contains(section) ||
                 section.Name == ".cormeta" ||
                 (section.Characteristics & SectionCharacteristics.LinkerInfo) != 0)
             {
@@ -146,11 +171,22 @@ internal static class SectionLayout
 
         var methodOffsets = new Dictionary<(CoffInput, MethodDefinitionHandle), int>();
         var fieldOffsets = new Dictionary<(CoffInput, FieldDefinitionHandle), int>();
+        int moduleInitializerBodyOffset = -1;
+        if (globalData.ModuleInitializer != null)
+        {
+            codeSize = Align(codeSize, 4);
+            moduleInitializerBodyOffset = codeSize;
+            codeSize += globalData.ModuleInitializer.Size;
+        }
 
         foreach (CoffInput input in inputs)
         {
             foreach ((EntityHandle token, CoffInputSymbol symbol) in input.DefinedClrTokens)
             {
+                if (symbol.Section.Kind != CoffSectionHandleKind.Physical)
+                {
+                    continue;
+                }
                 CoffInputSection section = input.Sections.Single(candidate => candidate.Handle == symbol.Section);
                 if (!sectionOffsets.TryGetValue(section, out int sectionOffset))
                 {
@@ -171,7 +207,13 @@ internal static class SectionLayout
             }
         }
 
-        return new SectionLayoutPlan(codeSections, dataSections, methodOffsets, fieldOffsets);
+        return new SectionLayoutPlan(
+            codeSections,
+            dataSections,
+            methodOffsets,
+            fieldOffsets,
+            globalData.ModuleInitializer,
+            moduleInitializerBodyOffset);
     }
 
     private static int Align(int value, int alignment)

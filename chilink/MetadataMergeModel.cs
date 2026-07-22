@@ -88,6 +88,12 @@ public sealed class MetadataMergeRequest
     public IReadOnlyDictionary<MetadataSourceEntity, int> FieldRvaOffsets { get; init; } =
         new ReadOnlyDictionary<MetadataSourceEntity, int>(
             new Dictionary<MetadataSourceEntity, int>());
+    public IReadOnlySet<MetadataSourceEntity> FieldsWithoutRva { get; init; } =
+        new HashSet<MetadataSourceEntity>();
+    public IReadOnlyDictionary<MetadataSourceEntity, MetadataSourceEntity> FieldDefinitionBindings { get; init; } =
+        new ReadOnlyDictionary<MetadataSourceEntity, MetadataSourceEntity>(
+            new Dictionary<MetadataSourceEntity, MetadataSourceEntity>());
+    public int ModuleInitializerBodyOffset { get; init; } = -1;
     public IReadOnlyDictionary<MetadataSourceEntity, MetadataSourceEntity> ReferenceBindings { get; init; } =
         new ReadOnlyDictionary<MetadataSourceEntity, MetadataSourceEntity>(
             new Dictionary<MetadataSourceEntity, MetadataSourceEntity>());
