@@ -27,7 +27,7 @@ public class LinkageTests : ChibiTestBase
             #endif
             }
             """, ["-DSOME_MACRO"])
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 100);
     }
 
@@ -49,7 +49,7 @@ public class LinkageTests : ChibiTestBase
             }
             int main(void) { return test(); }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 132);
     }
 
@@ -64,7 +64,7 @@ public class LinkageTests : ChibiTestBase
             int (*arr[2])(int);
             int main(void) { arr[0] = f; return arr[0](42); }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -82,7 +82,7 @@ public class LinkageTests : ChibiTestBase
             int apply(int (*fn)(int, int), int x, int y) { return fn(x, y); }
             int main(void) { return apply(add, 30, 12); }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -97,7 +97,7 @@ public class LinkageTests : ChibiTestBase
         .Compile("""
             int target(void) { return 42; }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -114,7 +114,7 @@ public class LinkageTests : ChibiTestBase
         builder.Compile("""
             int target(void) { return 42; }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -134,7 +134,7 @@ public class LinkageTests : ChibiTestBase
         builder.Compile("""
             int target(void) { return 21; }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -159,7 +159,7 @@ public class LinkageTests : ChibiTestBase
                 return call_target() * 2;
             }
             """, options)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -180,7 +180,7 @@ public class LinkageTests : ChibiTestBase
                 return recurse(41);
             }
             """, options)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -195,7 +195,7 @@ public class LinkageTests : ChibiTestBase
                 return g_chibil_external;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -207,7 +207,7 @@ public class LinkageTests : ChibiTestBase
             extern int g;
             int main(void) { return g; }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -223,7 +223,7 @@ public class LinkageTests : ChibiTestBase
                 return value;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -234,7 +234,7 @@ public class LinkageTests : ChibiTestBase
             extern int value = 42;
             int main(void) { return value; }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -250,7 +250,7 @@ public class LinkageTests : ChibiTestBase
             int value = 42;
             int main(void) { return read_value(); }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -263,7 +263,7 @@ public class LinkageTests : ChibiTestBase
             int values[2] = { 20, 42 };
             int main(void) { return read_value(); }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -280,7 +280,7 @@ public class LinkageTests : ChibiTestBase
                     : 1;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -293,7 +293,7 @@ public class LinkageTests : ChibiTestBase
             {{declarations}}
             int main(void) { return value; }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -308,7 +308,7 @@ public class LinkageTests : ChibiTestBase
                 return sizeof *values;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 12);
     }
 
@@ -323,7 +323,7 @@ public class LinkageTests : ChibiTestBase
                 return sizeof *factory();
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 12);
     }
 
@@ -378,7 +378,7 @@ public class LinkageTests : ChibiTestBase
         .Compile("""
             int a = 42;
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -418,7 +418,7 @@ public class LinkageTests : ChibiTestBase
                 return first(10) + recurse(3) + even(4);
             }
             """, options)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 26);
     }
 
@@ -447,7 +447,7 @@ public class LinkageTests : ChibiTestBase
                 return before_definition() + after_definition() - 40;
             }
             """, options)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -459,7 +459,7 @@ public class LinkageTests : ChibiTestBase
                 inline int getnum(void) { return 42; }
                 int main(void) { return getnum(); }
                 """)
-            .Link(["/entry:main", "/subsystem:console"]));
+            .MsvcLink(["/entry:main", "/subsystem:console"]));
 
         Assert.Contains("getnum", ex.Message);
     }
@@ -471,7 +471,7 @@ public class LinkageTests : ChibiTestBase
             static inline int getnum(void) { return 42; }
             int main(void) { return getnum(); }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -484,7 +484,7 @@ public class LinkageTests : ChibiTestBase
             static inline int getnum(void);
             int main(void) { return p(); }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -495,7 +495,7 @@ public class LinkageTests : ChibiTestBase
             extern inline int getnum(void) { return 42; }
             int main(void) { return getnum(); }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -507,7 +507,7 @@ public class LinkageTests : ChibiTestBase
             extern inline int getnum(void);
             int main(void) { return getnum(); }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 }

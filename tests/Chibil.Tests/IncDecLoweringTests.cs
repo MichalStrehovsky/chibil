@@ -88,7 +88,7 @@ public class IncDecLoweringTests : ChibiTestBase
                 return g;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 30);
     }
 
@@ -176,7 +176,7 @@ public class IncDecLoweringTests : ChibiTestBase
                 return x + calls + 2;   // 39 + 1 + 2 = 42
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 

@@ -144,13 +144,78 @@ public sealed class CompilationBuilder : IDisposable
     }
 
     /// <summary>
+    /// Compile a C++ source string using MSVC <c>/clr:pure</c> and add the
+    /// resulting managed COFF object to this builder.
+    /// </summary>
+    public CompilationBuilder MsvcPureCompile(string source, string[] extraArgs = null)
+    {
+        var name = $"input{_fileCounter++}";
+        var sourceFile = Path.Combine(_tempDir, $"{name}.cpp");
+        var objFile = Path.Combine(_tempDir, $"{name}.obj");
+
+        File.WriteAllText(sourceFile, source);
+
+        var psi = new ProcessStartInfo("cl.exe")
+        {
+            WorkingDirectory = _tempDir,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.ArgumentList.Add("/nologo");
+        psi.ArgumentList.Add("/c");
+        psi.ArgumentList.Add("/clr:pure");
+        psi.ArgumentList.Add("/TP");
+        psi.ArgumentList.Add($"/Fo{objFile}");
+        if (extraArgs != null)
+            foreach (var arg in extraArgs)
+                psi.ArgumentList.Add(arg);
+        psi.ArgumentList.Add(sourceFile);
+
+        using var proc = Process.Start(psi)!;
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        proc.WaitForExit();
+        var stderr = stderrTask.Result;
+        var stdout = stdoutTask.Result;
+
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"cl.exe /clr:pure failed with exit code {proc.ExitCode}.\nstdout:\n{stdout}\nstderr:\n{stderr}");
+
+        _objFiles.Add(objFile);
+        return this;
+    }
+
+    /// <summary>
+    /// Link all accumulated object files into an executable using chilink.
+    /// </summary>
+    /// <param name="extraArgs">
+    /// Additional linker flags (e.g. "/entry:main", "/subsystem:console").
+    /// </param>
+    public LinkResult Link(string[] extraArgs = null)
+    {
+        if (_objFiles.Count == 0)
+            throw new InvalidOperationException("No object files to link. Call Compile() first.");
+
+        var exePath = Path.Combine(_tempDir, "output.exe");
+        var args = new List<string> { $"/out:{exePath}" };
+        if (extraArgs != null)
+            args.AddRange(extraArgs);
+        args.AddRange(_objFiles);
+
+        new Chilink.Driver().Run(args.ToArray());
+        return new LinkResult(exePath);
+    }
+
+    /// <summary>
     /// Link all accumulated object files into an executable using link.exe.
     /// <c>mscoree.lib</c> is included automatically (required for CLR/IJW objects).
     /// </summary>
     /// <param name="extraArgs">
     /// Additional linker flags (e.g. "/entry:main", "/subsystem:console").
     /// </param>
-    public LinkResult Link(string[] extraArgs = null)
+    public LinkResult MsvcLink(string[] extraArgs = null)
     {
         if (_objFiles.Count == 0)
             throw new InvalidOperationException("No object files to link. Call Compile() first.");
@@ -206,6 +271,8 @@ public sealed class LinkResult
     private readonly string _exePath;
 
     internal LinkResult(string exePath) => _exePath = exePath;
+
+    internal string ExePath => _exePath;
 
     /// <summary>
     /// Run the linked executable and assert that it exits with the expected code.

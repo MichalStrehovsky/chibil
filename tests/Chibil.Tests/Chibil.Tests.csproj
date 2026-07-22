@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\chibil\Chibil.csproj" />
+    <ProjectReference Include="..\..\chilink\Chilink.csproj" />
     <ProjectReference Include="..\..\tools\asm2obj\Asm2Obj.csproj" />
     <!--
       The CRT shim assembly is built as a side artifact and embedded into

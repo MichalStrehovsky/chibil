@@ -65,7 +65,7 @@ public class Asm2ObjAnnotationsTests : ChibiTestBase
             int call_cs_stdcall_triple(int x) { return cs_stdcall_triple(x); }
             """)
         .AddAsm2ObjAssembly("Asm2ObjAssembly.dll")
-        .Link(["/subsystem:console"])
+        .MsvcLink(["/subsystem:console"])
         // Expected checksum computed in Cases.mainCRTStartup:
         //   c_basic(2,3) + c_char('X') + c_charptr("A...") + c_charptrptr(&"A...")
         //   + c_const_charptr("A...") + c_const_voidptr("A...") + c_long(100)

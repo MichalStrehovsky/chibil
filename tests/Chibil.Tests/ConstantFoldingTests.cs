@@ -142,7 +142,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .MsvcLink(ConsoleMain)
         .RunAndCheck(exitCode: 42);
     }
 
@@ -233,7 +233,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return (int)(sizeof(a) / sizeof(a[0]));   // 3
             }
             """)
-        .Link(ConsoleMain)
+        .MsvcLink(ConsoleMain)
         .RunAndCheck(exitCode: 3);
     }
 
@@ -254,7 +254,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .MsvcLink(ConsoleMain)
         .RunAndCheck(exitCode: 42);
     }
 
@@ -359,7 +359,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .MsvcLink(ConsoleMain)
         .RunAndCheck(exitCode: 42);
     }
 
