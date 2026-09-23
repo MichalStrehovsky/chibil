@@ -14,7 +14,7 @@ public sealed class ManagedFunctionPointerInitializerTests : ChibiTestBase
             void *f = myfunc;
             int main(void) { return f == myfunc ? 100 : 0; }
             """, option == null ? null : [option])
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(100);
     }
 
@@ -41,7 +41,7 @@ public sealed class ManagedFunctionPointerInitializerTests : ChibiTestBase
                     ? 100 : 0;
             }
             """, option == null ? null : [option])
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(100);
     }
 }

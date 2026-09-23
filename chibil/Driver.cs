@@ -18,6 +18,7 @@ public class Driver
     private readonly List<string> OptInclude = new();
     private bool _optE, _optM, _optMD, _optMMD, _optMP, _optS, _optC, _optCc1, _optHashHashHash;
     private bool _optStatic, _optShared;
+    private string _linker = "link";
     private string _optMF, _optMT, _optO;
     private readonly List<string> LdExtraArgs = new();
     private readonly List<string> StdIncludePaths = new();
@@ -125,6 +126,13 @@ public class Driver
             if (arg.StartsWith("-o") && arg.Length > 2) { _optO = arg[2..]; continue; }
             if (arg == "-S") { _optS = true; continue; }
             if (arg == "-O0") { Options.Optimize = false; continue; }
+            if (arg.StartsWith("-fuse-ld="))
+            {
+                _linker = arg[9..];
+                if (_linker.Length == 0)
+                    Util.Error("missing linker name for -fuse-ld=");
+                continue;
+            }
             if (arg == "-O" || (arg.StartsWith("-O") && arg.Length > 2)) { Options.Optimize = true; continue; }
             if (arg == "-fcommon") { Options.OptFcommon = true; continue; }
             if (arg == "-fno-common") { Options.OptFcommon = false; continue; }
@@ -346,12 +354,19 @@ public class Driver
 
     private void RunLinker(List<string> inputs, string output)
     {
-        var arr = new List<string> { "link.exe", "/DEBUG", "/subsystem:console" };
+        var arr = new List<string> { _linker, "/DEBUG", "/subsystem:console" };
         arr.Add($"/out:{output}");
         arr.Add("mscoree.lib");
         arr.AddRange(LdExtraArgs);
         arr.AddRange(inputs);
-        RunSubprocess(arr.ToArray());
+        try
+        {
+            RunSubprocess(arr.ToArray());
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            Util.Error($"cannot start linker '{_linker}': {ex.Message}");
+        }
     }
 
     private string FindLibpath()
