@@ -132,6 +132,8 @@ public class Driver
             if (arg == "-fno-function-sections") { Options.OptFunctionSections = false; continue; }
             if (arg == "-fdata-sections") { Options.OptDataSections = true; continue; }
             if (arg == "-fno-data-sections") { Options.OptDataSections = false; continue; }
+            if (arg == "-ffixed-address-statics") { Options.OptFixedAddressStatics = true; continue; }
+            if (arg == "-fno-fixed-address-statics") { Options.OptFixedAddressStatics = false; continue; }
             if (arg == "-fmanaged-aggregate-fields") { Options.UseFieldBackedManagedAggregates = true; continue; }
             if (arg == "-fno-managed-aggregate-fields") { Options.UseFieldBackedManagedAggregates = false; continue; }
             if (arg == "-c") { _optC = true; continue; }
