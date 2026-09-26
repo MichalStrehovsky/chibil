@@ -190,7 +190,7 @@ unsafe static class Cases
 
     static int address_taking(int x)
     {
-        Unary function = address_target;
+        Unary function = new Unary(address_target);
         return function(x);
     }
 

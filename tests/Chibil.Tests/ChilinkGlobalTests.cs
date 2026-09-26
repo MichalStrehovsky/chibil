@@ -84,11 +84,11 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
         using (var coff = new CoffReader(new MemoryStream(bytes)))
         {
             var md = coff.GetMetadataReader();
-            var core = md.GetAssemblyReference(Assert.Single(md.AssemblyReferences));
-            Assert.Equal("mscorlib", md.GetString(core.Name));
+            var core = md.AssemblyReferences.Select(md.GetAssemblyReference).Single(reference =>
+                md.GetString(reference.Name) == (builder._netCore ? "System.Runtime" : "mscorlib"));
             int offset = coff.CoffHeaders.MetadataStartOffset + md.GetHeapMetadataOffset(HeapIndex.String) +
                 MetadataTokens.GetHeapOffset(core.Name);
-            "otherlib"u8.CopyTo(bytes.AsSpan(offset, 8));
+            bytes[offset] = (byte)'X';
         }
         File.WriteAllBytes(builder._objFiles[0], bytes);
         builder.Link(ConsoleMain).RunAndCheck(42);

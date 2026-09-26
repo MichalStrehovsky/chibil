@@ -422,9 +422,10 @@ public sealed class ChilinkTests : ChibiTestBase
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task CompilerDriverLaunchesChilinkFromChildPathWithSpacedPaths(bool fixedAddresses)
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    public async Task CompilerDriverLaunchesChilinkFromChildPathWithSpacedPaths(bool fixedAddresses, bool explicitOutput)
     {
         using var workspace = new CompilationBuilder();
         string compiler = Path.Combine(
@@ -435,7 +436,8 @@ public sealed class ChilinkTests : ChibiTestBase
             $"Linker apphost not copied to test output: {linkerDirectory}");
 
         string source = Path.Combine(workspace._tempDir, "source with spaces.c");
-        string output = Path.Combine(workspace._tempDir, "program with spaces.exe");
+        string output = Path.Combine(workspace._tempDir,
+            (explicitOutput ? "program with spaces" : "a") + Path.GetExtension(CompilationBuilder.ExecutableName));
         File.WriteAllText(source, "int value = 42; int main(void) { return value; }");
         var start = new ProcessStartInfo(compiler)
         {
@@ -447,10 +449,17 @@ public sealed class ChilinkTests : ChibiTestBase
         start.Environment["PATH"] = linkerDirectory + Path.PathSeparator + start.Environment["PATH"];
         start.Environment["TEMP"] = workspace._tempDir;
         start.Environment["TMP"] = workspace._tempDir;
-        foreach (var argument in new[] { "-fuse-ld=chilink", source, "-o", output, "-Wl,/entry:main", "-###" })
+        foreach (var argument in new[] { "-fuse-ld=chilink", source, "-Wl,/entry:main", "-###" })
             start.ArgumentList.Add(argument);
+        if (explicitOutput)
+        {
+            start.ArgumentList.Add("-o");
+            start.ArgumentList.Add(output);
+        }
         if (fixedAddresses)
             start.ArgumentList.Add("-ffixed-address-statics");
+        if (CompilationBuilder.DefaultNetCore)
+            start.ArgumentList.Add("-fnetcore");
 
         using var process = Process.Start(start);
         var stdout = process.StandardOutput.ReadToEndAsync();
@@ -497,7 +506,7 @@ public sealed class ChilinkTests : ChibiTestBase
         var directory = Path.Combine(builder._tempDir, "directory with spaces");
         Directory.CreateDirectory(directory);
         var input = Path.Combine(directory, "input with spaces.obj");
-        var output = Path.Combine(directory, "output with spaces.exe");
+        var output = Path.Combine(directory, "output with spaces" + Path.GetExtension(CompilationBuilder.ExecutableName));
         var response = Path.Combine(directory, "arguments with spaces.rsp");
         File.Copy(builder._objFiles.Single(), input);
         File.WriteAllText(response, $"""
@@ -534,7 +543,7 @@ public sealed class ChilinkTests : ChibiTestBase
         bool namedSuppression, bool suppressionFirst)
     {
         var builder = Compile("int main(void) { return 42; }");
-        var output = Path.Combine(builder._tempDir, "output.exe");
+        var output = Path.Combine(builder._tempDir, CompilationBuilder.ExecutableName);
         const string library = "/defaultlib:chilink-nonexistent.lib";
         string suppression = namedSuppression
             ? "/nodefaultlib:CHILINK-NONEXISTENT.LIB" : "/nodefaultlib";

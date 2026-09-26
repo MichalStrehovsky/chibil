@@ -211,6 +211,9 @@ public sealed partial class MetadataCopier
                 _outMemberRefRow);
         }
 
+        if (_localMethodRefSourceRows.Count != 0)
+            PredictBclAssemblyRef("DecoratedNameAttribute");
+
         // ─── MethodSpec (1:1) ───────────────────────────────────────────────
         for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.MethodSpec); r++)
         {
@@ -297,37 +300,29 @@ public sealed partial class MetadataCopier
     // Synthesized TypeRefs to emit after the regular TypeRef copy. Each
     // entry is the kind to emit at the next available row.
     private readonly List<ModifierKind> _synthesizedModifierTypeRefs = new();
+    private readonly Dictionary<string, AssemblyReferenceHandle> _bclAssemblyRefs = new();
+    private readonly List<string> _synthesizedBclAssemblyRefs = new();
 
     private void PredictSignatureModifierTypeRefs()
     {
-        if (_requiredModifierKinds.Count == 0) return;
-
-        // Index input TypeRefs by (namespace, name) → input row, restricted
-        // to TypeRefs that resolve through the mscorlib AssemblyRef (so we
-        // don't accidentally bind a modifier to a same-named TypeRef in a
-        // different assembly).
-        var inputCorlibTypeRefs = new Dictionary<(string ns, string name), int>();
-        int corlibInputRow = FindMscorlibInputAssemblyRefRow();
-        if (corlibInputRow > 0)
+        foreach (var kind in _requiredModifierKinds)
         {
+            var (ns, name) = kind.BclTypeRef();
+            var assembly = PredictBclAssemblyRef(name);
+            int inputRow = 0;
             for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.TypeRef); r++)
             {
                 var tr = _reader.GetTypeReference(MetadataTokens.TypeReferenceHandle(r));
                 if (tr.ResolutionScope.Kind != HandleKind.AssemblyReference) continue;
-                if (MetadataTokens.GetRowNumber(tr.ResolutionScope) != corlibInputRow) continue;
-                var key = (_reader.GetString(tr.Namespace), _reader.GetString(tr.Name));
-                if (!inputCorlibTypeRefs.ContainsKey(key))
-                    inputCorlibTypeRefs[key] = r;
+                if (TokenMap.MapEntity(tr.ResolutionScope) == assembly &&
+                    _reader.GetString(tr.Namespace) == ns && _reader.GetString(tr.Name) == name)
+                {
+                    inputRow = r;
+                    break;
+                }
             }
-        }
-
-        foreach (var kind in _requiredModifierKinds)
-        {
-            var key = kind.BclTypeRef();
-            if (inputCorlibTypeRefs.TryGetValue(key, out int inputRow))
+            if (inputRow != 0)
             {
-                // Reuse the existing input TypeRef row's predicted output row
-                // (1:1 from the copy block above).
                 _modifierTypeRefOutputRow[kind] = inputRow;
             }
             else
@@ -339,20 +334,38 @@ public sealed partial class MetadataCopier
         }
     }
 
-    /// <summary>
-    /// Looks up the input AssemblyRef row whose name is "mscorlib".
-    /// Returns 0 when none is found (e.g. an input with no external types).
-    /// Phase A's ValidateCoreLibReferences guarantees a non-mscorlib core lib
-    /// has already been rejected.
-    /// </summary>
-    private int FindMscorlibInputAssemblyRefRow()
+    private string BclAssemblyName(string typeName) => _coreLibraryName switch
     {
+        "mscorlib" => "mscorlib",
+        "System.Runtime" => typeName switch
+        {
+            "IsLong" or "IsSignUnspecifiedByte" or "DecoratedNameAttribute" => "System.Runtime.CompilerServices.VisualC",
+            "IsConst" or "IsVolatile" or "CallConvCdecl" or "CallConvStdcall" => "System.Runtime",
+            _ => throw new NotSupportedException($"No .NET Core binding for '{typeName}'."),
+        },
+        _ => throw new NotSupportedException("Input has no supported core-library reference."),
+    };
+
+    private AssemblyReferenceHandle PredictBclAssemblyRef(string typeName)
+    {
+        string name = BclAssemblyName(typeName);
+        if (_bclAssemblyRefs.TryGetValue(name, out var handle))
+            return handle;
         for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.AssemblyRef); r++)
         {
-            var ar = _reader.GetAssemblyReference(MetadataTokens.AssemblyReferenceHandle(r));
-            if (_reader.GetString(ar.Name) == "mscorlib") return r;
+            var input = MetadataTokens.AssemblyReferenceHandle(r);
+            var ar = _reader.GetAssemblyReference(input);
+            if (_reader.GetString(ar.Name) != name) continue;
+            if (_coreLibraryName == "System.Runtime")
+                ValidateNetCoreAssemblyReference(ar);
+            handle = (AssemblyReferenceHandle)TokenMap.MapEntity(input);
+            _bclAssemblyRefs.Add(name, handle);
+            return handle;
         }
-        return 0;
+        handle = MetadataTokens.AssemblyReferenceHandle(++_outAssemblyRefRow);
+        _bclAssemblyRefs.Add(name, handle);
+        _synthesizedBclAssemblyRefs.Add(name);
+        return handle;
     }
 
     private bool OwnerSurvives(EntityHandle owner)

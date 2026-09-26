@@ -96,7 +96,7 @@ public class Driver
         }
 
         if (ldArgs.Count > 0)
-            RunLinker(ldArgs, _optO ?? "a.exe");
+            RunLinker(ldArgs, _optO ?? (Options.TargetNetCore ? "a.dll" : "a.exe"));
 
         Cleanup();
     }
@@ -121,7 +121,7 @@ public class Driver
             string arg = args[i];
             if (arg == "-###") { _optHashHashHash = true; continue; }
             if (arg == "-cc1") { _optCc1 = true; continue; }
-            if (arg == "--help") { Console.Error.WriteLine("chibil [ -o <path> ] <file>"); Environment.Exit(0); }
+            if (arg == "--help") { Console.Error.WriteLine("chibil [ -fnetcore | -fnetframework (default) ] [ -o <path> ] <file>"); Environment.Exit(0); }
             if (arg == "-o") { _optO = args[++i]; continue; }
             if (arg.StartsWith("-o") && arg.Length > 2) { _optO = arg[2..]; continue; }
             if (arg == "-S") { _optS = true; continue; }
@@ -144,6 +144,8 @@ public class Driver
             if (arg == "-fno-fixed-address-statics") { Options.OptFixedAddressStatics = false; continue; }
             if (arg == "-fmanaged-aggregate-fields") { Options.UseFieldBackedManagedAggregates = true; continue; }
             if (arg == "-fno-managed-aggregate-fields") { Options.UseFieldBackedManagedAggregates = false; continue; }
+            if (arg == "-fnetcore") { Options.TargetNetCore = true; continue; }
+            if (arg == "-fnetframework") { Options.TargetNetCore = false; continue; }
             if (arg == "-c") { _optC = true; continue; }
             if (arg == "-E") { _optE = true; continue; }
             if (arg.StartsWith("-I")) { Options.IncludePaths.Add(arg[2..]); continue; }

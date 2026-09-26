@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -17,10 +18,18 @@
     <DefineConstants>$(DefineConstants);OPTIMIZED_TESTS</DefineConstants>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <FixtureTargetFramework>net481</FixtureTargetFramework>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(NetCoreTests)' == 'true'">
+    <DefineConstants>$(DefineConstants);NETCORE_TESTS</DefineConstants>
+    <FixtureTargetFramework>net10.0</FixtureTargetFramework>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
-    <PackageReference Include="xunit" Version="2.*" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
+    <PackageReference Include="xunit.v3" Version="3.*" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.*" />
   </ItemGroup>
 
   <ItemGroup>
@@ -44,10 +53,7 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <OutputItemType>EmbeddedResource</OutputItemType>
       <LogicalName>crt.dll</LogicalName>
-      <!--
-        crt.csproj targets net481; we don't reference its assembly, we
-        just embed its build output. Skip the TFM-compatibility check.
-      -->
+      <SetTargetFramework>TargetFramework=$(FixtureTargetFramework)</SetTargetFramework>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
     <!--
@@ -60,6 +66,7 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <OutputItemType>EmbeddedResource</OutputItemType>
       <LogicalName>Asm2ObjAssembly.dll</LogicalName>
+      <SetTargetFramework>TargetFramework=$(FixtureTargetFramework)</SetTargetFramework>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
     <!--
@@ -72,18 +79,21 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <OutputItemType>EmbeddedResource</OutputItemType>
       <LogicalName>ReflectionProbe.dll</LogicalName>
+      <SetTargetFramework>TargetFramework=$(FixtureTargetFramework)</SetTargetFramework>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
     <ProjectReference Include="ChilinkAssembly\ChilinkAssembly.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <OutputItemType>EmbeddedResource</OutputItemType>
       <LogicalName>ChilinkAssembly.dll</LogicalName>
+      <SetTargetFramework>TargetFramework=$(FixtureTargetFramework)</SetTargetFramework>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
     <ProjectReference Include="ChilinkInitializerAssembly\ChilinkInitializerAssembly.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <OutputItemType>EmbeddedResource</OutputItemType>
       <LogicalName>ChilinkInitializerAssembly.dll</LogicalName>
+      <SetTargetFramework>TargetFramework=$(FixtureTargetFramework)</SetTargetFramework>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
   </ItemGroup>

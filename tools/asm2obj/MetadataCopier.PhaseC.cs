@@ -27,6 +27,13 @@ public sealed partial class MetadataCopier
                 ar.HashValue.IsNil ? default : _outputMd.GetOrAddBlob(_reader.GetBlobBytes(ar.HashValue)));
             TokenMap.AssertHandle(r, outH);
         }
+        foreach (string name in _synthesizedBclAssemblyRefs)
+        {
+            var outH = _outputMd.AddAssemblyReference(
+                _outputMd.GetOrAddString(name), new Version(10, 0, 0, 0), default,
+                _outputMd.GetOrAddBlob(NetCorePublicKeyToken), 0, default);
+            TokenMap.AssertHandle(MetadataTokens.GetRowNumber(_bclAssemblyRefs[name]), outH);
+        }
         for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.ModuleRef); r++)
         {
             var mr = _reader.GetModuleReference(MetadataTokens.ModuleReferenceHandle(r));
@@ -59,12 +66,11 @@ public sealed partial class MetadataCopier
         // order recorded by Phase B's PredictSignatureModifierTypeRefs.
         if (_synthesizedModifierTypeRefs.Count > 0)
         {
-            var corlibRef = _coreLibAssemblyRef;
             foreach (var kind in _synthesizedModifierTypeRefs)
             {
                 var (ns, name) = kind.BclTypeRef();
                 var outH = _outputMd.AddTypeReference(
-                    corlibRef,
+                    _bclAssemblyRefs[BclAssemblyName(name)],
                     _outputMd.GetOrAddString(ns),
                     _outputMd.GetOrAddString(name));
                 int expectedRow = _modifierTypeRefOutputRow[kind];
@@ -301,35 +307,6 @@ public sealed partial class MetadataCopier
     // references, queued for the sorted CustomAttribute pass.
     private readonly List<(EntityHandle parent, string value)> _synthesizedDecoratedNameCAs = new();
 
-    private AssemblyReferenceHandle _coreLibAssemblyRefField;
-    private AssemblyReferenceHandle _coreLibAssemblyRef
-    {
-        get
-        {
-            if (_coreLibAssemblyRefField.IsNil)
-            {
-                // Locate the AssemblyRef whose name is "mscorlib". Phase A's
-                // ValidateCoreLibReferences guarantees one such row exists
-                // (and rejects System.Runtime / System.Private.CoreLib /
-                // netstandard inputs upfront).
-                for (int r = 1; r <= _reader.GetTableRowCount(TableIndex.AssemblyRef); r++)
-                {
-                    var ar = _reader.GetAssemblyReference(MetadataTokens.AssemblyReferenceHandle(r));
-                    if (_reader.GetString(ar.Name) == "mscorlib")
-                    {
-                        _coreLibAssemblyRefField = (AssemblyReferenceHandle)TokenMap.MapEntity(
-                            MetadataTokens.AssemblyReferenceHandle(r));
-                        break;
-                    }
-                }
-                if (_coreLibAssemblyRefField.IsNil)
-                    throw new NotSupportedException(
-                        "Input has no AssemblyRef row named 'mscorlib'. " +
-                        "v1 requires inputs compiled against mscorlib.");
-            }
-            return _coreLibAssemblyRefField;
-        }
-    }
     private TypeReferenceHandle _decoratedNameAttrTypeRef;
     private MemberReferenceHandle _decoratedNameAttrCtor;
 
@@ -613,9 +590,8 @@ public sealed partial class MetadataCopier
         if (!_decoratedNameAttrTypeRef.IsNil)
             return _decoratedNameAttrCtor;
 
-        var coreLib = _coreLibAssemblyRef;
         _decoratedNameAttrTypeRef = _outputMd.AddTypeReference(
-            coreLib,
+            _bclAssemblyRefs[BclAssemblyName("DecoratedNameAttribute")],
             _outputMd.GetOrAddString("System.Runtime.CompilerServices"),
             _outputMd.GetOrAddString("DecoratedNameAttribute"));
 
