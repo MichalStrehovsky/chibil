@@ -380,18 +380,13 @@ public sealed class ChilinkTests : ChibiTestBase
             .RunAndCheck(42);
     }
 
-    [Theory]
-    [InlineData("""
-        int target(int value) { return value + 1; }
-        int main(void) { int (*function)(int) = target; return function(41); }
-        """)]
-    [InlineData("""
-        int global = 41;
-        int main(void) { return ++global; }
-        """)]
-    public void UnsupportedNativeFunctionPointerAndMutableGlobalFail(string source)
+    [Fact]
+    public void UnsupportedNativeFunctionPointerFails()
     {
-        var builder = Compile(source, ["-O0"]);
+        var builder = Compile("""
+            int target(int value) { return value + 1; }
+            int main(void) { int (*function)(int) = target; return function(41); }
+            """, ["-O0"]);
         var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
         Assert.IsType<Chilink.LinkException>(error.InnerException);
     }
@@ -426,8 +421,10 @@ public sealed class ChilinkTests : ChibiTestBase
         new Chilink.Driver().Run([option]);
     }
 
-    [Fact]
-    public async Task CompilerDriverLaunchesChilinkFromChildPathWithSpacedPaths()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompilerDriverLaunchesChilinkFromChildPathWithSpacedPaths(bool fixedAddresses)
     {
         using var workspace = new CompilationBuilder();
         string compiler = Path.Combine(
@@ -439,7 +436,7 @@ public sealed class ChilinkTests : ChibiTestBase
 
         string source = Path.Combine(workspace._tempDir, "source with spaces.c");
         string output = Path.Combine(workspace._tempDir, "program with spaces.exe");
-        File.WriteAllText(source, "int main(void) { return 42; }");
+        File.WriteAllText(source, "int value = 42; int main(void) { return value; }");
         var start = new ProcessStartInfo(compiler)
         {
             WorkingDirectory = workspace._tempDir,
@@ -452,6 +449,8 @@ public sealed class ChilinkTests : ChibiTestBase
         start.Environment["TMP"] = workspace._tempDir;
         foreach (var argument in new[] { "-fuse-ld=chilink", source, "-o", output, "-Wl,/entry:main", "-###" })
             start.ArgumentList.Add(argument);
+        if (fixedAddresses)
+            start.ArgumentList.Add("-ffixed-address-statics");
 
         using var process = Process.Start(start);
         var stdout = process.StandardOutput.ReadToEndAsync();
@@ -467,6 +466,13 @@ public sealed class ChilinkTests : ChibiTestBase
             throw;
         }
         string diagnostics = $"stdout:\n{await stdout}\nstderr:\n{await stderr}";
+        if (!fixedAddresses)
+        {
+            Assert.NotEqual(0, process.ExitCode);
+            Assert.Contains("FixedAddressValueTypeAttribute", diagnostics);
+            Assert.False(File.Exists(output));
+            return;
+        }
         Assert.True(process.ExitCode == 0, $"Compiler exited with {process.ExitCode}.\n{diagnostics}");
         Assert.Contains("chilink", diagnostics, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("mscoree.lib", diagnostics, StringComparison.OrdinalIgnoreCase);

@@ -27,6 +27,7 @@
     <Compile Remove="Asm2ObjAssembly\**" />
     <Compile Remove="ReflectionProbe\**" />
     <Compile Remove="ChilinkAssembly\**" />
+    <Compile Remove="ChilinkInitializerAssembly\**" />
   </ItemGroup>
 
   <ItemGroup>
@@ -77,6 +78,12 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <OutputItemType>EmbeddedResource</OutputItemType>
       <LogicalName>ChilinkAssembly.dll</LogicalName>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
+    <ProjectReference Include="ChilinkInitializerAssembly\ChilinkInitializerAssembly.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <OutputItemType>EmbeddedResource</OutputItemType>
+      <LogicalName>ChilinkInitializerAssembly.dll</LogicalName>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
   </ItemGroup>

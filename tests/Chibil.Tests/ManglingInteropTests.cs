@@ -630,7 +630,7 @@ public class ManglingInteropTests : ChibiTestBase
             void *ptr_vret(void);
             int main(void) { return ptr_vret() ? 42 : 0; }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -878,7 +878,7 @@ public class ManglingInteropTests : ChibiTestBase
             int *ret_ptr(void);
             int main(void) { return *ret_ptr(); }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -970,7 +970,7 @@ public class ManglingInteropTests : ChibiTestBase
             extern int g_answer;
             int main(void) { return g_answer; }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -999,7 +999,7 @@ public class ManglingInteropTests : ChibiTestBase
             extern int *g_ptr;
             int main(void) { return *g_ptr; }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -1016,7 +1016,7 @@ public class ManglingInteropTests : ChibiTestBase
             extern struct Pair g_pair;
             int main(void) { return g_pair.a + g_pair.b; }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 

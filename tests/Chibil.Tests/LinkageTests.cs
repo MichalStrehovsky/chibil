@@ -1,4 +1,6 @@
+using System.Buffers.Binary;
 using System.Text;
+using Coff;
 using Xunit;
 
 namespace Chibil.Tests;
@@ -7,6 +9,38 @@ public class LinkageTests : ChibiTestBase
 {
     private static string ReadLastObjectText(CompilationBuilder builder)
         => Encoding.Latin1.GetString(File.ReadAllBytes(builder._objFiles[^1]));
+
+    [Theory]
+    [InlineData(false, "")]
+    [InlineData(false, "__clrcall")]
+    [InlineData(true, "")]
+    [InlineData(true, "__clrcall")]
+    public void FunctionMetadataNamesMatchMsvc(bool isStatic, string callingConvention)
+    {
+        var builder = Compile($$"""
+            {{(isStatic ? "static " : "")}}int {{callingConvention}} target(int value) { return value + 1; }
+            int main(void) { return target(41); }
+            """, ["-ffunction-sections"]);
+        using (var coff = new CoffReader(File.OpenRead(builder._objFiles[0])))
+        {
+            var md = coff.GetMetadataReader();
+            var method = Assert.Single(md.MethodDefinitions.Select(md.GetMethodDefinition),
+                m => md.GetString(m.Name).Contains("target", StringComparison.Ordinal));
+            string name = md.GetString(method.Name);
+            if (isStatic)
+                Assert.Matches(@"^\?A0x[0-9a-f]{8}\.target$", name);
+            else
+                Assert.Equal("target", name);
+            var reference = Assert.Single(md.MemberReferences.Select(md.GetMemberReference),
+                r => md.GetString(r.Name).Contains("target", StringComparison.Ordinal));
+            Assert.Equal(name, md.GetString(reference.Name));
+
+            string baseName = isStatic ? $"target_{name[..name.IndexOf('.')]}" : "target";
+            string convention = callingConvention == "__clrcall" ? "M" : "A";
+            Assert.Contains($"?{baseName}@@$$J0Y{convention}HH@Z", ReadLastObjectText(builder));
+        }
+        builder.Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
 
     [Fact]
     public void TestMacrosAndReferences()
@@ -101,6 +135,81 @@ public class LinkageTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void ManagedFunctionPointerGlobalsWorkWithMsvc(bool isStatic, bool dataSections)
+    {
+        var builder = Compile($$"""
+            {{(isStatic ? "static " : "")}}int __clrcall target(int value) { return value + 1; }
+            int (__clrcall *pointer)(int) = target;
+            void *glob = target;
+            void **indirect = &glob;
+            int main(void) {
+                if (glob != (void *)target || (void *)pointer != (void *)target ||
+                    *indirect != (void *)target) return 1;
+                return pointer(41);
+            }
+            """, dataSections ? ["-fdata-sections", "-ffunction-sections"] : null);
+        using (var coff = new CoffReader(File.OpenRead(builder._objFiles[0])))
+        {
+            var sections = coff.GetSectionTableReader();
+            var handles = sections.Sections.ToArray();
+            var symbols = coff.GetSymbolTableReader();
+            var strings = coff.GetStringTableReader();
+            var fixups = handles.Select(sections.GetCoffSection)
+                .Where(s => strings.GetString(s.Name) == ".rdata$ilfixup").ToArray();
+            Assert.Contains(fixups, s => BinaryPrimitives.ReadUInt16LittleEndian(
+                coff.GetSectionData(s).GetContent().AsSpan().Slice(6)) == 0x0A);
+            foreach (string name in new[] { "pointer", "glob" })
+            {
+                var symbol = symbols.Symbols.Select(symbols.GetCoffSymbol).Single(s => strings.GetString(s.Name) == name);
+                var data = sections.GetCoffSection(handles[symbol.SectionNumber.Number - 1]);
+                var relocations = coff.GetRelocationTableReader(data);
+                var relocation = Enumerable.Range(0, relocations.NumberOfRelocations)
+                    .Select(relocations.GetRelocation).Single(r => r.Offset == symbol.Value);
+                Assert.Equal(ImageRelocation.Amd64_TOKEN, relocation.Type);
+                Assert.Equal(CoffSymbolStorageClass.ClrToken, symbols.GetCoffSymbol(relocation.Symbol).StorageClass);
+                Assert.Contains(fixups, s =>
+                {
+                    var records = coff.GetRelocationTableReader(s);
+                    return Enumerable.Range(0, records.NumberOfRelocations).Select(records.GetRelocation).Any(r =>
+                        strings.GetString(symbols.GetCoffSymbol(r.Symbol).Name) == name &&
+                        BinaryPrimitives.ReadUInt16LittleEndian(coff.GetSectionData(s).GetContent().AsSpan().Slice((int)r.Offset + 6)) == 0x02);
+                });
+            }
+        }
+        builder.MsvcLink(["/entry:main", "/subsystem:console", "/OPT:REF"]).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void ManagedFunctionPointerExternGlobalsWorkWithMsvc(bool reverse, bool dataSections)
+    {
+        const string main = """
+            int __clrcall target(int value);
+            void *expected(void);
+            int (__clrcall *pointer)(int) = target;
+            int main(void) {
+                if ((void *)pointer != expected()) return 1;
+                return pointer(41);
+            }
+            """;
+        const string definition = """
+            int __clrcall target(int value) { return value + 1; }
+            void *expected(void) { return target; }
+            """;
+        string[] flags = dataSections ? ["-fdata-sections", "-ffunction-sections"] : null;
+        Compile(reverse ? definition : main, flags)
+            .Compile(reverse ? main : definition, flags)
+            .MsvcLink(["/entry:main", "/subsystem:console", "/OPT:REF"]).RunAndCheck(42);
+    }
+
     [Fact]
     public void DirectExternFunctionCallDoesNotReserveUnepField()
     {
@@ -187,7 +296,7 @@ public class LinkageTests : ChibiTestBase
     [Fact]
     public void ExternGlobalUsedFromLiveFunctionGetsFieldTokenBeforeCodeGen()
     {
-        MsvcCompile("int g_chibil_external = 41;")
+        MsvcCompile("int g_chibil_external = 41;", ["/Zl", "/GS-", "/d1clrNoPureCRT"])
         .Compile("""
             extern int g_chibil_external;
             int main(void) {
@@ -207,7 +316,7 @@ public class LinkageTests : ChibiTestBase
             extern int g;
             int main(void) { return g; }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -223,7 +332,7 @@ public class LinkageTests : ChibiTestBase
                 return value;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -234,7 +343,7 @@ public class LinkageTests : ChibiTestBase
             extern int value = 42;
             int main(void) { return value; }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -250,7 +359,7 @@ public class LinkageTests : ChibiTestBase
             int value = 42;
             int main(void) { return read_value(); }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -263,7 +372,7 @@ public class LinkageTests : ChibiTestBase
             int values[2] = { 20, 42 };
             int main(void) { return read_value(); }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -280,7 +389,7 @@ public class LinkageTests : ChibiTestBase
                     : 1;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -293,7 +402,7 @@ public class LinkageTests : ChibiTestBase
             {{declarations}}
             int main(void) { return value; }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -308,7 +417,7 @@ public class LinkageTests : ChibiTestBase
                 return sizeof *values;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 12);
     }
 
@@ -323,7 +432,7 @@ public class LinkageTests : ChibiTestBase
                 return sizeof *factory();
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 12);
     }
 
@@ -378,7 +487,7 @@ public class LinkageTests : ChibiTestBase
         .Compile("""
             int a = 42;
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -447,7 +556,7 @@ public class LinkageTests : ChibiTestBase
                 return before_definition() + after_definition() - 40;
             }
             """, options)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 

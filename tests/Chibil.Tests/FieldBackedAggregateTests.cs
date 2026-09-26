@@ -400,7 +400,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return packet.length + packet.values[0] + packet.values[1] + packet.values[2];
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 18);
     }
 

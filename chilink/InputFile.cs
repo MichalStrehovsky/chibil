@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Globalization;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
@@ -15,6 +16,7 @@ internal sealed class InputFile : IDisposable
     public readonly List<InputSection> Sections = new();
     public readonly Dictionary<CoffSymbolHandle, InputSymbol> Symbols = new();
     public readonly Dictionary<EntityHandle, Definition> Definitions = new();
+    public readonly Dictionary<InputSymbol, Definition> SymbolDefinitions = new();
 
     public InputFile(string path, int index)
     {
@@ -94,6 +96,8 @@ internal sealed class InputFile : IDisposable
                 if (!Definitions.TryAdd((EntityHandle)symbol.Token,
                     new Definition(new SourceToken(index, (EntityHandle)symbol.Token), target)))
                     throw Error($"duplicate definition token '{symbol.Name}'");
+                if (!SymbolDefinitions.TryAdd(target, Definitions[(EntityHandle)symbol.Token]))
+                    throw Error($"multiple managed definitions for symbol '{target.Name}'");
             }
             foreach (InputSection section in Sections)
             {
@@ -112,11 +116,46 @@ internal sealed class InputFile : IDisposable
                 if (section.IsComdat && section.Selection == 0)
                     throw Error($"missing COMDAT section definition for '{section.Name}'");
             }
+            ReadVtableFixups();
         }
         catch
         {
             Reader.Dispose();
             throw;
+        }
+    }
+
+    private void ReadVtableFixups()
+    {
+        foreach (InputSection section in Sections.Where(s => s.Name == ".rdata$ilfixup"))
+        {
+            byte[] data = section.GetData();
+            if (data.Length % 8 != 0 || section.Relocations.NumberOfRelocations != data.Length / 8)
+                throw Error("invalid vtfixup records");
+            var offsets = new HashSet<uint>();
+            for (int i = 0; i < section.Relocations.NumberOfRelocations; i++)
+            {
+                var relocation = section.Relocations.GetRelocation(i);
+                if (relocation.Type != ImageRelocation.Amd64_ADDR32NB || relocation.Offset % 8 != 0 ||
+                    relocation.Offset > data.Length - 8 || !offsets.Add(relocation.Offset))
+                    throw Error("invalid vtfixup relocation");
+                var record = data.AsSpan((int)relocation.Offset, 8);
+                var symbol = Symbols[relocation.Symbol];
+                int count = BinaryPrimitives.ReadUInt16LittleEndian(record[4..]);
+                ushort type = BinaryPrimitives.ReadUInt16LittleEndian(record[6..]);
+                int width = (type & 3) switch
+                {
+                    1 => 4,
+                    2 => 8,
+                    _ => throw Error("invalid vtfixup slot width")
+                };
+                long start = (long)symbol.Coff.Value + BinaryPrimitives.ReadUInt32LittleEndian(record);
+                int size = count * width;
+                if (symbol.Section == null || count == 0 ||
+                    start + size > symbol.Section.Header.SizeOfRawData)
+                    throw Error("vtfixup storage is outside its section");
+                symbol.Section.VtableFixups.Add(((int)start, size, type));
+            }
         }
     }
 
@@ -131,6 +170,7 @@ internal sealed class InputSection
     public readonly string Name;
     public readonly List<InputSymbol> Symbols = new();
     public readonly CoffRelocationTableReader Relocations;
+    public readonly List<(int Offset, int Size, ushort Type)> VtableFixups = new();
     public CoffComdatSelection Selection;
     public InputSection Associated, Winner;
     public bool Ignored, Live;
@@ -150,6 +190,14 @@ internal sealed class InputSection
     public bool IsComdat => (Header.SectionCharacteristics & SectionCharacteristics.LinkerComdat) != 0;
     public bool IsWritable => (Header.SectionCharacteristics & SectionCharacteristics.MemWrite) != 0;
     public bool IsCode => (Header.SectionCharacteristics & SectionCharacteristics.ContainsCode) != 0;
+    public bool IsBss => (Header.SectionCharacteristics & SectionCharacteristics.ContainsUninitializedData) != 0;
+    public bool IsVtableFixup(long offset, int size = 1) =>
+        VtableFixups.Any(r => offset < (long)r.Offset + r.Size && offset + size > r.Offset);
+    public bool IsUnsupportedVtableFixup(long offset, int size = 1) =>
+        VtableFixups.Any(r => r.Type != 0x02 && offset < (long)r.Offset + r.Size && offset + size > r.Offset);
+    public bool IsManagedVtableSlot(long offset) =>
+        VtableFixups.Any(r => r.Type == 0x02 && offset >= r.Offset &&
+            offset < (long)r.Offset + r.Size && (offset - r.Offset) % 8 == 0);
     public byte[] GetData() => _data ??= Input.Reader.GetSectionData(Header).GetContent().ToArray();
 }
 
@@ -168,5 +216,8 @@ internal sealed class InputSymbol
 internal sealed record Definition(SourceToken Token, InputSymbol Symbol)
 {
     public InputSection Section => Symbol.Section;
-    public int Offset => checked((int)Symbol.Coff.Value);
+    public bool IsCommon => Token.Handle.Kind == HandleKind.FieldDefinition &&
+        Symbol.Coff.StorageClass == CoffSymbolStorageClass.External &&
+        Symbol.Coff.SectionNumber.Number == 0 && Symbol.Coff.Value > 0;
+    public int Offset => IsCommon ? 0 : checked((int)Symbol.Coff.Value);
 }

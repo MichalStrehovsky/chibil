@@ -40,9 +40,8 @@ internal sealed partial class MetadataMerger
     private BlobHandle Signature(SourceToken token, BlobHandle handle, bool type = false) =>
         _output.GetOrAddBlob(EcmaSignature.Rewrite(Reader(token).GetBlobReader(handle), h => Output(token.Input, h), type));
 
-    private void Predict(IEnumerable<SourceToken> tokens, TableIndex table)
+    private void Predict(IEnumerable<SourceToken> tokens, TableIndex table, int row = 0)
     {
-        int row = 0;
         foreach (var token in tokens)
             _outputHandles.Add(token, MetadataTokens.EntityHandle(table, ++row));
     }
@@ -54,7 +53,7 @@ internal sealed partial class MetadataMerger
     }
 
     public void Build(MetadataBuilder output, IReadOnlySet<SourceToken> live,
-        Func<SourceToken, int> bodyOffset, Func<SourceToken, int> fieldOffset)
+        Func<SourceToken, int> bodyOffset, Func<SourceToken, int> fieldOffset, DataInitialization initialization)
     {
         if (_output != null)
             throw new LinkException("Metadata merger can only be built once.");
@@ -81,9 +80,10 @@ internal sealed partial class MetadataMerger
             .Select(Resolve).Where(retained.Contains).Distinct()
             .OrderBy(p => Reader(p).GetParameter((ParameterHandle)p.Handle).SequenceNumber).ToArray());
         var parameters = methods.SelectMany(t => parametersByMethod[t]).ToArray();
+        int syntheticMethods = initialization.HasInitializer ? 1 : 0;
         Predict(types, TableIndex.TypeDef);
-        Predict(fields, TableIndex.Field);
-        Predict(methods, TableIndex.MethodDef);
+        Predict(fields, TableIndex.Field, initialization.Copies.Count);
+        Predict(methods, TableIndex.MethodDef, syntheticMethods);
         Predict(parameters, TableIndex.Param);
         var simpleTables = new[]
         {
@@ -159,11 +159,39 @@ internal sealed partial class MetadataMerger
                 Output(token.Input, type.BaseType), MetadataTokens.FieldDefinitionHandle(fieldRow), MetadataTokens.MethodDefinitionHandle(methodRow)));
             fieldRow += fieldsByType[token].Length;
             methodRow += methodsByType[token].Length;
+            if (token == ModuleType)
+            {
+                fieldRow += initialization.Copies.Count;
+                methodRow += syntheticMethods;
+            }
+        }
+        if (initialization.HasInitializer)
+        {
+            var names = fieldsByType[ModuleType].Select(t =>
+                Reader(t).GetString(Reader(t).GetFieldDefinition((FieldDefinitionHandle)t.Handle).Name))
+                .ToHashSet(StringComparer.Ordinal);
+            int suffix = 0;
+            foreach (var copy in initialization.Copies)
+            {
+                string name;
+                do { name = "<chilink data>" + suffix++; } while (!names.Add(name));
+                var field = Reader(copy.Field).GetFieldDefinition((FieldDefinitionHandle)copy.Field.Handle);
+                copy.DataField = output.AddFieldDefinition(
+                    FieldAttributes.Private | FieldAttributes.Static | FieldAttributes.InitOnly | FieldAttributes.HasFieldRVA,
+                    output.GetOrAddString(name), Signature(copy.Field, field.Signature));
+                output.AddFieldRelativeVirtualAddress(copy.DataField, copy.Offset);
+            }
+            initialization.Method = output.AddMethodDefinition(
+                MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName,
+                MethodImplAttributes.IL, output.GetOrAddString(".cctor"),
+                output.GetOrAddBlob(new byte[] { 0, 0, 1 }), initialization.CodeOffset, MetadataTokens.ParameterHandle(1));
         }
         foreach (var token in fields)
         {
             var field = Reader(token).GetFieldDefinition((FieldDefinitionHandle)token.Handle);
-            Check(token, output.AddFieldDefinition(field.Attributes, String(token, field.Name), Signature(token, field.Signature)));
+            var attributes = initialization.Converted.Contains(token)
+                ? field.Attributes & ~FieldAttributes.HasFieldRVA : field.Attributes;
+            Check(token, output.AddFieldDefinition(attributes, String(token, field.Name), Signature(token, field.Signature)));
         }
         int parameterRow = 1;
         foreach (var token in methods)
@@ -253,7 +281,7 @@ internal sealed partial class MetadataMerger
             var field = Reader(token).GetFieldDefinition((FieldDefinitionHandle)token.Handle);
             if (field.GetOffset() >= 0)
                 output.AddFieldLayout((FieldDefinitionHandle)Output(token), field.GetOffset());
-            if ((field.Attributes & FieldAttributes.HasFieldRVA) != 0)
+            if ((field.Attributes & FieldAttributes.HasFieldRVA) != 0 && !initialization.Converted.Contains(token))
             {
                 int offset = fieldOffset(token);
                 if (offset < 0)
