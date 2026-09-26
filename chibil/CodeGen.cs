@@ -81,25 +81,10 @@ public class CodeGen
         // Emit function body
         GenStmt(_currentFn.Body);
 
-        CType returnTy = _currentFn.Ty.ReturnTy;
         if (_enc.IsReachable)
         {
             // TODO: Should consider generating a throw (except for `main`).
-            if (returnTy.Kind != TypeKind.Void)
-            {
-                if (IsStructOrUnion(returnTy))
-                {
-                    // For struct return, push a zeroed struct.
-                    int scratch = GetOrAddScratchLocal(returnTy);
-                    _enc.LoadLocalAddress(scratch);
-                    _enc.OpCode(ILOpCode.Initobj); _enc.Token(_emit.GetStructTypeHandle(returnTy));
-                    _enc.LoadLocal(scratch);
-                }
-                else
-                {
-                    EmitTypedZero(returnTy);
-                }
-            }
+            EmitDefaultReturnValue();
             _enc.EmitRet();
         }
 
@@ -140,6 +125,20 @@ public class CodeGen
         var realized = _enc.Realize();
         return new CompiledMethod(realized.Instructions, realized.MaxStack, localsSig,
             localSlotList.Count > 0 ? localSlotList.ToArray() : null, realized.LocalScopes);
+    }
+
+    private void EmitDefaultReturnValue()
+    {
+        CType returnTy = _currentFn.Ty.ReturnTy;
+        if (IsStructOrUnion(returnTy))
+        {
+            int scratch = GetOrAddScratchLocal(returnTy);
+            _enc.LoadLocalAddress(scratch);
+            _enc.OpCode(ILOpCode.Initobj); _enc.Token(_emit.GetStructTypeHandle(returnTy));
+            _enc.LoadLocal(scratch);
+        }
+        else if (returnTy.Kind != TypeKind.Void)
+            EmitTypedZero(returnTy);
     }
 
     private LabelHandle GetLabel(int label) => _labels[label - 1];
@@ -1354,8 +1353,9 @@ public class CodeGen
                 if (node.Lhs != null)
                 {
                     GenByValueOperand(node.Lhs, _currentFn.Ty.ReturnTy);
- // ret consumes
                 }
+                else
+                    EmitDefaultReturnValue();
                 _enc.EmitRet();
                 return;
 

@@ -5,6 +5,26 @@ namespace Chibil.Tests;
 public sealed class ReturnFlowTests : ChibiTestBase
 {
     [Fact]
+    public void BareReturnsProduceTypedDefaults()
+    {
+        Compile("""
+            struct Pair { int x; double y; };
+            int integer(void) { return; }
+            double floating(void) { return; }
+            int *pointer(void) { return; }
+            struct Pair aggregate(void) { return; }
+            int main(void) {
+                struct Pair value = aggregate();
+                if (integer() || floating() != 0 || pointer() != 0) return 1;
+                if (value.x || value.y != 0) return 2;
+                return 42;
+            }
+            """)
+        .Link(["/entry:main"])
+        .RunAndCheck(42);
+    }
+
+    [Fact]
     public void NonVoidFunctionCanFallOffEndWithImplicitZero()
     {
         Compile("""
