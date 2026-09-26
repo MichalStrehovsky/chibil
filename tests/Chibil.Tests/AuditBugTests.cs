@@ -277,7 +277,7 @@ public class AuditBugTests : ChibiTestBase
                 return b.inner.x + b.inner.y;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 3);
     }
 
