@@ -1317,13 +1317,16 @@ public class ManglingInteropTests : ChibiTestBase
     {
         // int arr[3][4] → outer dimension decays, inner preserved
         // MSVC uses Y encoding: QEAY03H (const ptr to int[4])
-        // Also causes metadata error: differing number of fields in duplicated $ArrayType$ TypeDefs
+        // MSVC array TypeDefs are fieldless; use the matching representation.
         Compile("""
-            int arr_2d(int arr[3][4]) { return 42; }
-            """)
+            int arr_2d(int arr[3][4]) { return arr[0][0] + arr[2][3]; }
+            """, ["-fno-managed-aggregate-fields"])
         .MsvcCompile("""
             int arr_2d(int[3][4]);
-            int main(void) { int a[3][4] = {{0}}; return arr_2d(a); }
+            int main(void) {
+                int a[3][4] = { { 20, 0, 0, 0 }, { 0 }, { 0, 0, 0, 22 } };
+                return arr_2d(a);
+            }
             """)
         .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
