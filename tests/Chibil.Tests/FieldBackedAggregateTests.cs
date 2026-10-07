@@ -151,6 +151,166 @@ public class FieldBackedAggregateTests : ChibiTestBase
         .RunAndCheck(exitCode: 200);
     }
 
+    [Theory]
+    [InlineData("char", 1)]
+    [InlineData("short", 2)]
+    [InlineData("int", 4)]
+    [InlineData("double", 8)]
+    [InlineData("void *", 8)]
+    [InlineData("struct PointerValue", 8)]
+    public void FieldBackedArrayMemberHasElementAlignment(string elementType, int alignment)
+    {
+        Compile($$"""
+            struct PointerValue { void *value; };
+            typedef {{elementType}} element_t;
+            struct Container {
+                char prefix;
+                element_t values[2];
+                char suffix;
+            };
+            struct Container container;
+            int main(void) {
+                return (int)((char *)&container.values - (char *)&container);
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(alignment);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("-fdata-sections")]
+    public void FieldBackedGlobalPointerArrayInitializerBehavior(string option)
+    {
+        Compile("""
+            int first = 5;
+            int second = 7;
+            struct Container {
+                int before;
+                void *pointers[2];
+                int after;
+            };
+            struct Container container = { 11, { &first, &second }, 22 };
+            int main(void) {
+                if ((char *)&container.pointers - (char *)&container != 8) return 1;
+                if ((char *)&container.after - (char *)&container != 24) return 2;
+                if (container.before != 11 || container.after != 22) return 3;
+                if (container.pointers[0] != &first || container.pointers[1] != &second)
+                    return 4;
+                return *(int *)container.pointers[0] + *(int *)container.pointers[1];
+            }
+            """, option == null ? null : [option])
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(12);
+    }
+
+    [Fact]
+    public void FieldBackedNestedMultidimensionalArrayLayoutBehavior()
+    {
+        Compile("""
+            struct Grid {
+                char before;
+                double cells[2][2];
+                char after;
+            };
+            struct Container {
+                char before;
+                struct Grid grids[2];
+                char after;
+            };
+            struct Container container = {
+                1, { { 2, { { 3, 4 }, { 5, 6 } }, 7 },
+                     { 8, { { 9, 10 }, { 11, 12 } }, 13 } }, 14
+            };
+            int main(void) {
+                if ((char *)&container.grids - (char *)&container != 8) return 1;
+                if ((char *)&container.after - (char *)&container != 104) return 2;
+                if ((char *)&container.grids[1].cells - (char *)&container.grids[1] != 8)
+                    return 3;
+                if ((char *)&container.grids[1].after - (char *)&container.grids[1] != 40)
+                    return 4;
+                if (container.before != 1 || container.after != 14) return 5;
+                if (container.grids[0].before != 2 || container.grids[0].after != 7)
+                    return 6;
+                if (container.grids[1].before != 8 || container.grids[1].after != 13)
+                    return 7;
+                return (int)container.grids[0].cells[1][1] +
+                       (int)container.grids[1].cells[1][1];
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(18);
+    }
+
+    [Fact]
+    public void FieldBackedArrayMembersRespectPacking()
+    {
+        Compile("""
+            struct __attribute__((packed)) Packed {
+                char before;
+                double values[2];
+                char after;
+            };
+            struct Container {
+                char before;
+                struct Packed items[2];
+                char after;
+            };
+            struct Container container = {
+                1, { { 2, { 3, 4 }, 5 }, { 6, { 7, 8 }, 9 } }, 10
+            };
+            int main(void) {
+                if (sizeof(struct Packed) != 18) return 1;
+                if ((char *)&container.items - (char *)&container != 1) return 2;
+                if ((char *)&container.items[1].values - (char *)&container.items[1] != 1)
+                    return 3;
+                if ((char *)&container.after - (char *)&container != 37) return 4;
+                if (container.before != 1 || container.after != 10) return 5;
+                if (container.items[0].after != 5 || container.items[1].after != 9)
+                    return 6;
+                return (int)container.items[0].values[1] + (int)container.items[1].values[1];
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(12);
+    }
+
+    [Fact]
+    public void MultidimensionalArrayParameterAcrossTranslationUnits()
+    {
+        Compile("""
+            int sum_matrix(int values[3][4]) {
+                int sum = 0;
+                for (int row = 0; row < 3; row++)
+                    for (int column = 0; column < 4; column++)
+                        sum += values[row][column];
+                values[2][3] += 1;
+                return sum;
+            }
+            """)
+        .Compile("""
+            int sum_matrix(int values[3][4]);
+            struct Matrix {
+                char before;
+                int values[3][4];
+                char after;
+            };
+            struct Matrix matrix = {
+                11, { { 1, 2, 3, 4 }, { 5, 6, 7, 8 }, { 9, 10, 11, 12 } }, 22
+            };
+            int main(void) {
+                if ((char *)&matrix.values - (char *)&matrix != 4) return 1;
+                if ((char *)&matrix.after - (char *)&matrix != 52) return 2;
+                int sum = sum_matrix(matrix.values);
+                if (matrix.values[2][3] != 13) return 3;
+                if (matrix.before != 11 || matrix.after != 22) return 4;
+                return sum;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(78);
+    }
+
     [Fact]
     public void FieldBackedPackedStructBehavior()
     {

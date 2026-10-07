@@ -67,6 +67,62 @@ public class MsvcInteropTests : ChibiTestBase
     }
 
     [Theory]
+    [InlineData("char")]
+    [InlineData("short")]
+    [InlineData("int")]
+    [InlineData("long long")]
+    public void ChibiDefine_MsvcConsumeStructAlignment(string memberType)
+    {
+        Compile($$"""
+            struct Value { {{memberType}} value; };
+            struct Value increment(struct Value input) {
+                input.value += 1;
+                return input;
+            }
+            """, ["-fno-managed-aggregate-fields"])
+        .MsvcCompile($$"""
+            struct Value { {{memberType}} value; };
+            struct Value increment(struct Value);
+            int main(void) {
+                struct Value input = { 41 };
+                struct Value output = increment(input);
+                if (input.value != 41) return 1;
+                return (int)output.value;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData("char")]
+    [InlineData("short")]
+    [InlineData("int")]
+    [InlineData("long long")]
+    public void MsvcDefine_ChibiConsumeStructAlignment(string memberType)
+    {
+        MsvcCompile($$"""
+            struct Value { {{memberType}} value; };
+            struct Value increment(struct Value input) {
+                input.value += 1;
+                return input;
+            }
+            """)
+        .Compile($$"""
+            struct Value { {{memberType}} value; };
+            struct Value increment(struct Value);
+            int main(void) {
+                struct Value input = { 41 };
+                struct Value output = increment(input);
+                if (input.value != 41) return 1;
+                return (int)output.value;
+            }
+            """, ["-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(42);
+    }
+
+    [Theory]
     [InlineData("")]
     [InlineData("__clrcall ")]
     public void ChibiDefine_MsvcConsumeIndirect(string cc)

@@ -46,6 +46,26 @@ public abstract class ManagedAggregateModel
 
     public virtual ushort GetPackingSize(CType ty) => 0;
 
+    protected static ManagedAggregateField? GetAlignmentField(CType ty, TypeSystem types)
+    {
+        if (ty.Align == 1)
+            return null;
+
+        CType fieldType = ty.Align switch
+        {
+            2 => types.TyShort,
+            4 => types.TyInt,
+            _ when ty.Align >= 8 => types.TyLongLong,
+            _ => throw new InvalidOperationException(
+                $"Internal error: unsupported managed aggregate alignment {ty.Align}"),
+        };
+        return new ManagedAggregateField(
+            "<alignment member>",
+            fieldType,
+            FieldAttributes.Private,
+            ty.Kind == TypeKind.Union ? 0 : null);
+    }
+
     public abstract IEnumerable<ManagedAggregateField> GetFields(CType ty);
 
     public abstract ManagedAggregateMemberAccessKind GetMemberAccessKind(CType owner, Member member);
@@ -81,12 +101,8 @@ public sealed class MsvcManagedAggregateModel : ManagedAggregateModel
         if (_types.PointerSize == 4 || canonical.Kind == TypeKind.Array)
             yield break;
 
-        CType fieldType = canonical.Align >= 8 ? _types.TyLongLong : _types.TyInt;
-        yield return new ManagedAggregateField(
-            "<alignment member>",
-            fieldType,
-            FieldAttributes.Private,
-            canonical.Kind == TypeKind.Union ? 0 : null);
+        if (GetAlignmentField(canonical, _types) is ManagedAggregateField field)
+            yield return field;
     }
 }
 
@@ -139,7 +155,13 @@ public sealed class FieldBackedManagedAggregateModel : ManagedAggregateModel
     {
         CType canonical = ty.Canonicalize();
         if (canonical.Kind == TypeKind.Array)
+        {
+            // Class size alone leaves an opaque array byte-aligned in the CLR.
+            // An alignment member makes sequential containing fields match C layout.
+            if (GetAlignmentField(canonical, _types) is ManagedAggregateField field)
+                yield return field;
             yield break;
+        }
 
         if (canonical.Kind is not (TypeKind.Struct or TypeKind.Union) || canonical.Members == null)
             yield break;
