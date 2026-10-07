@@ -35,6 +35,9 @@ public class BclBinder
     public MemberReferenceHandle GetNativeCppClassCtorRef()
         => GetLazyMemberRef(GetLazyTypeRef("System.Runtime.CompilerServices", "NativeCppClassAttribute"), ".ctor", Instance_RetVoid);
 
+    public MemberReferenceHandle GetFixedAddressValueTypeCtorRef()
+        => GetLazyMemberRef(GetLazyTypeRef("System.Runtime.CompilerServices", "FixedAddressValueTypeAttribute"), ".ctor", Instance_RetVoid);
+
     private static readonly byte[] Static_PtrInt32_Int32_Int32_RetInt32 =
         [(byte)SignatureAttributes.None, 3, (byte)SignatureTypeCode.Int32, (byte)SignatureTypeCode.Pointer, (byte)SignatureTypeCode.Int32, (byte)SignatureTypeCode.Int32, (byte)SignatureTypeCode.Int32];
 

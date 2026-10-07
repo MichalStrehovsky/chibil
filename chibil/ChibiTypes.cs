@@ -431,6 +431,7 @@ public class CompilerOptions
     public bool OptFcommon = true;
     public bool OptFunctionSections;
     public bool OptDataSections;
+    public bool OptFixedAddressStatics;
     public bool Optimize;
     public bool UseFieldBackedManagedAggregates;
     public string BaseFile;

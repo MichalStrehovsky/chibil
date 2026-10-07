@@ -104,7 +104,7 @@ public class MsilObjectEmitter
             MetadataTokens.MethodDefinitionHandle(_md.GetRowCount(TableIndex.MethodDef) + 1));
 
         _md.AddTypeLayout(handle, packingSize, size);
-        AddNativeCppClassAttribute(handle);
+        AddParameterlessAttribute(handle, _binder.GetNativeCppClassCtorRef());
         return handle;
     }
 
@@ -526,6 +526,11 @@ public class MsilObjectEmitter
             _md.GetOrAddString(fieldName), _md.GetOrAddBlob(fieldSig));
 
         _md.AddFieldRelativeVirtualAddress(fieldDef, 0);
+        if (_options.OptFixedAddressStatics)
+        {
+            // TODO: we need to also make sure the field is not primitive/enum
+            AddParameterlessAttribute(fieldDef, _binder.GetFixedAddressValueTypeCtorRef());
+        }
         return fieldDef;
     }
 
@@ -560,11 +565,8 @@ public class MsilObjectEmitter
         return memberRef;
     }
 
-    private void AddNativeCppClassAttribute(TypeDefinitionHandle handle)
+    private void AddParameterlessAttribute(EntityHandle handle, MemberReferenceHandle ctorRef)
     {
-        // MemberRef for .ctor()
-        var ctorRef = _binder.GetNativeCppClassCtorRef();
-
         var attrBlob = new BlobBuilder();
         attrBlob.WriteUInt16(0x0001); // Prolog
         attrBlob.WriteUInt16(0x0000); // NumNamed
