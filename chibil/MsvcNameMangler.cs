@@ -17,6 +17,9 @@ public class MsvcNameMangler : NameMangler
     public override string MangleFunctionBaseName(Obj fn)
         => fn.IsStatic ? $"{fn.Name}_?A0x{_tuHash}" : fn.Name;
 
+    public override string MangleFunctionMetadataName(Obj fn)
+        => fn.IsStatic ? MangleStaticGlobalName(fn.Name) : fn.Name;
+
     /// <summary>
     /// Produce an MSVC-compatible decorated name for a C function.
     /// Format: ?name@@$$J0YA(ret)(params)@Z  for cdecl

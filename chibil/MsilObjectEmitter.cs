@@ -365,7 +365,7 @@ public class MsilObjectEmitter
         var methodDef = _md.AddMethodDefinition(
             attrs,
             MethodImplAttributes.IL | MethodImplAttributes.Managed,
-            _md.GetOrAddString(fn.Name),
+            _md.GetOrAddString(_nameMangler.MangleFunctionMetadataName(fn)),
             _md.GetOrAddBlob(sig),
             0,
             MetadataTokens.ParameterHandle(_md.GetRowCount(TableIndex.Param) + 1));
@@ -540,7 +540,7 @@ public class MsilObjectEmitter
         {
             signature = new BlobBuilder();
             EncodeFunctionSignature(signature, obj.Ty);
-            metadataName = obj.Name;
+            metadataName = _nameMangler.MangleFunctionMetadataName(obj);
         }
         else
         {
