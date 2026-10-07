@@ -9,6 +9,8 @@ public abstract class NameMangler
 
     public abstract string MangleFunctionBaseName(Obj fn);
 
+    public abstract string MangleFunctionMetadataName(Obj fn);
+
     public abstract string MangleFunctionName(Obj fn);
 
     public abstract string MangleUnmanagedEntryPointName(Obj fn);

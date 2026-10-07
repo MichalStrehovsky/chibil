@@ -475,6 +475,42 @@ public class LinkageTests : ChibiTestBase
         .RunAndCheck(exitCode: 42);
     }
 
+    [Theory]
+    [InlineData("", null)]
+    [InlineData("", "-ffunction-sections")]
+    [InlineData("__clrcall ", null)]
+    [InlineData("__clrcall ", "-ffunction-sections")]
+    public void SameNamedStaticFunctionsRemainDistinctAcrossTranslationUnits(string cc, string option)
+    {
+        string[] options = option == null ? null : [option];
+
+        Compile($$"""
+            static int {{cc}}helper(int value) { return value + 10; }
+            static int ({{cc}}*first_ptr)(int) = helper;
+            int first(void) { return helper(1) == 11 && first_ptr(2) == 12; }
+            """, options)
+        .Compile($$"""
+            static int {{cc}}helper(int value) { return value + 20; }
+            static int ({{cc}}*second_ptr)(int) = helper;
+            int second(void) { return helper(3) == 23 && second_ptr(4) == 24; }
+            """, options)
+        .MsvcCompile($$"""
+            int first(void);
+            int second(void);
+            int {{cc}}helper(int value) { return value + 30; }
+            int main(void) {
+                int ({{cc}}*external_ptr)(int) = helper;
+                if (!first()) return 1;
+                if (!second()) return 2;
+                if (helper(5) != 35) return 3;
+                if (external_ptr(6) != 36) return 4;
+                return 42;
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"])
+        .RunAndCheck(exitCode: 42);
+    }
+
     [Fact]
     public void StaticInlineReferencedByGlobalInitializerStaysLiveAfterRedeclaration()
     {
