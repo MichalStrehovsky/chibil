@@ -45,6 +45,7 @@ public class MsilObjectEmitter
 
     // Bare-name NEP COFF symbols (func name → COFF symbol for the NEP thunk alias)
     private readonly Dictionary<string, CoffSymbolHandle> _nepBareNameSymbols = new();
+    private readonly Dictionary<string, Obj> _managedFunctions = new();
 
     // __unep@ fields for address-taken cdecl functions
     private readonly Dictionary<string, UnepSlot> _unepSlots = new();
@@ -622,6 +623,9 @@ public class MsilObjectEmitter
                 continue;
             }
 
+            if (obj.Ty.CallConv == CallConv.Clrcall)
+                _managedFunctions.Add(obj.Name, obj);
+
             if (!obj.IsDefinition || !obj.IsLive)
                 continue;
 
@@ -825,13 +829,13 @@ public class MsilObjectEmitter
         return offset;
     }
 
-    /// <summary>Write data relocations. Runs after NEP emission so
-    /// bare-name symbols are available as relocation targets.</summary>
+    /// <summary>Write data relocations after function symbols have been emitted.</summary>
     private void EmitGlobalDataRelocations()
     {
         foreach (Obj g in _globalsWithRelocations)
         {
             var placement = _dataPlacement[g];
+            CoffSectionWithContentBuilder managedFixups = null;
 
             for (Relocation rel = g.Rel; rel != null; rel = rel.Next)
             {
@@ -842,9 +846,31 @@ public class MsilObjectEmitter
                 {
                     // Data-to-data relocation (e.g., char* e = &hello[1])
                 }
+                else if (_managedFunctions.TryGetValue(targetName, out Obj function))
+                {
+                    if (rel.Addend != 0)
+                        Util.ErrorTok(rel.Tok, "managed function pointer initializer cannot have an addend");
+                    var token = _symtab.GetOrAddUndefinedClrTokenSymbol(GetFunctionToken(function), CoffSymbolType.Function);
+                    new CoffRelocationEncoder(_coffHeader, placement.Section.Relocations)
+                        .AddTokenRelocation(placement.Offset + rel.Offset, token);
+                    if (managedFixups == null)
+                    {
+                        const SectionCharacteristics flags = SectionCharacteristics.ContainsInitializedData |
+                            SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes;
+                        managedFixups = placement.Section.ComdatSelection.HasValue
+                            ? new(".rdata$ilfixup", flags, CoffComdatSelection.Associative, placement.Section)
+                            : new(".rdata$ilfixup", flags);
+                        _comdatSections.Add(managedFixups);
+                        if (managedFixups.ComdatSelection.HasValue)
+                            _symtab.AddComdatSectionSymbol(managedFixups);
+                    }
+                    ClrIjw.AddVtableFixup(_coffHeader, managedFixups, _dataCoffSymbols[g.Name],
+                        rel.Offset, PtrSize, fromUnmanaged: false);
+                    continue;
+                }
                 else if (_nepBareNameSymbols.TryGetValue(targetName, out targetSym))
                 {
-                    // Function pointer relocation (e.g., int (*m)() = &get)
+                    // Native function pointer relocation (e.g., int (*m)() = &get)
                 }
                 else
                 {
@@ -903,12 +929,11 @@ public class MsilObjectEmitter
 
         EmitCxxPureMSILEntry();
 
+        EmitGlobalDataRelocations();
+
         _aggregates.MaterializeAll();
 
         FinalizeReferencedFunctionSymbols();
-
-        // Global data relocations — AFTER NEP so bare-name symbols exist
-        EmitGlobalDataRelocations();
 
         // Build COFF and serialize. Sections are only emitted when they carry
         // content, matching MSVC /clr reference objects (which omit even

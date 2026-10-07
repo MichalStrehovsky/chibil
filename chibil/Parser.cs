@@ -1734,7 +1734,9 @@ public class Parser
         if (!rs.IsSuccess) { if (!constOnly) Util.ErrorTok(init.Expr.Tok, rs.Message); return null; }
         if (label == null) { Util.WriteBuf(buf, offset, val, ty.Size); return cur; }
         if (constOnly) return null;
-        var rel = new Relocation { Offset = offset, Label = label, Addend = val };
+        if (ty.Size != _types.PointerSize)
+            Util.ErrorTok(init.Expr.Tok, "relocated initializer requires pointer-sized storage");
+        var rel = new Relocation { Offset = offset, Tok = init.Expr.Tok, Label = label, Addend = val };
         cur.Next = rel; return cur.Next;
     }
 
