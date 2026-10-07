@@ -231,6 +231,7 @@ public class Relocation
 {
     public Relocation Next;
     public int Offset;
+    public Token Tok;
     public string Label;
     public long Addend;
 }

@@ -51,6 +51,17 @@ internal static class ClrIjw
         t.Builder.WriteByte((byte)SignatureTypeCode.Void);
     }
 
+    public static void AddVtableFixup(
+        CoffHeaderBuilder coffHeader, CoffSectionWithContentBuilder section,
+        CoffSymbolHandle target, int addend, int ptrSize, bool fromUnmanaged)
+    {
+        int offset = section.Content.Count;
+        section.Content.WriteInt32(addend);
+        section.Content.WriteInt16(1);
+        section.Content.WriteInt16((short)((ptrSize == 4 ? 0x01 : 0x02) | (fromUnmanaged ? 0x08 : 0)));
+        new CoffRelocationEncoder(coffHeader, section.Relocations).AddImageRelativeRelocation(offset, target);
+    }
+
     /// <summary>
     /// Emits the minimal /clr IJW machinery for a single managed function:
     /// a <c>__mep@?fn</c> data slot stamped with a TOKEN reloc to the
@@ -119,11 +130,7 @@ internal static class ClrIjw
         var bareSym = symtab.AddExternalDataSymbol(symPrefix + bareName, nepSectionBuilder, thunkOffset);
 
         // (4) One 8-byte ILFixup entry pointing at the slot.
-        int ilfixupOffset = ilFixupSectionBuilder.Content.Count;
-        ilFixupSectionBuilder.Content.WriteInt32(0);                                        // RVA placeholder (ADDR32NB reloc below)
-        ilFixupSectionBuilder.Content.WriteInt16(1);                                        // Count
-        ilFixupSectionBuilder.Content.WriteInt16(ptrSize == 4 ? (short)0x0009 : (short)0x000A);     // COR_VTABLE_*BIT | FROM_UNMANAGED_RETAIN_APPDOMAIN
-        new CoffRelocationEncoder(coffHeader, ilFixupSectionBuilder.Relocations).AddImageRelativeRelocation(ilfixupOffset, mepDataSym);
+        AddVtableFixup(coffHeader, ilFixupSectionBuilder, mepDataSym, 0, ptrSize, fromUnmanaged: true);
 
         return bareSym;
     }
@@ -184,10 +191,7 @@ internal static class ClrIjw
             dataSection);
         sections.Add(ilfixupSection);
 
-        ilfixupSection.Content.WriteInt32(0);
-        ilfixupSection.Content.WriteInt16(1);
-        ilfixupSection.Content.WriteInt16(ptrSize == 4 ? (short)0x0009 : (short)0x000A);
-        new CoffRelocationEncoder(coffHeader, ilfixupSection.Relocations).AddImageRelativeRelocation(0, mepDataSym);
+        AddVtableFixup(coffHeader, ilfixupSection, mepDataSym, 0, ptrSize, fromUnmanaged: true);
         symtab.AddComdatSectionSymbol(ilfixupSection);
 
         return bareSym;
