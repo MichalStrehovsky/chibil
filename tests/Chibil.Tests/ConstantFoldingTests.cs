@@ -461,4 +461,125 @@ public sealed class ConstantFoldingTests : ChibiTestBase
         .Link(ConsoleMain)
         .RunAndCheck(exitCode: 42);
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Bottom-up folding: constant operands mixed with runtime operands
+    //  must keep correct IL evaluation-stack order. A constant on the
+    //  LEFT of a non-commutative operator is the interesting case
+    //  (`k - x`, `k / x`, `k << x`, ...): the folded constant must be
+    //  materialized BEFORE the runtime operand, not after.
+    // ═══════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void ConstantLeftOperandOfNonCommutativeOpKeepsOrder()
+    {
+        Compile("""
+            int main(void) {
+                int x = 3;
+                if ((10 - x) != 7) return 1;      // not x - 10
+                if ((100 / x) != 33) return 2;     // not x / 100
+                if ((17 % x) != 2) return 3;       // not x % 17
+                if ((1000 >> x) != 125) return 4;  // not x >> 1000
+                if ((2 << x) != 16) return 5;      // not x << 2
+                if ((5 - x - 1) != 1) return 6;
+                return 42;
+            }
+            """)
+        .Link(ConsoleMain)
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void NestedMixedConstantAndRuntimeFoldsCorrectly()
+    {
+        Compile("""
+            int main(void) {
+                int x = 4, y = 1;
+                if ((1 - (2 - x)) != 3) return 1;         // 1 - (2 - 4) = 3
+                if (((x - 1) - (2 - y)) != 2) return 2;   // (4-1) - (2-1) = 2
+                if (((2 * 3) - x) != 2) return 3;         // 6 - 4 = 2
+                if ((x - (3 + 4)) != -3) return 4;        // 4 - 7 = -3
+                return 42;
+            }
+            """)
+        .Link(ConsoleMain)
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void UnsignedConstantLeftOperandComparesAndDividesUnsigned()
+    {
+        Compile("""
+            int main(void) {
+                unsigned int x = 3u;
+                if ((0xFFFFFFFFu / x) != 1431655765u) return 1; // unsigned division
+                if ((10u - x) != 7u) return 2;
+                if ((x - 5u) < 10u) return 3;                   // wraps to a huge unsigned value
+                return 42;
+            }
+            """)
+        .Link(ConsoleMain)
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void FloatConstantLeftOperandKeepsOrder()
+    {
+        Compile("""
+            int main(void) {
+                float f = 2.0f;
+                if ((10.0f - f) != 8.0f) return 1;   // not f - 10
+                if ((12.0f / f) != 6.0f) return 2;   // not f / 12
+                double d = 4.0;
+                if ((1.0 - d) != -3.0) return 3;
+                return 42;
+            }
+            """)
+        .Link(ConsoleMain)
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void SideEffectsPreservedWhenSiblingFolds()
+    {
+        // A folded constant sibling must not erase or reorder side effects in the
+        // other operand. `(g(), 2)` has a side effect (bumps `calls`) and a
+        // constant value 2; `x++` produces the old value and bumps x.
+        Compile("""
+            int calls = 0;
+            int g(void) { calls++; return 100; }
+            int main(void) {
+                int x = 5;
+                int r = (g(), 2) + x;   // side effect of g runs; value 2 + 5 = 7
+                if (r != 7) return 1;
+                if (calls != 1) return 2;
+                int a = x++ + 10;       // uses old x (5) + 10 = 15, then x -> 6
+                if (a != 15) return 3;
+                if (x != 6) return 4;
+                return 42;
+            }
+            """)
+        .Link(ConsoleMain)
+        .RunAndCheck(exitCode: 42);
+    }
+
+    [Fact]
+    public void CastOfMixedExpressionFolds()
+    {
+        Compile("""
+            int main(void) {
+                int x = 300;
+                // (char)(x) truncates at runtime; the constant fold path is for the
+                // fully-constant operands only.
+                // `long` is 32-bit under this data model, so use `long long` (64-bit)
+                // to exercise a wide fold that would overflow 32 bits.
+                if ((long long)(1000000LL * 1000000) != 1000000000000LL) return 1; // folds in long long
+                if (((char)200) != -56) return 2;                          // constant cast folds
+                if ((x + (char)200) != 244) return 3;                      // 300 + (-56)
+                return 42;
+            }
+            """)
+        .Link(ConsoleMain)
+        .RunAndCheck(exitCode: 42);
+    }
 }
