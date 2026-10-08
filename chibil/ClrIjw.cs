@@ -20,8 +20,7 @@ internal static class ClrIjw
     /// return type next (e.g. <c>.Int64()</c>, <c>.Single()</c>,
     /// <c>.Type(structDef, isValueType: true)</c>, etc.).
     ///
-    /// /clr methods marked with the <c>UnmanagedExport</c> flag (i.e.
-    /// user-defined functions exposed via the IJW NEP thunk) carry this
+    /// Methods exposed via an IJW NEP thunk carry this
     /// modopt on their return type so the runtime knows the C calling
     /// convention applies at the boundary. For <c>void</c> returns, write
     /// the <c>Void</c> type code directly into <c>.Builder</c> after this

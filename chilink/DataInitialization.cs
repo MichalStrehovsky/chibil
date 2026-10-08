@@ -12,6 +12,7 @@ internal sealed partial class Linker
     private readonly Dictionary<SourceToken, FieldStorage> _fieldStorage = new();
     private readonly Dictionary<SourceToken, int> _fieldSizes = new();
     private readonly List<DataRelocation> _dataRelocations = new();
+    private readonly HashSet<SourceToken> _addressTakenFields = new();
 
     private int FieldSize(SourceToken token)
     {
@@ -88,11 +89,17 @@ internal sealed partial class Linker
         bool convert = zero || section.IsWritable || relocated;
         if (convert && MetadataTokens.GetRowNumber(field.GetDeclaringType()) != 1)
             throw input.Error($"RVA field conversion on named types is not supported: '{definition.Symbol.Name}'");
-        if (convert && !_merger.HasFixedAddress(token))
-            throw input.Error($"RVA field conversion requires FixedAddressValueTypeAttribute: '{definition.Symbol.Name}'");
         storage = new(token, definition, size, convert, zero);
         _fieldStorage.Add(token, storage);
         return storage;
+    }
+
+    private void ValidateFieldAddresses()
+    {
+        foreach (SourceToken token in _addressTakenFields)
+            if (_fieldStorage.TryGetValue(token, out var storage) && storage.Convert && !_merger.HasFixedAddress(token))
+                throw _inputs[storage.Definition.Token.Input].Error(
+                    $"address-taken RVA field conversion requires FixedAddressValueTypeAttribute: '{storage.Definition.Symbol.Name}'");
     }
 
     private void MarkDataRelocation(InputSection section, Definition[] definitions, CoffRelocation relocation)
@@ -168,7 +175,10 @@ internal sealed partial class Linker
         }
         var token = _merger.Resolve(target.Token);
         if (token.Handle.Kind == HandleKind.FieldDefinition)
+        {
             GetFieldStorage(token);
+            _addressTakenFields.Add(token);
+        }
         else
             throw input.Error($"data relocation to method '{symbol.Name}' requires a managed vtfixup slot");
         return token;
@@ -218,11 +228,12 @@ internal sealed class DataInitialization
         var code = new BlobBuilder();
         var encoder = new InstructionEncoder(code);
         EntityHandle Map(SourceToken token) => (EntityHandle)merger.Map(token.Input, token.Handle);
-        void Address(EntityHandle handle, long offset)
+        void Address(EntityHandle handle, long offset, bool unmanaged)
         {
             encoder.OpCode(handle.Kind == HandleKind.MethodDefinition ? ILOpCode.Ldftn : ILOpCode.Ldsflda);
             encoder.Token(handle);
-            encoder.OpCode(ILOpCode.Conv_u);
+            if (unmanaged)
+                encoder.OpCode(ILOpCode.Conv_u);
             if (offset != 0)
             {
                 encoder.LoadConstantI8(offset);
@@ -239,8 +250,9 @@ internal sealed class DataInitialization
         }
         foreach (var relocation in Relocations)
         {
-            Address(Map(relocation.Field), relocation.Offset);
-            Address(Map(relocation.Target), relocation.Addend);
+            // Keep the destination GC-tracked while resolving the source address.
+            Address(Map(relocation.Field), relocation.Offset, unmanaged: false);
+            Address(Map(relocation.Target), relocation.Addend, unmanaged: true);
             encoder.OpCode(ILOpCode.Unaligned);
             code.WriteByte(1);
             encoder.OpCode(ILOpCode.Stind_i);

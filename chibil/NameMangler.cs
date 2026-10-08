@@ -11,6 +11,9 @@ public abstract class NameMangler
 
     public abstract string MangleFunctionMetadataName(Obj fn);
 
+    public string MangleUcoFunctionMetadataName(Obj fn)
+        => "__uco@" + MangleFunctionMetadataName(fn);
+
     public abstract string MangleFunctionName(Obj fn);
 
     public abstract string MangleUnmanagedEntryPointName(Obj fn);

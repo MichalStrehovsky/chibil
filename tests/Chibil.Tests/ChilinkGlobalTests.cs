@@ -15,12 +15,88 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     [InlineData("int value = 42;")]
     [InlineData("int value[2] = { 20, 22 };")]
     [InlineData("const int target = 42; const int *const value = &target;")]
-    public void UnannotatedGlobalsCannotBeConverted(string source)
+    public void AddressTakenUnannotatedGlobalsCannotBeConverted(string source)
     {
-        var builder = Compile(source, ["-fdata-sections", "-fno-fixed-address-statics"]);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(["/dll", "/OPT:NOREF"]));
+        var builder = Compile(source + " void *address(void) { return &value; } int main(void) { return address() != 0; }",
+            ["-fdata-sections", "-fno-fixed-address-statics"]);
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
         Assert.Contains("FixedAddressValueTypeAttribute", error.Message);
         Assert.Contains("value", error.Message);
+        Assert.False(File.Exists(Path.Combine(builder._tempDir, CompilationBuilder.ExecutableName)));
+    }
+
+    [Theory]
+    [InlineData("int value;")]
+    [InlineData("int value = 0;")]
+    [InlineData("int value = 41;")]
+    [InlineData("static int value = 41;")]
+    public void UnannotatedValueOnlyGlobalsCanBeConverted(string source)
+    {
+        Compile(source + " int main(void) { value = 42; return value; }",
+            ["-fdata-sections", "-fno-fixed-address-statics"])
+            .Link(ConsoleMain).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OnlyDataRelocationTargetsRequireFixedAddresses(bool reverse)
+    {
+        const string main = """
+            extern int values[2];
+            int *pointer = &values[1];
+            void collect_globals(void);
+            int main(void) { collect_globals(); return *pointer; }
+            """;
+        const string data = "int values[2] = { 20, 42 };";
+        Compile(reverse ? data : main, reverse ? null : ["-fno-fixed-address-statics"])
+            .Compile(reverse ? main : data, reverse ? ["-fno-fixed-address-statics"] : null)
+            .AddAsm2ObjAssembly("ChilinkAssembly.dll")
+            .Link(ConsoleMain).RunAndCheck(42);
+    }
+
+    [Fact]
+    public void UnannotatedDataRelocationTargetsStillRequireFixedAddresses()
+    {
+        var builder = Compile("""
+            extern int value;
+            int *pointer = &value;
+            int main(void) { return *pointer; }
+            """).Compile("int value = 42;", ["-fno-fixed-address-statics"]);
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        Assert.Contains("FixedAddressValueTypeAttribute", error.Message);
+        Assert.Contains("'value'", error.Message);
+    }
+
+    [Fact]
+    public void ReadOnlyDataRelocationTargetsDoNotRequireFixedAddresses()
+    {
+        Compile("""
+            const int value = 42;
+            const int *pointer = &value;
+            int main(void) { return *pointer; }
+            """, ["-fdata-sections", "-fno-fixed-address-statics"])
+            .Link(ConsoleMain).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData("/OPT:REF", false)]
+    [InlineData("/OPT:NOREF", true)]
+    public void DiscardedAddressTakingDoesNotRequireFixedAddresses(string option, bool retained)
+    {
+        var builder = Compile("""
+            int value = 42;
+            int *unused(void) { return &value; }
+            int main(void) { return value; }
+            """, ["-ffunction-sections", "-fdata-sections", "-fno-fixed-address-statics"]);
+        if (!retained)
+            builder.Link(["/entry:main", option]).RunAndCheck(42);
+        else
+        {
+            var error = Assert.Throws<InvalidOperationException>(() => builder.Link(["/entry:main", option]));
+            Assert.Contains("FixedAddressValueTypeAttribute", error.Message);
+            Assert.Contains("'value'", error.Message);
+        }
     }
 
     [Fact]
@@ -51,7 +127,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             }
             """, enabled
                 ? ["-fno-fixed-address-statics", "-ffixed-address-statics"]
-                : ["-ffixed-address-statics", "-fno-fixed-address-statics"]);
+                : ["-ffixed-address-statics", "-fno-fixed-address-statics", "-fno-uco-entrypoints"]);
         if (enabled)
             builder.Link(ConsoleMain).RunAndCheck(42);
         else
@@ -342,13 +418,21 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     }
 
     [Fact]
-    public void UnannotatedMsvcGlobalsCannotBeConverted()
+    public void AddressTakenUnannotatedMsvcGlobalsCannotBeConverted()
     {
         var builder = MsvcCompile("int value = 42;")
-            .Compile("extern int value; int main(void) { return value; }");
+            .Compile("extern int value; int main(void) { int *pointer = &value; return *pointer; }");
         var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
         Assert.Contains("FixedAddressValueTypeAttribute", error.Message);
         Assert.Contains("value", error.Message);
+    }
+
+    [Fact]
+    public void UnannotatedMsvcValueOnlyGlobalsCanBeConverted()
+    {
+        MsvcCompile("int value = 42;")
+            .Compile("extern int value; int main(void) { return value; }")
+            .Link(ConsoleMain).RunAndCheck(42);
     }
 
     [Fact]
@@ -469,7 +553,8 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     [Fact]
     public void FieldCoveredByVtfixupIsNotConverted()
     {
-        var builder = Compile("long long value = 42; int main(void) { return (int)value; }");
+        var builder = Compile("long long value = 42; int main(void) { return (int)value; }",
+            ["-fno-uco-entrypoints"]);
         byte[] bytes = File.ReadAllBytes(builder._objFiles[0]);
         using (var coff = new CoffReader(new MemoryStream(bytes)))
         {
@@ -566,11 +651,9 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     }
 
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    public void ManagedFunctionPointerAggregateInitializersWork(bool msvc, bool dataSections)
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ManagedFunctionPointerAggregateInitializersWork(bool dataSections)
     {
         var builder = Compile("""
             int value = 20;
@@ -585,16 +668,11 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 return array[0](holder.tag) + holder.callback(*holder.data);
             }
             """, dataSections ? ["-fdata-sections", "-ffunction-sections"] : null);
-        var result = msvc
-            ? builder.MsvcLink(["/entry:main", "/subsystem:console", "/OPT:REF"])
-            : builder.Link(["/entry:main", "/OPT:REF"]);
-        result.RunAndCheck(42);
+        builder.Link(["/entry:main", "/OPT:REF"]).RunAndCheck(42);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void ManagedFunctionPointerWithReturnModifiersWorks(bool msvc)
+    [Fact]
+    public void ManagedFunctionPointerWithReturnModifiersWorks()
     {
         var builder = Compile("""
             char __clrcall target(char value) { return value + 1; }
@@ -604,10 +682,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 return pointer(41);
             }
             """, ["-fdata-sections", "-ffunction-sections"]);
-        var result = msvc
-            ? builder.MsvcLink(["/entry:main", "/subsystem:console", "/OPT:REF"])
-            : builder.Link(["/entry:main", "/OPT:REF"]);
-        result.RunAndCheck(42);
+        builder.Link(["/entry:main", "/OPT:REF"]).RunAndCheck(42);
     }
 
     [Fact]
@@ -638,10 +713,8 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             """).AssertErrorContains("requires pointer-sized storage");
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void LocalAggregateAddressInitializersAllowPointerTruncation(bool msvc)
+    [Fact]
+    public void LocalAggregateAddressInitializersAllowPointerTruncation()
     {
         var builder = Compile("""
             int target = 42;
@@ -664,8 +737,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 return target;
             }
             """);
-        var result = msvc ? builder.MsvcLink(ConsoleMain) : builder.Link(ConsoleMain);
-        result.RunAndCheck(42);
+        builder.Link(ConsoleMain).RunAndCheck(42);
     }
 
     [Theory]
@@ -783,7 +855,8 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     [InlineData("int value = 1; int main(void) { return value; }", "int value = 2;", "duplicate")]
     public void UnsupportedGlobalDependenciesFailExplicitly(string main, string other, string diagnostic)
     {
-        var builder = Compile(main).Compile(other);
+        var builder = Compile(main, ["-fno-uco-entrypoints"])
+            .Compile(other, ["-fno-uco-entrypoints"]);
         var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
         Assert.IsType<Chilink.LinkException>(error.InnerException);
         Assert.Contains(diagnostic, error.Message, StringComparison.OrdinalIgnoreCase);

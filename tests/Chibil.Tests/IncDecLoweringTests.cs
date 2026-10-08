@@ -21,7 +21,7 @@ public class IncDecLoweringTests : ChibiTestBase
                 return n;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 10);
     }
 
@@ -37,7 +37,7 @@ public class IncDecLoweringTests : ChibiTestBase
                 return n;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 90);
     }
 
@@ -54,7 +54,7 @@ public class IncDecLoweringTests : ChibiTestBase
                 return x;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -71,7 +71,7 @@ public class IncDecLoweringTests : ChibiTestBase
                 return bump(34);
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -106,7 +106,7 @@ public class IncDecLoweringTests : ChibiTestBase
                 return my_strlen("hello, world!");  // 13
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 13);
     }
 
@@ -128,7 +128,7 @@ public class IncDecLoweringTests : ChibiTestBase
                 return 42;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -143,7 +143,7 @@ public class IncDecLoweringTests : ChibiTestBase
                 return x;       // 42
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -159,7 +159,7 @@ public class IncDecLoweringTests : ChibiTestBase
                 return a[0] + a[1] + (i - 2);  // 42
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 

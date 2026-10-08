@@ -146,6 +146,8 @@ public class Driver
             if (arg == "-fno-managed-aggregate-fields") { Options.UseFieldBackedManagedAggregates = false; continue; }
             if (arg == "-fnetcore") { Options.TargetNetCore = true; continue; }
             if (arg == "-fnetframework") { Options.TargetNetCore = false; continue; }
+            if (arg == "-fuco-entrypoints") { Options.UcoEntryPoints = true; continue; }
+            if (arg == "-fno-uco-entrypoints") { Options.UcoEntryPoints = false; continue; }
             if (arg == "-c") { _optC = true; continue; }
             if (arg == "-E") { _optE = true; continue; }
             if (arg.StartsWith("-I")) { Options.IncludePaths.Add(arg[2..]); continue; }
@@ -194,6 +196,8 @@ public class Driver
         foreach (string dir in idirafter)
             Options.IncludePaths.Add(dir);
 
+        if (Options.UcoEntryPoints && !Options.TargetNetCore)
+            Util.Error("-fuco-entrypoints requires -fnetcore");
         if (InputPaths.Count == 0 && !_optCc1)
             Util.Error("no input files");
         if (_optE) _optX = FileType.C;

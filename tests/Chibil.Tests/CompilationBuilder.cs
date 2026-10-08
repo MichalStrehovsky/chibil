@@ -87,7 +87,10 @@ public sealed class CompilationBuilder : IDisposable
 
         var args = new List<string> { "-ffixed-address-statics" };
         if (_netCore)
+        {
             args.Add("-fnetcore");
+            args.Add("-fuco-entrypoints");
+        }
 #if FIELD_BACKED_AGGREGATES
         args.Add("-fmanaged-aggregate-fields");
 #endif
@@ -227,6 +230,9 @@ public sealed class CompilationBuilder : IDisposable
 
         return new LinkResult(imagePath, _netCore);
     }
+
+    public LinkResult LinkOnNetCoreOrMsvcLinkOnFramework(string[] extraArgs = null)
+        => _netCore ? Link(extraArgs) : MsvcLink(extraArgs);
 
     public void Dispose()
     {

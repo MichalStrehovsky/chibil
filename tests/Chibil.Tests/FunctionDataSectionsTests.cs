@@ -146,7 +146,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // frag_* functions: the probe finds none of them in the linked module.
         Compile(UnusedFunctions, ["-ffunction-sections"])
             .AddAsm2ObjAssembly("ReflectionProbe.dll")
-            .MsvcLink(["/entry:main", "/subsystem:console", "/OPT:REF"])
+            .Link(["/entry:main", "/subsystem:console", "/OPT:REF"])
             .RunAndCheck(0);
     }
 
@@ -157,7 +157,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // /OPT:REF cannot strip them — the probe still finds both frag_* functions.
         Compile(UnusedFunctions)
             .AddAsm2ObjAssembly("ReflectionProbe.dll")
-            .MsvcLink(["/entry:main", "/subsystem:console", "/OPT:REF"])
+            .Link(["/entry:main", "/subsystem:console", "/OPT:REF"])
             .RunAndCheck(2);
     }
 

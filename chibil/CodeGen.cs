@@ -610,7 +610,7 @@ public class CodeGen
         CType funcTy = fn.Ty;
         if (funcTy.CallConv == CallConv.Clrcall)
         {
-            EntityHandle md = _emit.GetFunctionToken(fn);
+            EntityHandle md = _emit.GetFunctionAddressToken(fn);
             _enc.OpCode(ILOpCode.Ldftn); _enc.Token(md);
         }
         else

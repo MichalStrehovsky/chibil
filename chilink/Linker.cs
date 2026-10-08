@@ -95,6 +95,7 @@ internal sealed partial class Linker
                 else if (token.Handle.Kind == HandleKind.FieldDefinition)
                     GetFieldStorage(token);
             }
+            ValidateFieldAddresses();
             return Emit(entry);
         }
         finally
@@ -155,7 +156,8 @@ internal sealed partial class Linker
                 if (definition.Section?.Ignored == true || definition.Section?.Winner != definition.Section)
                     continue;
                 SourceToken canonical = _merger.Resolve(definition.Token);
-                if (definition.Symbol.Coff.StorageClass != CoffSymbolStorageClass.External)
+                if (definition.Symbol.Coff.StorageClass != CoffSymbolStorageClass.External ||
+                    (canonical.Handle.Kind == HandleKind.MethodDefinition && _merger.HasUnmanagedCallersOnly(canonical)))
                 {
                     _definitions.TryAdd(canonical, definition);
                     continue;
@@ -286,7 +288,13 @@ internal sealed partial class Linker
             if (BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan((int)relocation.Offset, 4)) != 0)
                 throw section.Input.Error("nonzero TOKEN relocation addends are not supported");
             if (symbol.Token.Kind != HandleKind.UserString)
-                Mark(new SourceToken(section.Input.Index, (EntityHandle)symbol.Token));
+            {
+                var token = _merger.Resolve(new SourceToken(section.Input.Index, (EntityHandle)symbol.Token));
+                if (token.Handle.Kind == HandleKind.FieldDefinition && relocation.Offset > 0 &&
+                    data[relocation.Offset - 1] == (byte)ILOpCode.Ldsflda)
+                    _addressTakenFields.Add(token);
+                Mark(token);
+            }
         }
         if (managedSlots.Count != 0)
             throw section.Input.Error($"managed vtfixup slot requires a TOKEN relocation in '{section.Name}'");

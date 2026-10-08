@@ -1,7 +1,7 @@
 # chilink
 
 chilink links managed COFF object files from chibil, MSVC `/clr`, and asm2obj into
-x64 pure-IL .NET Framework assemblies. It reads objects with the repository's
+x64 pure-IL .NET Framework or modern .NET assemblies. It reads objects with the repository's
 COFF library and writes metadata and PE images with System.Reflection.Metadata.
 Metadata merging follows the identity, reference-resolution and member-merging
 passes of CoreCLR's `newmerger.cpp`.
@@ -93,7 +93,8 @@ use `/include:` or `/opt:noref` when they must remain available through reflecti
 - Writable, BSS and common globals on `<Module>`, converted from RVA fields to
   ordinary CLR static fields. Compatible common definitions coalesce; a
   section-backed definition takes precedence over common storage. Conversion
-  requires `System.Runtime.CompilerServices.FixedAddressValueTypeAttribute`.
+  requires `System.Runtime.CompilerServices.FixedAddressValueTypeAttribute`
+  only when retained input code or data takes the field's address.
 - Initialized globals, including arrays and unmanaged fixed-size aggregates.
   A generated module `.cctor` uses `ldsfld`/`stsfld` to initialize globals from
   private read-only RVA fields that reuse each target field's signature, so each
@@ -107,6 +108,10 @@ use `/include:` or `/opt:noref` when they must remain available through reflecti
   vtfixup record. The generated module `.cctor` replaces the token with `ldftn`,
   preserving the CLR's managed-entrypoint fixup semantics without emitting native
   vtfixup machinery.
+- Native-convention function pointers from chibil's opt-in
+  `-fnetcore -fuco-entrypoints` mode. The compiler replaces native IJW thunks
+  with IL UCO forwarding methods, and their initialized pointer slots use the
+  same managed TOKEN-fixup lowering.
 - Function COMDAT selection and section-granularity stripping. A shared section
   retains all its functions; `-ffunction-sections` permits separate removal.
   Chibil scopes static function metadata names to their translation unit using
@@ -123,15 +128,23 @@ The generated module initializer is appended as a new method. It is emitted only
 when retained globals need copied initialization data; BSS/common globals rely on
 CLR zero initialization. Dead COMDAT initializers do not retain their dependencies.
 
-Every field requiring conversion, including zero-initialized and relocated
-read-only fields, must carry `System.Runtime.CompilerServices.FixedAddressValueTypeAttribute`.
-This keeps GC-allocated value-type statics from moving after C code takes their
-addresses. Only the attribute's namespace and name are checked, not its assembly
+Converted fields must carry
+`System.Runtime.CompilerServices.FixedAddressValueTypeAttribute` only when their
+storage address is taken by `ldsflda` in retained input IL or by a retained data
+address relocation. Loading or storing a field's value does not require the
+attribute, even when that value is a data or function pointer. Initializer
+destinations remain GC-tracked managed byrefs, so linker-generated writes do not
+impose the requirement; data-address relocation targets still need stable storage.
+Discarded address-taking code and data do not impose it either.
+
+The attribute keeps GC-allocated value-type statics from moving after C code
+takes their addresses. Only its namespace and name are checked, not its assembly
 identity; annotations on coalesced definitions are retained. Compile chibil
-inputs with `-ffixed-address-statics` to emit the attribute. The switch is opt-in,
-and `-fno-fixed-address-statics` disables it. Selecting `-fuse-ld=chilink` does not
-enable it automatically. Read-only fields that retain their RVA storage and
-discarded globals do not require the attribute.
+inputs with `-ffixed-address-statics` to emit the attribute on user-defined
+globals. The switch is opt-in, and `-fno-fixed-address-statics` disables it.
+Selecting `-fuse-ld=chilink` does not enable it automatically. Read-only fields
+that retain their RVA storage do not require the attribute, even when their
+addresses are taken.
 
 When synthesis is required, an existing `<Module>..cctor` in any input is an
 error; combining module initializers is not implemented. Ordinary named-type
@@ -145,8 +158,8 @@ and COFF alignment; converted statics use CLR storage and alignment instead.
 Overlapping/aliased field storage and incompatible common field sizes are errors.
 
 Not supported: native/from-unmanaged vtfixup-associated fields and other vtfixup
-flags, NEP/UNEP dependencies, native method bodies, library/archive parsing,
-P/Invoke, native exports, debug
+flags, legacy native NEP/UNEP dependencies, native method bodies, library/archive
+parsing, P/Invoke, native exports, debug
 information, manifest resources, security metadata, properties/events, bigobj,
 and relocation-overflow encodings. An ordinary call to a framework API does not
 require chilink to link that API's native implementation.
@@ -169,9 +182,68 @@ destination storage for all symbolic global initializers, including data
 addresses and native function addresses; narrower integer casts are rejected
 during parsing. Local aggregate initializers can still truncate pointers at
 runtime.
-Native MEP slots retain `0x09`/`0x0A`; functions using native calling conventions
+Without UCO mode, native MEP slots retain `0x09`/`0x0A`; native function addresses
 still use native entrypoint relocations and remain unsupported by chilink.
 Unsupported relocation kinds and targets fail explicitly.
+
+### UCO-assisted native function pointers
+
+Compile matching function definitions and address-taking inputs with
+`-fnetcore -fuco-entrypoints`. The feature is opt-in and requires the modern .NET
+target; neither `-fnetcore` nor `-fuse-ld=chilink` enables it automatically.
+`-fno-uco-entrypoints` disables it, and the final runtime/feature options win.
+Use `-ffixed-address-statics` independently when converted globals require it.
+
+The compiler emits an ordinary managed implementation and, for each live
+native-convention definition, a static IL forwarding method with
+`UnmanagedCallersOnly` and matching `CallConvs`. The wrapper has the former
+NEP's bare COFF name and a distinct `__uco@`-prefixed metadata name; static
+functions retain translation-unit scoping. Direct calls, recursion, and CRT
+startup use the ordinary implementation. Runtime address-taking loads a lazily
+generated `__unep@...` field, and indirect calls keep their unmanaged convention
+and GC transitions. `__clrcall` addresses continue using `ldftn` of ordinary
+managed methods.
+
+Assisted chibil objects have no native NEP thunks or native MEP fixups.
+Their `__unep` fields use TOKEN relocations and pointer-width-only managed fixup
+records targeting wrapper tokens, as do native function-pointer global
+initializers. Each generated field's fixup COMDAT is associated with its storage.
+chilink replaces these fixups with `ldftn` stores in the module initializer and
+emits no final-image vtfixups. Generated `__unep` fields do not need
+`FixedAddressValueTypeAttribute`: input code loads their values, not their storage
+addresses, and initialization keeps destination addresses GC-tracked.
+Retained runtime address slots require a generated module initializer
+even in programs without initialized user globals; an existing module initializer
+still conflicts with this synthesis. The runtime provides the native-callable
+entrypoints; no native thunk bytes are embedded in the IL-only image.
+
+This indirection leaves address materialization to the linker without rewriting
+input method bodies. A UCO-address MemberRef has a `__uco@`-prefixed metadata name
+and a `DecoratedName` attribute identifying its bare COFF symbol. Future
+import-library support could use this contract to initialize a slot with the
+actual native export address rather than a managed DllImport entrypoint or a
+wrapper address. That resolution is not implemented: unresolved UCO-address
+references still fail, and ordinary ADDR64 relocations to method bodies remain
+unsupported.
+
+UCO methods remain token-resolvable but are excluded from chilink's COFF-name
+index. `/entry:main` therefore selects the ordinary implementation, not its
+wrapper. `/include:main` can also select that implementation by metadata name;
+to retain the wrapper explicitly, use `/include:__uco@main`. Ordinary
+metadata-name lookup and entrypoint validation are unchanged.
+
+The mode encodes `_Bool` as `System.Byte` throughout metadata while preserving
+C normalization and one-byte storage. Its managed signatures containing `_Bool`
+are not compatible with MSVC or unassisted chibil's Boolean signatures.
+Matching signatures are required across input boundaries; adapters are not
+synthesized. UCO arguments and returns must be blittable and native ABI layouts
+must match. This does not add support for old retained NEP/UNEP dependencies,
+native code, P/Invoke, native exports, or library linking, and link.exe
+compatibility for assisted objects is not promised.
+
+```powershell
+dotnet run --project .\chibil\Chibil.csproj -- -fnetcore -fuco-entrypoints -ffixed-address-statics -fuse-ld=chilink program.c -o program.dll "-Wl,/entry:main"
+```
 
 As with link.exe, an unresolved managed extern can still be an error when the
 function referencing it would otherwise be discarded by `/opt:ref`. Metadata
@@ -182,8 +254,16 @@ binding and section retention are separate operations.
 Tests exercise behavior end to end. `CompilationBuilder.Link` uses the chilink
 driver. `MsvcLink` uses link.exe, including `mscoree.lib`, for excluded features.
 Tests using `Link` do not also run `MsvcLink`, and there is no automatic fallback.
+`LinkOnNetCoreOrMsvcLinkOnFramework` selects chilink for modern .NET and link.exe
+for Framework, without retrying a failed link. Native function-pointer tests
+use this helper when Framework still needs IJW; cases supported on both targets
+use `Link` directly. New coverage prefers compile/link/run behavior over
+generated IL or metadata assertions.
 The compilation helper enables `-ffixed-address-statics`; tests for unannotated
 inputs override it with `-fno-fixed-address-statics`.
+Modern-.NET test compilation also enables `-fuco-entrypoints` by default.
+Disabled-mode and genuinely legacy fixtures explicitly override it with
+`-fno-uco-entrypoints`.
 
 Run `tests\Chibil.Tests\Chibil.Tests.csproj` in a vcvarsall x64 environment,
 locating Visual Studio with vswhere. The existing default, field-backed
@@ -194,4 +274,7 @@ the retained MSVC cases:
 dotnet test tests\Chibil.Tests\Chibil.Tests.csproj
 dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:FieldBackedAggregateTests=true
 dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:OptimizedTests=true
+dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:NetCoreTests=true
+dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:NetCoreTests=true -p:FieldBackedAggregateTests=true
+dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:NetCoreTests=true -p:OptimizedTests=true
 ```

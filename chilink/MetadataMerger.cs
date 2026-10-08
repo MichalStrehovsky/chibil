@@ -380,6 +380,10 @@ internal sealed partial class MetadataMerger
         Reader(source).GetCustomAttributes(source.Handle).Any(h =>
             AttributeName(new(source.Input, h)) == "System.Runtime.CompilerServices.FixedAddressValueTypeAttribute"));
 
+    public bool HasUnmanagedCallersOnly(SourceToken method) => _sources[Resolve(method)].Any(source =>
+        Reader(source).GetCustomAttributes(source.Handle).Any(h =>
+            AttributeName(new(source.Input, h)) == "System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute"));
+
     private bool UnmanagedType(SourceToken token)
     {
         foreach (var handle in Reader(token).GetCustomAttributes(token.Handle))

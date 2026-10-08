@@ -386,7 +386,7 @@ public sealed class ChilinkTests : ChibiTestBase
         var builder = Compile("""
             int target(int value) { return value + 1; }
             int main(void) { int (*function)(int) = target; return function(41); }
-            """, ["-O0"]);
+            """, ["-O0", "-fno-uco-entrypoints"]);
         var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
         Assert.IsType<Chilink.LinkException>(error.InnerException);
     }
@@ -438,7 +438,7 @@ public sealed class ChilinkTests : ChibiTestBase
         string source = Path.Combine(workspace._tempDir, "source with spaces.c");
         string output = Path.Combine(workspace._tempDir,
             (explicitOutput ? "program with spaces" : "a") + Path.GetExtension(CompilationBuilder.ExecutableName));
-        File.WriteAllText(source, "int value = 42; int main(void) { return value; }");
+        File.WriteAllText(source, "int value = 42; int main(void) { int *pointer = &value; return *pointer; }");
         var start = new ProcessStartInfo(compiler)
         {
             WorkingDirectory = workspace._tempDir,
@@ -459,7 +459,10 @@ public sealed class ChilinkTests : ChibiTestBase
         if (fixedAddresses)
             start.ArgumentList.Add("-ffixed-address-statics");
         if (CompilationBuilder.DefaultNetCore)
+        {
             start.ArgumentList.Add("-fnetcore");
+            start.ArgumentList.Add("-fuco-entrypoints");
+        }
 
         using var process = Process.Start(start);
         var stdout = process.StandardOutput.ReadToEndAsync();
