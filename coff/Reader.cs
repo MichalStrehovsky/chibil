@@ -30,6 +30,11 @@ namespace Coff
         private AbstractMemoryBlock[] _lazySectionRelocationBlocks;
 
         public unsafe CoffReader(byte* coffObject, int size)
+            : this(coffObject, size, memoryOwner: null)
+        {
+        }
+
+        internal unsafe CoffReader(byte* coffObject, int size, object memoryOwner)
         {
             ArgumentNullException.ThrowIfNull(coffObject, nameof(coffObject));
 
@@ -38,7 +43,7 @@ namespace Coff
                 throw new ArgumentOutOfRangeException(nameof(size));
             }
 
-            _coffObject = new ExternalMemoryBlockProvider(coffObject, size);
+            _coffObject = new ExternalMemoryBlockProvider(coffObject, size, memoryOwner);
         }
 
         /// <summary>
