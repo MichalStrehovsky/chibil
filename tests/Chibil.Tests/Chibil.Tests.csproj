@@ -45,15 +45,23 @@
     <ProjectReference Include="..\..\tools\asm2obj\Asm2Obj.csproj" />
     <!--
       The CRT shim assembly is built as a side artifact and embedded into
-      the test assembly as a managed resource named "crt.dll".
+      the test assembly for both targets. AddCrt selects the resource
+      matching the compilation target.
       CompilationBuilder.AddCrt() extracts it at test time, runs asm2obj
       on it, and adds the resulting .obj to the link.
     -->
     <ProjectReference Include="..\..\crt\crt.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <OutputItemType>EmbeddedResource</OutputItemType>
-      <LogicalName>crt.dll</LogicalName>
-      <SetTargetFramework>TargetFramework=$(FixtureTargetFramework)</SetTargetFramework>
+      <LogicalName>crt.net481.dll</LogicalName>
+      <SetTargetFramework>TargetFramework=net481</SetTargetFramework>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
+    <ProjectReference Include="..\..\crt\crt.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <OutputItemType>EmbeddedResource</OutputItemType>
+      <LogicalName>crt.net10.dll</LogicalName>
+      <SetTargetFramework>TargetFramework=net10.0</SetTargetFramework>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
     <!--
