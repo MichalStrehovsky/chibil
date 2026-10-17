@@ -1,4 +1,4 @@
-// Source-time markers consumed by asm2obj. These attributes do NOT
+// Source-time signature-modifier markers consumed by asm2obj. These attributes do NOT
 // appear in the output COFF object's metadata — asm2obj recognises them
 // by namespace+name and translates each into a real modopt/modreq byte
 // in the rewritten ECMA signature, targeting the corresponding
@@ -76,4 +76,15 @@ namespace Asm2Obj
     [AttributeUsage(AttributeTargets.ReturnValue,
                     AllowMultiple = false, Inherited = false)]
     public sealed class CallConvStdcallAttribute : Attribute { }
+}
+
+namespace System.Runtime.CompilerServices
+{
+    /// <summary>Supplies an exact COFF symbol name using asm2obj's existing runtime marker contract.</summary>
+    [AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = false)]
+    public sealed class DecoratedNameAttribute : Attribute
+    {
+        public DecoratedNameAttribute(string name) { Name = name; }
+        public string Name { get; }
+    }
 }

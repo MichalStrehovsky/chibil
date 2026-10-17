@@ -199,9 +199,12 @@ public sealed partial class MetadataCopier
             return ApplyX86UnderscoreRule(explicitName);
 
         var mh = MetadataTokens.MethodDefinitionHandle(inputMethodRow);
+        var method = _reader.GetMethodDefinition(mh);
+        var owner = method.GetDeclaringType();
         try
         {
-            return _mangler.MangleMethod(mh, _methodInjections[inputMethodRow]);
+            return _mangler.MangleMethod(mh, _methodInjections[inputMethodRow],
+                globalScope: _typeInfo[MetadataTokens.GetRowNumber(owner)].Disposition == TypeDisposition.Flatten);
         }
         catch (NotSupportedException)
         {
@@ -209,8 +212,7 @@ public sealed partial class MetadataCopier
             // reference types). Synthesize a unique name. Such methods are
             // not externally linker-callable, but the COFF symbol still
             // needs *some* unique name to anchor the body.
-            var md = _reader.GetMethodDefinition(mh);
-            string name = _reader.GetString(md.Name);
+            string name = _reader.GetString(method.Name);
             return $"$asm2obj.{name}.{inputMethodRow}";
         }
     }

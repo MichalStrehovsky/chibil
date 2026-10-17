@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
@@ -13,7 +14,8 @@ namespace Asm2Obj;
 /// symbols emitted by asm2obj and chibil for matching C-style signatures agree
 /// at link time.
 ///
-/// Format: <c>?name@@$$J0Y[A|G|M]&lt;ret&gt;&lt;params&gt;@Z</c>.
+/// Global format: <c>?name@@$$J0Y[A|G|M]&lt;ret&gt;&lt;params&gt;@Z</c>.
+/// Named-type members use qualified C++/CLI names with <c>$$F</c> linkage.
 /// Calling-convention letter:
 ///   A — cdecl  (return type carries modopt(CallConvCdecl))
 ///   G — stdcall(return type carries modopt(CallConvStdcall))
@@ -61,12 +63,14 @@ public sealed class MsvcNameMangler
     /// modifiers at each (param, slot) so the produced name matches the
     /// post-rewrite output signature.
     /// </summary>
-    internal string MangleMethod(MethodDefinitionHandle handle, MethodSignatureInjections injections)
+    internal string MangleMethod(MethodDefinitionHandle handle, MethodSignatureInjections injections, bool globalScope = false)
     {
         var def = _reader.GetMethodDefinition(handle);
         string name = _reader.GetString(def.Name);
         var sigReader = _reader.GetBlobReader(def.Signature);
-        return MangleMethodCore(name, sigReader, injections);
+        var owner = def.GetDeclaringType();
+        return MangleMethodCore(name, sigReader, injections,
+            globalScope || MetadataTokens.GetRowNumber(owner) == 1 ? default : owner, def.Attributes);
     }
 
     /// <summary>
@@ -85,9 +89,11 @@ public sealed class MsvcNameMangler
         return MangleMethodCore(name, sigReader, injections);
     }
 
-    private string MangleMethodCore(string methodName, BlobReader sigReader, MethodSignatureInjections injections = null)
+    private string MangleMethodCore(string methodName, BlobReader sigReader, MethodSignatureInjections injections = null,
+        TypeDefinitionHandle owner = default, MethodAttributes attributes = 0)
     {
-        _nameBackRefs = new List<string> { methodName };
+        bool constructor = !owner.IsNil && methodName == ".ctor";
+        _nameBackRefs = constructor ? new List<string>() : new List<string> { methodName };
         _argBackRefs = new Dictionary<string, int>();
         _injections = injections;
 
@@ -95,6 +101,8 @@ public sealed class MsvcNameMangler
         // managed methods always have Default (0x00) and the real callconv is
         // expressed via modopts on the return type.
         SignatureHeader header = sigReader.ReadSignatureHeader();
+        if (!owner.IsNil && header.IsGeneric)
+            throw new NotSupportedException("Auto-mangling generic member methods is not supported.");
         if (header.IsGeneric)
             sigReader.ReadCompressedInteger(); // discard generic arity
         int paramCount = sigReader.ReadCompressedInteger();
@@ -113,12 +121,38 @@ public sealed class MsvcNameMangler
         };
 
         var sb = new StringBuilder();
-        sb.Append('?').Append(methodName).Append("@@$$J0Y").Append(ccLetter);
+        if (owner.IsNil)
+            sb.Append('?').Append(methodName).Append("@@$$J0Y");
+        else
+        {
+            sb.Append(constructor ? "??0" : "?" + methodName + "@");
+            MangleScope(sb, owner);
+            int access = (attributes & MethodAttributes.MemberAccessMask) switch
+            {
+                MethodAttributes.Private or MethodAttributes.PrivateScope => 0,
+                MethodAttributes.Family or MethodAttributes.FamANDAssem or MethodAttributes.FamORAssem => 1,
+                _ => 2,
+            };
+            bool isStatic = (attributes & MethodAttributes.Static) != 0;
+            string functionKinds = isStatic ? "CKS" : (attributes & MethodAttributes.Virtual) != 0 ? "EMU" : "AIQ";
+            sb.Append("$$F").Append(functionKinds[access]);
+            // Managed instance members encode the managed this-pointer qualifier.
+            if (!isStatic)
+                sb.Append(_e).Append("$AA");
+        }
+        sb.Append(ccLetter);
 
         // Now mangle the return type (which has its modopts already consumed).
         // The sigReader is positioned at the return-type's type code, but we
         // haven't read it yet (ReadModOptChain stops at the first non-modopt code).
-        MangleTypeFromBlob(sb, ref sigReader, retMods, isReturn: true);
+        if (constructor)
+        {
+            if (sigReader.ReadSignatureTypeCode() != SignatureTypeCode.Void)
+                throw new BadImageFormatException("A constructor must return void.");
+            sb.Append('@');
+        }
+        else
+            MangleTypeFromBlob(sb, ref sigReader, retMods, isReturn: true);
 
         if (paramCount == 0)
         {
@@ -371,7 +405,36 @@ public sealed class MsvcNameMangler
         }
     }
 
+    private void MangleScope(StringBuilder sb, TypeDefinitionHandle owner)
+    {
+        var visited = new HashSet<TypeDefinitionHandle>();
+        while (!owner.IsNil)
+        {
+            if (!visited.Add(owner))
+                throw new BadImageFormatException("Cyclic nested type ownership.");
+            var type = _reader.GetTypeDefinition(owner);
+            if (type.GetGenericParameters().Count != 0)
+                throw new NotSupportedException("Auto-mangling generic declaring types is not supported.");
+            MangleName(sb, _reader.GetString(type.Name));
+            owner = type.GetDeclaringType();
+            if (owner.IsNil)
+            {
+                string ns = _reader.GetString(type.Namespace);
+                if (ns.Length != 0)
+                    foreach (string part in ns.Split('.').Reverse())
+                        MangleName(sb, part);
+            }
+        }
+        sb.Append('@');
+    }
+
     private void MangleTagName(StringBuilder sb, string name)
+    {
+        MangleName(sb, name);
+        sb.Append('@');
+    }
+
+    private void MangleName(StringBuilder sb, string name)
     {
         if (_nameBackRefs != null)
         {
@@ -379,13 +442,12 @@ public sealed class MsvcNameMangler
             if (idx >= 0)
             {
                 sb.Append((char)('0' + idx));
-                sb.Append('@');
                 return;
             }
             if (_nameBackRefs.Count < 10)
                 _nameBackRefs.Add(name);
         }
-        sb.Append(name).Append("@@");
+        sb.Append(name).Append('@');
     }
 
     private string GetTypeName(EntityHandle typeHandle)

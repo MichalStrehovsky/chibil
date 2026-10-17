@@ -275,12 +275,13 @@ public sealed partial class MetadataCopier
             }
             else
             {
+                var method = MetadataTokens.MethodDefinitionHandle(inputRow);
+                var owner = _reader.GetMethodDefinition(method).GetDeclaringType();
                 string explicitName = _methodInfo[inputRow].DecoratedName;
                 decoratedName = explicitName != null
                     ? ApplyX86UnderscoreRule(explicitName)
-                    : _mangler.MangleMethod(
-                        MetadataTokens.MethodDefinitionHandle(inputRow),
-                        _methodInjections[inputRow]);
+                    : _mangler.MangleMethod(method, _methodInjections[inputRow],
+                        globalScope: _typeInfo[MetadataTokens.GetRowNumber(owner)].Disposition == TypeDisposition.Flatten);
             }
 
             _methodReferenceDecoratedNames[inputRow] = decoratedName;

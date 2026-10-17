@@ -70,7 +70,8 @@ Each surviving function gets a COFF symbol name:
    exact COFF symbol name. On `x86` an extra leading `_` is prepended when
    the supplied string does not already start with `?` or `_` — matches
    MSVC's cdecl convention.
-2. **Auto-mangling** otherwise: `MsvcNameMangler` produces
+2. **Auto-mangling** otherwise: global and flattened `CompilerGlobalScope`
+   methods use
    `?name@@$$J0Y<cc><ret><params>@Z` from the ECMA method signature.
    Calling-convention letter is derived from any modopt on the return type:
    - `modopt(CallConvCdecl)` → `A` (cdecl)
@@ -78,13 +79,22 @@ Each surviving function gets a COFF symbol name:
    - default (no callconv modopt) → `M` (clrcall) — this is the natural
      calling convention for managed-to-managed code written in C#.
 
+   Members of copied named types use MSVC C++/CLI member mangling instead:
+   declaring/enclosing types and namespaces appear in reverse scope order,
+   followed by `$$F`, access/static/virtual qualifiers, and the signature.
+   Constructors use `??0`; private static constructors use, for example,
+   `?.cctor@Cache@Inner@Samples@@$$FCMXXZ`. Scope components participate in
+   MSVC name backreferences, including repeated type/namespace names.
+   Generic declaring types and generic member methods retain the existing
+   synthetic-symbol fallback when auto-mangling is not supported.
+
    Authors of C-shaped CRT code in C# can attach the same modopts that
    chibil emits when they need exact matches: `IsSignUnspecifiedByte` for
    plain `char`, `IsLong` for `long`, `IsConst`/`IsVolatile` for pointer
    qualifiers. These usually require IL rewriting since C# does not
    produce them from source.
 
-The mangler is intentionally byte-compatible with
+Global-function mangling remains byte-compatible with
 `chibil/CodeGen.cs::MangleFunctionName` so that asm2obj-emitted and
 chibil-emitted symbols agree at link time, including:
 
@@ -101,6 +111,12 @@ chibil-emitted symbols agree at link time, including:
 | `System.Runtime.CompilerServices.CompilerGlobalScopeAttribute` on a type | Type is *flattened*: its members become members of the output `<Module>` TypeDef. The type itself is dropped. |
 | `System.Runtime.CompilerServices.DecoratedNameAttribute` on a method | Overrides auto-mangling. The string is the literal COFF symbol name. The synthesized method MemberRef receives a matching attribute; regular methods use the same value for their body symbol. |
 | `MethodImplOptions.ForwardRef` (set via `[MethodImpl]`) | A method with no body and the ForwardRef flag is converted to an *unresolved MemberRef* parented on the `<Module>` TypeDef (matching the pattern MSVC emits for extern C functions under `/clr`). `link.exe` resolves the CLR token to the matching MethodDef in another object. |
+
+The annotations project exposes a public source-time declaration of
+`System.Runtime.CompilerServices.DecoratedNameAttribute`, since the runtime's
+declaration is internal. This uses the existing converter contract, not a
+separate Asm2Obj-specific attribute. It can give string-signature CRT helpers
+a stable COFF symbol when auto-mangling cannot represent their signature.
 
 ## v1 limitations (rejected loudly)
 
