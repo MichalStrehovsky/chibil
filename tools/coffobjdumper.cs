@@ -14,6 +14,7 @@
 
 #:property Nullable=disable
 #:property AllowUnsafeBlocks=true
+#:project ..\coff\Coff.csproj
 
 using System;
 using System.Buffers.Binary;
@@ -23,6 +24,7 @@ using System.IO;
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
+using System.Reflection.PortableExecutable;
 using System.Text;
 
 // ─── COFF structures ──────────────────────────────────────────────────────────
@@ -618,7 +620,7 @@ class Program
         DumpIlFixups(coff);
 
         // ─── Debug Information ────────────────────────────────────────────────
-        DumpDebugInfo(coff, reader);
+        DumpDebugInfo(coff);
 
         return 0;
     }
@@ -1368,24 +1370,47 @@ class Program
 
     // ─── Debug Information Dumper ──────────────────────────────────────────────
 
-    static void DumpDebugInfo(CoffFile coff, MetadataReader mdReader)
+    static void DumpDebugInfo(CoffFile coff)
     {
-        // .debug$S — symbols, lines, string table, file checksums
-        for (int si = 0; si < coff.Sections.Length; si++)
+        using var owner = new global::Coff.CoffReader(new MemoryStream(coff.FileData), PEStreamOptions.PrefetchEntireImage);
+        var sections = owner.GetSectionTableReader();
+        var names = owner.GetStringTableReader();
+        var readers = new List<(int Section, global::Coff.CodeViewReader Reader)>();
+        var strings = new List<(int Section, global::Coff.CodeViewStringTable Table)>();
+        var checksums = new List<(int Section, global::Coff.CodeViewFileChecksumTable Table)>();
+        int si = 0;
+        foreach (var handle in sections.Sections)
         {
-            var section = coff.Sections[si];
-            if (section.Name == ".debug$S" && section.SizeOfRawData > 4)
+            var section = sections.GetCoffSection(handle);
+            if (names.GetString(section.Name) == ".debug$S")
             {
-                Console.WriteLine("========================================");
-                Console.WriteLine($"=== Debug Symbols (.debug$S, section {si}) ===");
-                Console.WriteLine("========================================");
-                Console.WriteLine();
-                DumpDebugS(coff, section, mdReader);
+                var reader = owner.GetCodeViewReader(section);
+                readers.Add((si, reader));
+                foreach (var subsectionHandle in reader.Subsections)
+                {
+                    var subsection = reader.GetSubsection(subsectionHandle);
+                    if (subsection.IsIgnored)
+                        continue;
+                    if (subsection.Kind == global::Coff.CodeViewSubsectionKind.StringTable)
+                        strings.Add((si, subsection.GetStringTable()));
+                    else if (subsection.Kind == global::Coff.CodeViewSubsectionKind.FileChecksums)
+                        checksums.Add((si, subsection.GetFileChecksums()));
+                }
             }
+            si++;
+        }
+        foreach (var (index, reader) in readers)
+        {
+            Console.WriteLine("========================================");
+            Console.WriteLine($"=== Debug Symbols (.debug$S, section {index}) ===");
+            Console.WriteLine("========================================");
+            Console.WriteLine();
+            DumpDebugS(coff, coff.Sections[index], reader,
+                SelectDebugTable(strings, index), SelectDebugTable(checksums, index));
         }
 
         // .debug$T — type records
-        for (int si = 0; si < coff.Sections.Length; si++)
+        for (si = 0; si < coff.Sections.Length; si++)
         {
             var section = coff.Sections[si];
             if (section.Name == ".debug$T" && section.SizeOfRawData > 4)
@@ -1401,260 +1426,200 @@ class Program
 
     // ─── .debug$S parsing ─────────────────────────────────────────────────────
 
-    static void DumpDebugS(CoffFile coff, CoffSectionHeader section, MetadataReader mdReader)
+    static T? SelectDebugTable<T>(List<(int Section, T Table)> tables, int section) where T : struct
     {
-        byte[] data = coff.GetSectionData(section).ToArray();
-
-        // Apply token relocations to the debug data
-        var tokenMap = coff.BuildTokenRelocationMap(section);
-        foreach (var (offset, token) in tokenMap)
+        T? result = null;
+        int count = 0;
+        foreach (var item in tables)
         {
-            if (offset + 4 <= data.Length)
-                BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(offset), token);
+            if (item.Section != section)
+                continue;
+            result = item.Table;
+            count++;
         }
+        if (count != 0)
+            return count == 1 ? result : null;
+        return tables.Count == 1 ? tables[0].Table : null;
+    }
 
-        // Build symbol relocation map for section/secrel fixups
-        var symRelocMap = coff.BuildSymbolRelocationMap(section);
-
-        uint version = BinaryPrimitives.ReadUInt32LittleEndian(data);
-        if (version != 4)
+    static void DumpDebugS(CoffFile coff, CoffSectionHeader section, global::Coff.CodeViewReader reader,
+        global::Coff.CodeViewStringTable? strings, global::Coff.CodeViewFileChecksumTable? checksums)
+    {
+        var relocations = new Dictionary<int, CoffRelocation>();
+        foreach (var relocation in coff.GetRelocations(section))
         {
-            Console.WriteLine($"  Unknown .debug$S version: {version}");
-            return;
+            if (relocation.SymbolTableIndex >= coff.Symbols.Length)
+                throw new BadImageFormatException("Invalid CodeView relocation symbol.");
+            relocations.Add(checked((int)relocation.VirtualAddress), relocation);
         }
-
-        // First pass: parse string table and file checksums (needed by line numbers)
-        var stringTable = new Dictionary<int, string>();
-        var fileChecksums = new List<(int FileId, int StringOffset, byte ChecksumType, byte[] Checksum)>();
-
-        int pos = 4;
-        while (pos + 8 <= data.Length)
+        var tokens = coff.BuildTokenRelocationMap(section);
+        foreach (var handle in reader.Subsections)
         {
-            uint subType = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(pos));
-            int subSize = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(pos + 4));
-            if (subSize < 0 || pos + 8 + subSize > data.Length) break;
-
-            var subData = data.AsSpan(pos + 8, subSize);
-
-            if (subType == 0xF3) // STRING TABLE
-                ParseStringTable(subData, stringTable);
-            else if (subType == 0xF4) // FILE CHECKSUMS
-                ParseFileChecksums(subData, fileChecksums);
-
-            pos += 8 + subSize;
-            pos = (pos + 3) & ~3; // align to 4
-        }
-
-        // Second pass: dump everything
-        pos = 4;
-        while (pos + 8 <= data.Length)
-        {
-            uint subType = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(pos));
-            int subSize = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(pos + 4));
-            if (subSize < 0 || pos + 8 + subSize > data.Length) break;
-
-            int subStart = pos + 8; // absolute offset within section data
-            var subData = data.AsSpan(subStart, subSize);
-
-            switch (subType)
+            var subsection = reader.GetSubsection(handle);
+            Console.WriteLine($"  Subsection +0x{subsection.Offset:X4}, payload={subsection.PayloadLength}");
+            if (subsection.IsIgnored)
             {
-                case 0xF1:
+                Console.WriteLine($"*** IGNORED SUBSECTION type=0x{subsection.RawKind:X8}");
+                DumpDebugPayload(subsection.GetPayloadReader());
+                continue;
+            }
+            switch (subsection.Kind)
+            {
+                case global::Coff.CodeViewSubsectionKind.Symbols:
                     Console.WriteLine("*** SYMBOLS");
-                    DumpSymbolRecords(subData, subStart, symRelocMap, mdReader);
-                    Console.WriteLine();
+                    DumpSymbolRecords(coff, section, reader, subsection, relocations, tokens);
                     break;
-                case 0xF2:
-                    DumpLineNumbers(subData, subStart, symRelocMap, stringTable, fileChecksums);
-                    Console.WriteLine();
+                case global::Coff.CodeViewSubsectionKind.Lines:
+                    DumpLineNumbers(coff, subsection.GetLines(), relocations, strings, checksums);
                     break;
-                case 0xF3:
+                case global::Coff.CodeViewSubsectionKind.StringTable:
                     Console.WriteLine("*** STRINGTABLE");
-                    foreach (var (off, s) in stringTable)
-                        Console.WriteLine($"  [{off:X4}] {s}");
-                    Console.WriteLine();
+                    var stringTable = subsection.GetStringTable();
+                    foreach (var text in stringTable.Strings)
+                        Console.WriteLine($"  [{text.Offset:X4}] {stringTable.GetString(text)}");
                     break;
-                case 0xF4:
+                case global::Coff.CodeViewSubsectionKind.FileChecksums:
                     Console.WriteLine("*** FILECHKSUMS");
                     Console.WriteLine($"  {"FileId",-8} {"StrOff",-8} {"Type",-10} Checksum");
-                    foreach (var (fileId, strOff, chkType, chkData) in fileChecksums)
+                    var checksumTable = subsection.GetFileChecksums();
+                    foreach (var fileHandle in checksumTable.Files)
                     {
-                        string typeName = chkType switch { 0 => "None", 1 => "MD5", 2 => "SHA1", 3 => "SHA_256", _ => $"0x{chkType:X2}" };
-                        string fileName = stringTable.TryGetValue(strOff, out var fn) ? fn : $"strOff={strOff}";
-                        Console.WriteLine($"  {fileId,-8:X4} {strOff,-8} {typeName,-10} {Convert.ToHexString(chkData)}  ({fileName})");
+                        var file = checksumTable.GetFileChecksum(fileHandle);
+                        var bytes = file.GetChecksumReader();
+                        string typeName = (byte)file.ChecksumType switch { 0 => "None", 1 => "MD5", 2 => "SHA1", 3 => "SHA_256", var kind => $"0x{kind:X2}" };
+                        string name = strings.HasValue ? strings.Value.GetString(file.Name) : "<unresolved: missing or ambiguous string table>";
+                        Console.WriteLine($"  {file.Handle.Offset,-8:X4} {file.Name.Offset,-8} {typeName,-10} {Convert.ToHexString(bytes.ReadBytes(bytes.RemainingBytes))}  ({name})");
                     }
-                    Console.WriteLine();
                     break;
                 default:
-                    Console.WriteLine($"*** SUBSECTION type=0x{subType:X} size={subSize}");
-                    Console.WriteLine();
+                    Console.WriteLine($"*** SUBSECTION type=0x{subsection.RawKind:X} size={subsection.PayloadLength}");
+                    DumpDebugPayload(subsection.GetPayloadReader());
                     break;
             }
-
-            pos += 8 + subSize;
-            pos = (pos + 3) & ~3;
+            Console.WriteLine();
         }
     }
 
-    static void ParseStringTable(ReadOnlySpan<byte> data, Dictionary<int, string> table)
+    static void DumpDebugPayload(BlobReader payload)
     {
-        int spos = 0;
-        while (spos < data.Length)
-        {
-            int end = data[spos..].IndexOf((byte)0);
-            if (end < 0) break;
-            string s = Encoding.UTF8.GetString(data.Slice(spos, end));
-            table[spos] = s;
-            spos += end + 1;
-        }
+        Console.WriteLine($"    Payload: {Convert.ToHexString(payload.ReadBytes(Math.Min(32, payload.RemainingBytes)))}{(payload.RemainingBytes == 0 ? "" : "...")}");
     }
 
-    static void ParseFileChecksums(ReadOnlySpan<byte> data, List<(int, int, byte, byte[])> checksums)
+    static uint ResolveDebugOffset(CoffFile coff, Dictionary<int, CoffRelocation> relocations, int fieldOffset, uint raw)
     {
-        int fpos = 0;
-        int fileId = 0;
-        while (fpos + 6 <= data.Length)
+        ushort type = coff.Header.Machine == 0xAA64 ? (ushort)0x0008 : (ushort)0x000B;
+        return relocations.TryGetValue(fieldOffset, out var relocation) && relocation.Type == type
+            ? unchecked(raw + coff.Symbols[relocation.SymbolTableIndex].Value) : raw;
+    }
+
+    static ushort ResolveDebugSegment(CoffFile coff, Dictionary<int, CoffRelocation> relocations, int fieldOffset, ushort raw)
+    {
+        ushort type = coff.Header.Machine == 0xAA64 ? (ushort)0x000D : (ushort)0x000A;
+        return relocations.TryGetValue(fieldOffset, out var relocation) && relocation.Type == type
+            ? checked((ushort)(raw + coff.Symbols[relocation.SymbolTableIndex].SectionNumber)) : raw;
+    }
+
+    static void DumpDebugRelocation(CoffFile coff, Dictionary<int, CoffRelocation> relocations, int fieldOffset, uint raw)
+    {
+        if (relocations.TryGetValue(fieldOffset, out var relocation))
         {
-            int strOff = BinaryPrimitives.ReadInt32LittleEndian(data[fpos..]);
-            byte cbChk = data[fpos + 4];
-            byte chkType = data[fpos + 5];
-            byte[] chkData = (fpos + 6 + cbChk <= data.Length)
-                ? data.Slice(fpos + 6, cbChk).ToArray()
-                : Array.Empty<byte>();
-            checksums.Add((fileId, strOff, chkType, chkData));
-            fileId = fpos; // file ID is the byte offset of this entry within the checksum table
-            fpos += 6 + cbChk;
-            fpos = (fpos + 3) & ~3;
-            // the NEXT entry's fileId is fpos
-            // Actually: fileId in line records is the byte offset of the file entry in the checksum table
-        }
-        // Fix: re-parse to set fileId correctly (it's the offset of each entry)
-        checksums.Clear();
-        fpos = 0;
-        while (fpos + 6 <= data.Length)
-        {
-            int strOff = BinaryPrimitives.ReadInt32LittleEndian(data[fpos..]);
-            byte cbChk = data[fpos + 4];
-            byte chkType = data[fpos + 5];
-            byte[] chkData = (fpos + 6 + cbChk <= data.Length)
-                ? data.Slice(fpos + 6, cbChk).ToArray()
-                : Array.Empty<byte>();
-            checksums.Add((fpos, strOff, chkType, chkData));
-            fpos += 6 + cbChk;
-            fpos = (fpos + 3) & ~3;
+            var symbol = coff.Symbols[relocation.SymbolTableIndex];
+            Console.WriteLine($"    Field +0x{fieldOffset:X4}: raw=0x{raw:X8}, reloc=0x{relocation.Type:X4} -> {symbol.Name} [section {symbol.SectionNumber} +0x{symbol.Value:X}]");
         }
     }
 
     // ─── Symbol record dumping ────────────────────────────────────────────────
 
-    static void DumpSymbolRecords(ReadOnlySpan<byte> data, int baseOffset,
-        Dictionary<int, (string Name, short Section)> symRelocMap, MetadataReader mdReader)
+    static void DumpSymbolRecords(CoffFile coff, CoffSectionHeader section, global::Coff.CodeViewReader reader,
+        global::Coff.CodeViewSubsection subsection, Dictionary<int, CoffRelocation> relocations, Dictionary<int, int> tokens)
     {
-        int spos = 0;
-        while (spos + 4 <= data.Length)
+        foreach (var handle in subsection.GetSymbols())
         {
-            ushort recLen = BinaryPrimitives.ReadUInt16LittleEndian(data[spos..]);
-            if (recLen < 2 || spos + 2 + recLen > data.Length) break;
-
-            ushort recType = BinaryPrimitives.ReadUInt16LittleEndian(data[(spos + 2)..]);
-            var payload = data.Slice(spos + 4, recLen - 2); // after reclen(2) + rectyp(2)
-
-            switch (recType)
+            var symbol = reader.GetSymbol(handle);
+            Console.WriteLine($"  Record +0x{symbol.Offset:X4}, size={symbol.Size}");
+            switch (symbol.Kind)
             {
-                case 0x1101: // S_OBJNAME
-                    DumpObjName(payload);
+                case global::Coff.CodeViewSymbolKind.ObjName:
+                    var obj = symbol.GetObjectName();
+                    Console.WriteLine($"  S_OBJNAME: Signature: {obj.Signature:X8}, {obj.Name}");
                     break;
-                case 0x113C: // S_COMPILE3
-                    DumpCompile3(payload);
+                case global::Coff.CodeViewSymbolKind.Compile3:
+                    var compile = symbol.GetCompile3();
+                    Console.WriteLine($"  S_COMPILE3: Language={compile.Language}, Machine={compile.Machine}, Managed={(compile.Flags & global::Coff.CodeViewCompileFlags.ManagedPresent) != 0}, Flags=0x{compile.RawFlags:X8}");
+                    Console.WriteLine($"    Frontend: {compile.FrontendMajorVersion}.{compile.FrontendMinorVersion}.{compile.FrontendBuildVersion}.{compile.FrontendQfeVersion}, Backend: {compile.BackendMajorVersion}.{compile.BackendMinorVersion}.{compile.BackendBuildVersion}.{compile.BackendQfeVersion}");
+                    Console.WriteLine($"    {compile.CompilerVersion}");
                     break;
-                case 0x112A: // S_GMANPROC
-                case 0x112B: // S_LMANPROC
-                    DumpManProc(recType, payload, spos, baseOffset, symRelocMap);
+                case global::Coff.CodeViewSymbolKind.GManProc:
+                    var proc = symbol.GetManagedProcedure();
+                    uint token = tokens.TryGetValue(proc.TokenFieldOffset, out int resolvedToken) ? (uint)resolvedToken : proc.Token;
+                    uint codeOffset = ResolveDebugOffset(coff, relocations, proc.CodeOffsetFieldOffset, proc.CodeOffset);
+                    ushort segment = ResolveDebugSegment(coff, relocations, proc.SegmentFieldOffset, proc.Segment);
+                    Console.WriteLine($"  S_GMANPROC: [{segment:X4}:{codeOffset:X8}], Cb: {proc.CodeSize:X8}, Token: {token:X8}, {proc.Name}");
+                    Console.WriteLine($"    Parent: {proc.ParentSymbolOffset:X8}, End: {proc.EndSymbolOffset:X8}, Next: {proc.NextSymbolOffset:X8}");
+                    Console.WriteLine($"    Debug start: {proc.DebugStart:X8}, Debug end: {proc.DebugEnd:X8}");
+                    Console.WriteLine($"    Flags: 0x{proc.Flags:X2}, Return Reg: {proc.ReturnRegister}");
+                    DumpDebugRelocation(coff, relocations, proc.TokenFieldOffset, proc.Token);
+                    DumpDebugRelocation(coff, relocations, proc.CodeOffsetFieldOffset, proc.CodeOffset);
+                    DumpDebugRelocation(coff, relocations, proc.SegmentFieldOffset, proc.Segment);
                     break;
-                case 0x1012: // S_FRAMEPROC
-                    DumpFrameProc(payload);
+                case global::Coff.CodeViewSymbolKind.FrameProc:
+                    var frame = symbol.GetFrameProcedure();
+                    Console.WriteLine($"  S_FRAMEPROC: frame={frame.FrameSize}, pad={frame.PaddingSize}, saveRegs={frame.SavedRegistersSize}, flags=0x{(uint)frame.Flags:X8}");
+                    Console.WriteLine($"    Padding offset: 0x{frame.PaddingOffset:X8}, Exception handler: [{frame.ExceptionHandlerSegment:X4}:{frame.ExceptionHandlerOffset:X8}]");
+                    DumpDebugRelocation(coff, relocations, frame.ExceptionHandlerOffsetFieldOffset, frame.ExceptionHandlerOffset);
+                    DumpDebugRelocation(coff, relocations, frame.ExceptionHandlerSegmentFieldOffset, frame.ExceptionHandlerSegment);
                     break;
-                case 0x1120: // S_MANSLOT
-                    DumpManSlot(payload, mdReader);
+                case global::Coff.CodeViewSymbolKind.ManSlot:
+                    var slot = symbol.GetManagedSlot();
+                    uint typeIndex = tokens.TryGetValue(slot.TypeIndexFieldOffset, out int resolvedType) ? (uint)resolvedType : slot.TypeIndex;
+                    Console.WriteLine($"  S_MANSLOT: slot={slot.SlotIndex}, typind=0x{typeIndex:X8}, name={slot.Name}");
+                    Console.WriteLine($"    Attributes: [{slot.Segment:X4}:{slot.CodeOffset:X8}], Flags=0x{slot.Flags:X4}");
+                    DumpDebugRelocation(coff, relocations, slot.TypeIndexFieldOffset, slot.TypeIndex);
+                    DumpDebugRelocation(coff, relocations, slot.CodeOffsetFieldOffset, slot.CodeOffset);
+                    DumpDebugRelocation(coff, relocations, slot.SegmentFieldOffset, slot.Segment);
                     break;
-                case 0x111C: // S_LMANDATA
-                case 0x111D: // S_GMANDATA
-                    DumpManData(recType, payload);
+                case global::Coff.CodeViewSymbolKind.Block32:
+                    var block = symbol.GetBlock();
+                    Console.WriteLine($"  S_BLOCK32: [{ResolveDebugSegment(coff, relocations, block.SegmentFieldOffset, block.Segment):X4}:{ResolveDebugOffset(coff, relocations, block.CodeOffsetFieldOffset, block.CodeOffset):X8}], Cb: {block.CodeSize:X8}, {block.Name}");
+                    Console.WriteLine($"    Parent: {block.ParentSymbolOffset:X8}, End: {block.EndSymbolOffset:X8}");
+                    DumpDebugRelocation(coff, relocations, block.CodeOffsetFieldOffset, block.CodeOffset);
+                    DumpDebugRelocation(coff, relocations, block.SegmentFieldOffset, block.Segment);
                     break;
-                case 0x112D: // S_MANCONSTANT
-                    DumpManConstant(payload);
+                case global::Coff.CodeViewSymbolKind.End:
+                    Console.WriteLine("  S_END");
                     break;
-                case 0x114F: // S_PROC_ID_END
-                case 0x0006: // S_END
-                    Console.WriteLine($"  S_PROC_ID_END");
-                    break;
-                case 0x114C: // S_BUILDINFO
-                    if (payload.Length >= 4)
-                    {
-                        uint typeIdx = BinaryPrimitives.ReadUInt32LittleEndian(payload);
-                        Console.WriteLine($"  S_BUILDINFO: TypeIndex=0x{typeIdx:X4}");
-                    }
+                case global::Coff.CodeViewSymbolKind.ProcIdEnd:
+                    Console.WriteLine("  S_PROC_ID_END");
                     break;
                 default:
-                    Console.WriteLine($"  Symbol 0x{recType:X4} (len={recLen})");
+                    var payloadReader = symbol.GetPayloadReader();
+                    byte[] payload = payloadReader.ReadBytes(payloadReader.RemainingBytes);
+                    switch ((ushort)symbol.Kind)
+                    {
+                        case 0x112B:
+                            if (payload.Length >= 28 && tokens.TryGetValue(symbol.PayloadOffset + 24, out int localToken))
+                                BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(24), localToken);
+                            DumpManProc(0x112B, payload, 0, symbol.Offset, coff.BuildSymbolRelocationMap(section));
+                            break;
+                        case 0x111C:
+                        case 0x111D:
+                            DumpManData((ushort)symbol.Kind, payload);
+                            break;
+                        case 0x112D:
+                            DumpManConstant(payload);
+                            break;
+                        case 0x114C:
+                            var build = symbol.GetPayloadReader();
+                            Console.WriteLine($"  S_BUILDINFO: TypeIndex=0x{build.ReadUInt32():X4}");
+                            break;
+                        default:
+                            Console.WriteLine($"  Symbol 0x{(ushort)symbol.Kind:X4} (len={symbol.Size - 2})");
+                            DumpDebugPayload(symbol.GetPayloadReader());
+                            break;
+                    }
                     break;
             }
-
-            spos += 2 + recLen;
-            // No alignment between symbol records within a subsection
         }
-    }
-
-    static void DumpObjName(ReadOnlySpan<byte> payload)
-    {
-        if (payload.Length < 4) return;
-        uint sig = BinaryPrimitives.ReadUInt32LittleEndian(payload);
-        string name = ReadNullTermString(payload[4..]);
-        Console.WriteLine($"  S_OBJNAME: Signature: {sig:X8}, {name}");
-    }
-
-    static void DumpCompile3(ReadOnlySpan<byte> payload)
-    {
-        if (payload.Length < 30) { Console.WriteLine("  S_COMPILE3: (too short)"); return; }
-
-        // flags(4), machine(2), verFE_Major(2), verFE_Minor(2), verFE_Build(2), verFE_QFE(2),
-        // verBE_Major(2), verBE_Minor(2), verBE_Build(2), verBE_QFE(2), name(...)
-        uint flags = BinaryPrimitives.ReadUInt32LittleEndian(payload);
-        ushort machine = BinaryPrimitives.ReadUInt16LittleEndian(payload[4..]);
-        ushort feMajor = BinaryPrimitives.ReadUInt16LittleEndian(payload[6..]);
-        ushort feMinor = BinaryPrimitives.ReadUInt16LittleEndian(payload[8..]);
-        ushort feBuild = BinaryPrimitives.ReadUInt16LittleEndian(payload[10..]);
-        ushort beMajor = BinaryPrimitives.ReadUInt16LittleEndian(payload[14..]);
-        ushort beMinor = BinaryPrimitives.ReadUInt16LittleEndian(payload[16..]);
-        ushort beBuild = BinaryPrimitives.ReadUInt16LittleEndian(payload[18..]);
-        string verStr = ReadNullTermString(payload[22..]);
-
-        byte lang = (byte)(flags & 0xFF);
-        string langName = lang switch
-        {
-            0x00 => "C", 0x01 => "C++", 0x02 => "Fortran", 0x03 => "Masm",
-            0x04 => "Pascal", 0x05 => "Basic", 0x06 => "Cobol", 0x07 => "Link",
-            0x08 => "CVTRES", 0x09 => "CVTPGD", 0x0A => "C#", 0x0B => "VB",
-            0x0C => "ILASM", 0x0D => "Java", 0x0E => "JScript", 0x0F => "MSIL",
-            0x10 => "HLSL", _ => $"0x{lang:X2}"
-        };
-
-        string machineName = machine switch
-        {
-            0x00 => "8080", 0x01 => "8086", 0x02 => "80286", 0x03 => "80386",
-            0x04 => "80486", 0x05 => "Pentium", 0x06 => "PentiumII",
-            0x07 => "PentiumIII",
-            0x50 => "SH3", 0x53 => "SH4",
-            0x60 => "ARM3", 0x70 => "OMNI",
-            0x80 => "IA64", 0x90 => "CEE",
-            0xD0 => "x64",
-            0xF0 => "THUMB", 0xF4 => "ARMNT", 0xF6 => "ARM64",
-            _ => $"0x{machine:X4}"
-        };
-
-        bool managed = (flags & 0x2000) != 0;
-        Console.WriteLine($"  S_COMPILE3: Language={langName}, Machine={machineName}, Managed={managed}");
-        Console.WriteLine($"    Frontend: {feMajor}.{feMinor}.{feBuild}, Backend: {beMajor}.{beMinor}.{beBuild}");
-        Console.WriteLine($"    {verStr}");
     }
 
     static void DumpManProc(ushort recType, ReadOnlySpan<byte> payload, int recOffset, int baseOffset,
@@ -1693,49 +1658,6 @@ class Program
         Console.WriteLine($"    Flags: 0x{procFlags:X2}, Return Reg: {retReg}");
     }
 
-    static void DumpFrameProc(ReadOnlySpan<byte> payload)
-    {
-        if (payload.Length < 24) { Console.WriteLine("  S_FRAMEPROC: (too short)"); return; }
-
-        uint cbFrame = BinaryPrimitives.ReadUInt32LittleEndian(payload);
-        uint cbPad = BinaryPrimitives.ReadUInt32LittleEndian(payload[4..]);
-        uint offPad = BinaryPrimitives.ReadUInt32LittleEndian(payload[8..]);
-        uint cbSaveRegs = BinaryPrimitives.ReadUInt32LittleEndian(payload[12..]);
-        uint offExHdlr = BinaryPrimitives.ReadUInt32LittleEndian(payload[16..]);
-        ushort sectExHdlr = BinaryPrimitives.ReadUInt16LittleEndian(payload[20..]);
-        uint funcFlags = (payload.Length >= 26)
-            ? BinaryPrimitives.ReadUInt32LittleEndian(payload[22..])
-            : 0;
-
-        Console.WriteLine($"  S_FRAMEPROC: frame={cbFrame}, pad={cbPad}, saveRegs={cbSaveRegs}, flags=0x{funcFlags:X8}");
-    }
-
-    static void DumpManSlot(ReadOnlySpan<byte> payload, MetadataReader mdReader)
-    {
-        if (payload.Length < 10) { Console.WriteLine("  S_MANSLOT: (too short)"); return; }
-
-        uint iSlot = BinaryPrimitives.ReadUInt32LittleEndian(payload);
-        uint typind = BinaryPrimitives.ReadUInt32LittleEndian(payload[4..]);
-
-        // CV_lvar_attr: off(4) + seg(2) + flags(2) = 8 bytes
-        uint attrOff = 0;
-        ushort attrSeg = 0;
-        ushort attrFlags = 0;
-        if (payload.Length >= 18)
-        {
-            attrOff = BinaryPrimitives.ReadUInt32LittleEndian(payload[8..]);
-            attrSeg = BinaryPrimitives.ReadUInt16LittleEndian(payload[12..]);
-            attrFlags = BinaryPrimitives.ReadUInt16LittleEndian(payload[14..]);
-        }
-
-        string name = (payload.Length > 16) ? ReadNullTermString(payload[16..]) : "?";
-
-        // typind in managed slots is often a metadata token
-        string tokenStr = (typind > 0) ? $"0x{typind:X8}" : "0x00000000";
-
-        Console.WriteLine($"  S_MANSLOT: slot={iSlot}, typind={tokenStr}, name={name}");
-    }
-
     static void DumpManData(ushort recType, ReadOnlySpan<byte> payload)
     {
         string typeName = recType == 0x111D ? "S_GMANDATA" : "S_LMANDATA";
@@ -1760,72 +1682,28 @@ class Program
 
     // ─── Line number dumping ──────────────────────────────────────────────────
 
-    static void DumpLineNumbers(ReadOnlySpan<byte> data, int baseOffset,
-        Dictionary<int, (string Name, short Section)> symRelocMap,
-        Dictionary<int, string> stringTable,
-        List<(int FileId, int StringOffset, byte ChecksumType, byte[] Checksum)> fileChecksums)
+    static void DumpLineNumbers(CoffFile coff, global::Coff.CodeViewLineTable lines,
+        Dictionary<int, CoffRelocation> relocations, global::Coff.CodeViewStringTable? strings,
+        global::Coff.CodeViewFileChecksumTable? checksums)
     {
-        if (data.Length < 12) return;
-
-        int offCon = BinaryPrimitives.ReadInt32LittleEndian(data);
-        ushort segCon = BinaryPrimitives.ReadUInt16LittleEndian(data[4..]);
-        ushort flags = BinaryPrimitives.ReadUInt16LittleEndian(data[6..]);
-        int cbCon = BinaryPrimitives.ReadInt32LittleEndian(data[8..]);
-
-        // Try to resolve segment from relocation
-        if (segCon == 0)
+        uint offset = ResolveDebugOffset(coff, relocations, lines.CodeOffsetFieldOffset, lines.CodeOffset);
+        ushort segment = ResolveDebugSegment(coff, relocations, lines.SegmentFieldOffset, lines.Segment);
+        Console.WriteLine($"*** LINES [{segment:X4}:{offset:X8}-{(ulong)offset + lines.CodeSize:X8}], flags=0x{lines.Flags:X4}");
+        DumpDebugRelocation(coff, relocations, lines.CodeOffsetFieldOffset, lines.CodeOffset);
+        DumpDebugRelocation(coff, relocations, lines.SegmentFieldOffset, lines.Segment);
+        foreach (var block in lines.FileBlocks)
         {
-            int segFieldOffset = baseOffset + 4; // segCon is 4 bytes into the subsection data
-            if (symRelocMap.TryGetValue(segFieldOffset, out var symInfo))
-                segCon = (ushort)symInfo.Section;
-        }
-
-        bool hasColumns = (flags & 0x0001) != 0;
-        Console.WriteLine($"*** LINES [{segCon:X4}:{offCon:X8}-{offCon + cbCon:X8}], flags=0x{flags:X4}");
-
-        int lpos = 12;
-        while (lpos + 12 <= data.Length)
-        {
-            int offFile = BinaryPrimitives.ReadInt32LittleEndian(data[lpos..]);
-            int nLines = BinaryPrimitives.ReadInt32LittleEndian(data[(lpos + 4)..]);
-            int cbBlock = BinaryPrimitives.ReadInt32LittleEndian(data[(lpos + 8)..]);
-            lpos += 12;
-
-            // Resolve file name via fileChecksums → stringTable
-            string fileName = ResolveFileId(offFile, fileChecksums, stringTable);
-            Console.WriteLine($"  File: {fileName}");
-
-            for (int ln = 0; ln < nLines && lpos + 8 <= data.Length; ln++)
+            string name = "<unresolved: missing or ambiguous checksum/string table>";
+            if (checksums.HasValue)
             {
-                uint lineOff = BinaryPrimitives.ReadUInt32LittleEndian(data[lpos..]);
-                uint lineFlags = BinaryPrimitives.ReadUInt32LittleEndian(data[(lpos + 4)..]);
-                int lineNum = (int)(lineFlags & 0x00FFFFFF);
-                bool isStatement = (lineFlags & 0x80000000) != 0;
-                lpos += 8;
-
-                Console.WriteLine($"    line {lineNum,5} at 0x{lineOff:X4}{(isStatement ? "" : " (expr)")}");
+                var file = checksums.Value.GetFileChecksum(block.File);
+                if (strings.HasValue)
+                    name = strings.Value.GetString(file.Name);
             }
-
-            // Skip column info if present
-            if (hasColumns)
-                lpos += nLines * 4;
+            Console.WriteLine($"  File: {name} (FileId={block.File.Offset:X4}, block=+0x{block.Offset:X4}, size={block.Size}, lines={block.LineCount})");
+            foreach (var line in block.Lines)
+                Console.WriteLine($"    line {line.StartLine,5} at 0x{line.CodeOffset:X4}{(line.IsStatement ? "" : " (expr)")}{(line.EndLineDelta == 0 ? "" : $" endLineDelta={line.EndLineDelta}")}{(line.StartColumn.HasValue ? $" columns={line.StartColumn}-{line.EndColumn}" : "")}");
         }
-    }
-
-    static string ResolveFileId(int fileId,
-        List<(int FileId, int StringOffset, byte ChecksumType, byte[] Checksum)> fileChecksums,
-        Dictionary<int, string> stringTable)
-    {
-        foreach (var (fid, strOff, _, _) in fileChecksums)
-        {
-            if (fid == fileId)
-            {
-                if (stringTable.TryGetValue(strOff, out string name))
-                    return name;
-                return $"strOff={strOff}";
-            }
-        }
-        return $"fileId=0x{fileId:X}";
     }
 
     // ─── .debug$T parsing ─────────────────────────────────────────────────────

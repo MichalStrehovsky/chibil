@@ -70,10 +70,17 @@ namespace Coff
         }
     }
 
-    public struct CodeViewFileHandle
+    /// <summary>A byte offset into a checksum table. Offset zero identifies the first file, not nil.</summary>
+    public struct CodeViewFileHandle : IEquatable<CodeViewFileHandle>
     {
         internal readonly int _index;
         internal CodeViewFileHandle(int index) => _index = index;
+        public int Offset => _index;
+        public bool Equals(CodeViewFileHandle other) => _index == other._index;
+        public override bool Equals(object obj) => obj is CodeViewFileHandle other && Equals(other);
+        public override int GetHashCode() => _index;
+        public static bool operator ==(CodeViewFileHandle left, CodeViewFileHandle right) => left.Equals(right);
+        public static bool operator !=(CodeViewFileHandle left, CodeViewFileHandle right) => !left.Equals(right);
     }
 
     public struct CodeViewManSlot

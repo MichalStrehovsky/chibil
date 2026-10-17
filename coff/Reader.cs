@@ -356,6 +356,22 @@ namespace Coff
             return new PEMemoryBlock(GetCoffSectionBlock(section));
         }
 
+        /// <summary>Gets an unrelocated C13 CodeView reader for a .debug$S section.</summary>
+        /// <remarks>Keep this CoffReader alive and undisposed while using the returned reader and its views.</remarks>
+        public CodeViewReader GetCodeViewReader(CoffSection section)
+            => GetCodeViewReader(section, MetadataStringDecoder.DefaultUTF8);
+
+        /// <summary>Gets a C13 CodeView reader using the supplied UTF-8 decoder.</summary>
+        /// <remarks>Keep this CoffReader alive and undisposed while using the returned reader and its views.</remarks>
+        public unsafe CodeViewReader GetCodeViewReader(CoffSection section, MetadataStringDecoder utf8Decoder)
+        {
+            ArgumentNullException.ThrowIfNull(utf8Decoder);
+            if (GetStringTableReader().GetString(section.Name) != ".debug$S")
+                throw new ArgumentException("The section must be named .debug$S.", nameof(section));
+            AbstractMemoryBlock block = GetCoffSectionBlock(section);
+            return new CodeViewReader(block.Pointer, block.Size, utf8Decoder, memoryOwner: this);
+        }
+
         /// <exception cref="IOException">IO error while reading from the underlying stream.</exception>
         /// <exception cref="InvalidOperationException">COFF object not available.</exception>
         private AbstractMemoryBlock GetCoffSectionRelocationBlock(CoffSection section)
