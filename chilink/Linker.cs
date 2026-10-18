@@ -49,9 +49,6 @@ internal sealed partial class Linker
                 _options.Output ??= Path.ChangeExtension(Path.GetFileName(_options.Inputs[0]), _options.Dll ? ".dll" : ".exe");
                 if (resolvedPaths.Contains(Path.GetFullPath(_options.Output)))
                     throw new LinkException("output file must not overwrite an input");
-                foreach (string library in _options.DefaultLibraries)
-                    if (!_options.NoDefaultLib && !_options.IgnoredLibraries.Contains(library))
-                        throw new LinkException($"default-library resolution is not supported: /defaultlib:{library}; use /nodefaultlib or compile with /Zl");
                 if (_inputs.Count == 0)
                 {
                     var roots = _options.Includes.Concat(_options.Dll ? [] : new[] { _options.Entry ?? "mainCRTStartup" });
@@ -94,6 +91,9 @@ internal sealed partial class Linker
                         Mark(_nativeResolver);
                         DrainPending();
                     }
+                    foreach (string library in _options.DefaultLibraries)
+                        if (!_options.NoDefaultLib && !_options.IgnoredLibraries.Contains(library))
+                            throw new LinkException($"default-library resolution is not supported: /defaultlib:{library}; use /nodefaultlib or compile with /Zl");
                     ValidateFieldAddresses();
                     return Emit(entry);
                 }

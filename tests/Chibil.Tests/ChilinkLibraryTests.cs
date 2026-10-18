@@ -24,6 +24,30 @@ public sealed class ChilinkLibraryTests : ChibiTestBase
     }
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void SelectedArchiveMemberCanSuppressDefaultLibraries(bool namedSuppression, bool dataRelocation)
+    {
+        using var builder = new CompilationBuilder(false);
+        builder.MsvcCompile("""
+            #pragma comment(linker, "/defaultlib:chilink-nonexistent.lib")
+            """ + (dataRelocation
+                ? "\nextern const int target; const int *pointer = &target; int main(void) { return *pointer; }"
+                : "\nint target(void); int main(void) { return target(); }"));
+        string suppression = namedSuppression
+            ? "/nodefaultlib:CHILINK-NONEXISTENT.LIB" : "/nodefaultlib";
+        builder.MsvcCompile($"""
+            #pragma comment(linker, "{suppression}")
+            {(dataRelocation ? "const int target = 42;" : "int target(void) { return 42; }")}
+            """);
+        ArchiveLastInput(builder);
+
+        builder.Link(["/entry:main"]).RunAndCheck(42);
+    }
+
+    [Theory]
     [InlineData("LIB")]
     [InlineData("LIBPATH")]
     [InlineData("cwd")]
@@ -63,5 +87,25 @@ public sealed class ChilinkLibraryTests : ChibiTestBase
         await process.WaitForExitAsync(TestContext.Current.CancellationToken);
         Assert.True(process.ExitCode == 0, $"{await stdout}\n{await stderr}");
         new LinkResult(output, true).RunAndCheck(42);
+    }
+
+    private static void ArchiveLastInput(CompilationBuilder builder)
+    {
+        string library = Path.Combine(builder._tempDir, "managed.lib");
+        var start = new ProcessStartInfo("lib.exe")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        start.ArgumentList.Add("/nologo");
+        start.ArgumentList.Add("/out:" + library);
+        start.ArgumentList.Add(builder._objFiles[^1]);
+        using var process = Process.Start(start);
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        process.WaitForExit();
+        Assert.True(process.ExitCode == 0, $"{stdout.Result}\n{stderr.Result}");
+        builder._objFiles[^1] = library;
     }
 }

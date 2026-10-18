@@ -96,16 +96,17 @@ internal sealed partial class Linker
         {
             string[] names = _merger.GetLibrarySymbols(reference).Distinct().ToArray();
             NativeImport import = names.Select(n => _nativeImports.GetValueOrDefault(n)).FirstOrDefault(i => i != null);
-            if (import != null)
+            if (import == null)
             {
-                _merger.BindImport(reference, import);
-                continue;
+                int inputCount = _inputs.Count;
+                var origin = _inputs[reference.Token.Input].Library;
+                if (!SearchLibraries(origin).Any(library => names.Any(name => SelectLibrarySymbol(library, name))))
+                    continue;
+                if (_inputs.Count != inputCount)
+                    return true;
+                import = names.Select(n => _nativeImports.GetValueOrDefault(n)).First(i => i != null);
             }
-            var origin = _inputs[reference.Token.Input].Library;
-            foreach (var library in SearchLibraries(origin))
-                foreach (string name in names)
-                    if (SelectLibrarySymbol(library, name))
-                        return true;
+            _merger.BindImport(reference, import);
         }
         foreach (string root in _options.Includes.Concat(_options.Dll ? [] : new[] { _options.Entry ?? "mainCRTStartup" }))
             if (!HasSymbol(root) && SelectLibrarySymbol(root, null))
