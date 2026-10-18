@@ -40,14 +40,15 @@ public class MsilObjectEmitter
 
     // Metadata references and emitted definitions
     private readonly Dictionary<Obj, MemberReferenceHandle> _objectRefs = new();
+    private readonly Dictionary<Obj, MemberReferenceHandle> _ucoRefs = new();
     private readonly Dictionary<Obj, string> _globalFieldNames = new();
     private readonly List<Obj> _globalsWithRelocations = new();
 
     // Bare-name NEP COFF symbols (func name → COFF symbol for the NEP thunk alias)
     private readonly Dictionary<string, CoffSymbolHandle> _nepBareNameSymbols = new();
-    private readonly Dictionary<string, Obj> _managedFunctions = new();
+    private readonly Dictionary<string, Obj> _tokenAddressFunctions = new();
 
-    // __unep@ fields for address-taken cdecl functions
+    // __unep@ fields for address-taken native-convention functions
     private readonly Dictionary<string, UnepSlot> _unepSlots = new();
 
     // __CxxPureMSILEntry state
@@ -179,7 +180,7 @@ public class MsilObjectEmitter
                 sig.WriteByte((byte)SignatureTypeCode.Void);
                 break;
             case TypeKind.Bool:
-                sig.WriteByte((byte)SignatureTypeCode.Boolean);
+                sig.WriteByte((byte)(_options.UcoEntryPoints ? SignatureTypeCode.Byte : SignatureTypeCode.Boolean));
                 break;
             case TypeKind.Char:
                 if (ty.IsUnsigned)
@@ -352,19 +353,13 @@ public class MsilObjectEmitter
     private MethodDefinitionHandle RegisterFunction(Obj fn, string[] parameterNames = null)
     {
         CType funcTy = fn.Ty;
-        bool isUnmanaged = funcTy.CallConv != CallConv.Clrcall;
 
         // Build method signature
         var sig = new BlobBuilder();
         EncodeFunctionSignature(sig, funcTy);
 
-        // Method attributes
-        MethodAttributes attrs = MethodAttributes.Assembly | MethodAttributes.Static;
-        if (isUnmanaged && !fn.IsStatic)
-            attrs |= (MethodAttributes)0x0008; // UnmanagedExport
-
         var methodDef = _md.AddMethodDefinition(
-            attrs,
+            MethodAttributes.Assembly | MethodAttributes.Static,
             MethodImplAttributes.IL | MethodImplAttributes.Managed,
             _md.GetOrAddString(_nameMangler.MangleFunctionMetadataName(fn)),
             _md.GetOrAddBlob(sig),
@@ -422,6 +417,24 @@ public class MsilObjectEmitter
     public EntityHandle GetFunctionToken(Obj fn)
         => GetObjectReference(fn);
 
+    public EntityHandle GetFunctionAddressToken(Obj fn)
+    {
+        if (fn.Ty.CallConv == CallConv.Clrcall)
+            return GetFunctionToken(fn);
+        Debug.Assert(_options.UcoEntryPoints);
+        if (_ucoRefs.TryGetValue(fn, out var reference))
+            return reference;
+        var signature = new BlobBuilder();
+        EncodeFunctionSignature(signature, fn.Ty);
+        reference = _md.AddMemberReference(_moduleTypeDef,
+            _md.GetOrAddString(_nameMangler.MangleUcoFunctionMetadataName(fn)),
+            _md.GetOrAddBlob(signature));
+        _ucoRefs.Add(fn, reference);
+        AddDecoratedNameAttribute(reference, SymPrefix + _nameMangler.MangleFunctionBaseName(fn));
+        EnsureMemberRefTokenSymbol(reference, isFunction: true);
+        return reference;
+    }
+
     public EntityHandle GetFieldToken(Obj var)
         => GetObjectReference(var);
 
@@ -445,7 +458,6 @@ public class MsilObjectEmitter
             FieldAttributes.Assembly | FieldAttributes.Static | FieldAttributes.HasFieldRVA,
             _md.GetOrAddString(unepName), _md.GetOrAddBlob(unepFieldSig));
         _md.AddFieldRelativeVirtualAddress(unepField, 0);
-
         var unepSection = new CoffSectionWithContentBuilder(
             ".rdata",
             SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | CoffSectionBuilder.AlignmentCharacteristics(PtrSize),
@@ -456,13 +468,29 @@ public class MsilObjectEmitter
 
         _unepSlots[fn.Name] = new UnepSlot(unepField, unepSection);
         _symtab.AddComdatSectionSymbol(unepSection);
-        _symtab.AddDataClrToken(unepName, unepField, unepSection, 0, out _, isExternal: true);
+        var unepSymbol = _symtab.AddDataClrToken(unepName, unepField, unepSection, 0, out _, isExternal: true);
 
-        CoffSymbolHandle target = fn.IsDefinition
-            ? GetOrCreateNepForDefinition(fn)
-            : _symtab.AddUndefinedExternalSymbol(SymPrefix + fn.Name, CoffSymbolType.Null);
-        new CoffRelocationEncoder(_coffHeader, unepSection.Relocations)
-            .AddAddressRelocation(0, target);
+        if (_options.UcoEntryPoints)
+        {
+            var token = _symtab.GetOrAddUndefinedClrTokenSymbol(GetFunctionAddressToken(fn), CoffSymbolType.Function);
+            new CoffRelocationEncoder(_coffHeader, unepSection.Relocations)
+                .AddTokenRelocation(0, token);
+            var fixups = new CoffSectionWithContentBuilder(
+                ".rdata$ilfixup",
+                SectionCharacteristics.ContainsInitializedData | SectionCharacteristics.MemRead | SectionCharacteristics.Align4Bytes,
+                CoffComdatSelection.Associative, unepSection);
+            _comdatSections.Add(fixups);
+            _symtab.AddComdatSectionSymbol(fixups);
+            ClrIjw.AddVtableFixup(_coffHeader, fixups, unepSymbol, 0, PtrSize, fromUnmanaged: false);
+        }
+        else
+        {
+            CoffSymbolHandle target = fn.IsDefinition
+                ? GetOrCreateNepForDefinition(fn)
+                : _symtab.AddUndefinedExternalSymbol(SymPrefix + fn.Name, CoffSymbolType.Null);
+            new CoffRelocationEncoder(_coffHeader, unepSection.Relocations)
+                .AddAddressRelocation(0, target);
+        }
 
         return unepField;
     }
@@ -490,6 +518,8 @@ public class MsilObjectEmitter
             if (obj.IsFunction)
                 _symtab.AddUndefinedExternalSymbol(_nameMangler.MangleFunctionName(obj));
         }
+        foreach (Obj obj in _ucoRefs.Keys)
+            _symtab.AddUndefinedExternalSymbol(SymPrefix + _nameMangler.MangleFunctionBaseName(obj));
     }
 
     private string GetGlobalFieldMetadataName(Obj g)
@@ -623,14 +653,13 @@ public class MsilObjectEmitter
                 continue;
             }
 
-            if (obj.Ty.CallConv == CallConv.Clrcall)
-                _managedFunctions.Add(obj.Name, obj);
+            if (obj.Ty.CallConv == CallConv.Clrcall || _options.UcoEntryPoints)
+                _tokenAddressFunctions.Add(obj.Name, obj);
 
             if (!obj.IsDefinition || !obj.IsLive)
                 continue;
 
             MethodDefinitionHandle methodDef = RegisterFunction(obj);
-            GetOrCreateNepForDefinition(obj);
             CompiledMethod body = CodeGen.EmitFunction(_types, this, obj, _options.Optimize);
 
             // Finalize method body
@@ -641,7 +670,51 @@ public class MsilObjectEmitter
                 debugName: obj.Name,
                 localSlots: body.LocalDebugInfo,
                 localScopes: body.LocalScopes);
+            if (!_options.UcoEntryPoints)
+                GetOrCreateNepForDefinition(obj);
+            else if (obj.Ty.CallConv != CallConv.Clrcall)
+                EmitUcoEntryPoint(obj);
         }
+    }
+
+    private void EmitUcoEntryPoint(Obj function)
+    {
+        var wrapper = new Obj
+        {
+            Name = _nameMangler.MangleUcoFunctionMetadataName(function),
+            Ty = function.Ty,
+            IsFunction = true,
+        };
+        var method = RegisterFunction(wrapper);
+        var attribute = new BlobBuilder();
+        attribute.WriteUInt16(1);
+        attribute.WriteUInt16(1);
+        attribute.WriteByte(0x53); // named field
+        attribute.WriteByte(0x1D); // array
+        attribute.WriteByte(0x50); // System.Type
+        attribute.WriteSerializedString("CallConvs");
+        attribute.WriteInt32(1);
+        string convention = function.Ty.CallConv switch
+        {
+            CallConv.Cdecl => "CallConvCdecl",
+            CallConv.Stdcall => "CallConvStdcall",
+            _ => throw new UnreachableException(),
+        };
+        attribute.WriteSerializedString($"System.Runtime.CompilerServices.{convention}, System.Runtime");
+        _md.AddCustomAttribute(method, _binder.GetUnmanagedCallersOnlyCtorRef(), _md.GetOrAddBlob(attribute));
+
+        var encoder = new RelocatableInstructionEncoder(
+            new BlobBuilder(), new MethodRelocationBuilder(),
+            new RelocatableControlFlowBuilder(), new CodeViewLineNumberBuilder());
+        int count = 0;
+        for (CType parameter = function.Ty.Params; parameter != null; parameter = parameter.Next)
+            encoder.LoadArgument(count++);
+        encoder.Call(GetFunctionToken(function));
+        encoder.OpCode(ILOpCode.Ret);
+        GetBodyEncoder(wrapper).AddMethodBody(method,
+            SymPrefix + _nameMangler.MangleFunctionBaseName(function), encoder,
+            maxStack: Math.Max(count, 1), localVariablesSignature: default,
+            debugName: wrapper.Name);
     }
 
     private void EmitCxxPureMSILEntry()
@@ -846,11 +919,11 @@ public class MsilObjectEmitter
                 {
                     // Data-to-data relocation (e.g., char* e = &hello[1])
                 }
-                else if (_managedFunctions.TryGetValue(targetName, out Obj function))
+                else if (_tokenAddressFunctions.TryGetValue(targetName, out Obj function))
                 {
                     if (rel.Addend != 0)
                         Util.ErrorTok(rel.Tok, "managed function pointer initializer cannot have an addend");
-                    var token = _symtab.GetOrAddUndefinedClrTokenSymbol(GetFunctionToken(function), CoffSymbolType.Function);
+                    var token = _symtab.GetOrAddUndefinedClrTokenSymbol(GetFunctionAddressToken(function), CoffSymbolType.Function);
                     new CoffRelocationEncoder(_coffHeader, placement.Section.Relocations)
                         .AddTokenRelocation(placement.Offset + rel.Offset, token);
                     if (managedFixups == null)

@@ -36,6 +36,9 @@ public abstract class BclBinder
     public MemberReferenceHandle GetFixedAddressValueTypeCtorRef()
         => GetLazyMemberRef(GetLazyTypeRef(GetSystemRef(), "System.Runtime.CompilerServices", "FixedAddressValueTypeAttribute"), ".ctor", Instance_RetVoid);
 
+    public MemberReferenceHandle GetUnmanagedCallersOnlyCtorRef()
+        => GetLazyMemberRef(GetLazyTypeRef(GetInteropRef(), "System.Runtime.InteropServices", "UnmanagedCallersOnlyAttribute"), ".ctor", Instance_RetVoid);
+
     private static readonly byte[] Static_RefInt32_Int32_Int32_RetInt32 =
         [(byte)SignatureAttributes.None, 3, (byte)SignatureTypeCode.Int32, (byte)SignatureTypeCode.ByReference, (byte)SignatureTypeCode.Int32, (byte)SignatureTypeCode.Int32, (byte)SignatureTypeCode.Int32];
 
@@ -51,6 +54,7 @@ public abstract class BclBinder
     protected abstract AssemblyReferenceHandle GetVisualCRef();
     protected abstract AssemblyReferenceHandle GetSystemRef();
     protected abstract AssemblyReferenceHandle GetThreadingRef();
+    protected virtual AssemblyReferenceHandle GetInteropRef() => GetSystemRef();
 
     protected AssemblyReferenceHandle GetLazyAssemblyRef(string name, Version version, byte[] publicKeyToken)
     {
@@ -106,4 +110,5 @@ public sealed class NetCoreBclBinder : BclBinder
     protected override AssemblyReferenceHandle GetVisualCRef() => GetLazyAssemblyRef("System.Runtime.CompilerServices.VisualC", new Version(10, 0, 0, 0), PublicKeyToken);
     protected override AssemblyReferenceHandle GetSystemRef() => GetLazyAssemblyRef("System.Runtime", new Version(10, 0, 0, 0), PublicKeyToken);
     protected override AssemblyReferenceHandle GetThreadingRef() => GetLazyAssemblyRef("System.Threading", new Version(10, 0, 0, 0), PublicKeyToken);
+    protected override AssemblyReferenceHandle GetInteropRef() => GetLazyAssemblyRef("System.Runtime.InteropServices", new Version(10, 0, 0, 0), PublicKeyToken);
 }

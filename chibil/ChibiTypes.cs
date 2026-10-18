@@ -436,6 +436,7 @@ public class CompilerOptions
     public bool Optimize;
     public bool UseFieldBackedManagedAggregates;
     public bool TargetNetCore;
+    public bool UcoEntryPoints;
     public string BaseFile;
     public DataModel DataModel = DataModel.LLP64;
 }
