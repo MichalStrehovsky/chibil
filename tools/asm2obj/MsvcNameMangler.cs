@@ -293,7 +293,7 @@ public sealed class MsvcNameMangler
                             "Use [DecoratedNameAttribute] on methods that take/return reference types.");
                     if (isReturn) sb.Append("?A");
                     sb.Append('U');
-                    MangleTagName(sb, GetTypeName(typeHandle));
+                    MangleScope(sb, typeHandle);
                 }
                 return;
             case SignatureTypeCode.FunctionPointer:
@@ -405,32 +405,51 @@ public sealed class MsvcNameMangler
         }
     }
 
-    private void MangleScope(StringBuilder sb, TypeDefinitionHandle owner)
+    private void MangleScope(StringBuilder sb, EntityHandle owner)
     {
-        var visited = new HashSet<TypeDefinitionHandle>();
+        var visited = new HashSet<EntityHandle>();
         while (!owner.IsNil)
         {
             if (!visited.Add(owner))
                 throw new BadImageFormatException("Cyclic nested type ownership.");
-            var type = _reader.GetTypeDefinition(owner);
-            if (type.GetGenericParameters().Count != 0)
-                throw new NotSupportedException("Auto-mangling generic declaring types is not supported.");
-            MangleName(sb, _reader.GetString(type.Name));
-            owner = type.GetDeclaringType();
+            string name;
+            string ns;
+            switch (owner.Kind)
+            {
+                case HandleKind.TypeDefinition:
+                    var definition = _reader.GetTypeDefinition((TypeDefinitionHandle)owner);
+                    if (definition.GetGenericParameters().Count != 0)
+                        throw new NotSupportedException("Auto-mangling generic type scopes is not supported.");
+                    name = _reader.GetString(definition.Name);
+                    ns = _reader.GetString(definition.Namespace);
+                    owner = definition.GetDeclaringType();
+                    break;
+                case HandleKind.TypeReference:
+                    var reference = _reader.GetTypeReference((TypeReferenceHandle)owner);
+                    name = _reader.GetString(reference.Name);
+                    ns = _reader.GetString(reference.Namespace);
+                    if (name.Contains('`'))
+                        throw new NotSupportedException("Auto-mangling generic type scopes is not supported.");
+                    owner = reference.ResolutionScope.Kind switch
+                    {
+                        HandleKind.TypeReference => reference.ResolutionScope,
+                        HandleKind.ModuleDefinition or HandleKind.ModuleReference or HandleKind.AssemblyReference => default,
+                        _ => throw new NotSupportedException(
+                            $"Cannot derive type scope for handle kind {reference.ResolutionScope.Kind}"),
+                    };
+                    break;
+                default:
+                    throw new NotSupportedException(
+                        $"Cannot derive type scope for handle kind {owner.Kind}");
+            }
+            MangleName(sb, name);
             if (owner.IsNil)
             {
-                string ns = _reader.GetString(type.Namespace);
                 if (ns.Length != 0)
                     foreach (string part in ns.Split('.').Reverse())
                         MangleName(sb, part);
             }
         }
-        sb.Append('@');
-    }
-
-    private void MangleTagName(StringBuilder sb, string name)
-    {
-        MangleName(sb, name);
         sb.Append('@');
     }
 
@@ -448,26 +467,6 @@ public sealed class MsvcNameMangler
                 _nameBackRefs.Add(name);
         }
         sb.Append(name).Append('@');
-    }
-
-    private string GetTypeName(EntityHandle typeHandle)
-    {
-        switch (typeHandle.Kind)
-        {
-            case HandleKind.TypeReference:
-                {
-                    var tr = _reader.GetTypeReference((TypeReferenceHandle)typeHandle);
-                    return _reader.GetString(tr.Name);
-                }
-            case HandleKind.TypeDefinition:
-                {
-                    var td = _reader.GetTypeDefinition((TypeDefinitionHandle)typeHandle);
-                    return _reader.GetString(td.Name);
-                }
-            default:
-                throw new NotSupportedException(
-                    $"Cannot derive type tag name for handle kind {typeHandle.Kind}");
-        }
     }
 
     // ─── ModOpt chain reader ─────────────────────────────────────────────────
