@@ -1762,10 +1762,19 @@ namespace Coff
         }
     }
 
-    public struct CoffSymbolHandle
+    /// <summary>A zero-based symbol-table index, scoped to a COFF object.</summary>
+    public readonly struct CoffSymbolHandle : IEquatable<CoffSymbolHandle>
     {
         internal readonly int _value;
         internal CoffSymbolHandle(int value) => _value = value;
+        public int Index => _value;
+
+        public bool Equals(CoffSymbolHandle other) => _value == other._value;
+        public override bool Equals(object obj) => obj is CoffSymbolHandle other && Equals(other);
+        public override int GetHashCode() => _value.GetHashCode();
+
+        public static bool operator ==(CoffSymbolHandle left, CoffSymbolHandle right) => left.Equals(right);
+        public static bool operator !=(CoffSymbolHandle left, CoffSymbolHandle right) => !left.Equals(right);
     }
 
     public class ManagedCoffSymbolTableBuilder : CoffSymbolTableBuilder

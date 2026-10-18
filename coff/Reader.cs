@@ -404,7 +404,7 @@ namespace Coff
                 return existingBlock;
             }
 
-            int size = section.PointerToRelocations == 0 ? 0 : section.NumberOfRelocations * CoffSection.RelocationSize;
+            int size = section.PointerToRelocations == 0 ? 0 : section.NumberOfRelocations * CoffRelocation.Size;
 
             AbstractMemoryBlock newBlock = coffObject.GetMemoryBlock(section.PointerToRelocations, size);
 
@@ -425,6 +425,28 @@ namespace Coff
         public PEMemoryBlock GetSectionRelocations(CoffSection section)
         {
             return new PEMemoryBlock(GetCoffSectionRelocationBlock(section));
+        }
+
+        /// <summary>Gets a reader over the relocation records for a COFF section.</summary>
+        /// <remarks>
+        /// The caller must keep the <see cref="CoffReader"/> alive and undisposed
+        /// throughout the lifetime of the returned reader and its relocation views.
+        /// </remarks>
+        /// <exception cref="BadImageFormatException">The relocation table is missing, truncated, or uses unsupported relocation-count overflow.</exception>
+        /// <exception cref="IOException">IO error while reading from the underlying stream.</exception>
+        public unsafe CoffRelocationTableReader GetRelocationTableReader(CoffSection section)
+        {
+            if ((section.SectionCharacteristics & SectionCharacteristics.LinkerNRelocOvfl) != 0)
+                throw new BadImageFormatException("COFF relocation-count overflow is not supported.");
+            if (section.NumberOfRelocations != 0 && section.PointerToRelocations == 0)
+                throw new BadImageFormatException("Missing COFF relocation table.");
+            int start = section.PointerToRelocations;
+            int size = section.NumberOfRelocations * CoffRelocation.Size;
+            if (start < 0 || (long)start + size > GetCoffObject().Size)
+                throw new BadImageFormatException("COFF relocation table extends beyond the object.");
+
+            AbstractMemoryBlock block = GetCoffSectionRelocationBlock(section);
+            return new CoffRelocationTableReader(block.Pointer, block.Size, memoryOwner: this);
         }
 
         /// <exception cref="IOException">IO error while reading from the underlying stream.</exception>
@@ -675,6 +697,8 @@ namespace Coff
 
         internal CoffSectionHandle(int value) => _value = value;
 
+        public int Number => _value;
+
         /// <summary>
         /// The kind of section this handle refers to. <see cref="CoffSectionHandleKind.Physical"/> means it
         /// references a section in the table (a one-based section number); the other values are the special
@@ -720,11 +744,6 @@ namespace Coff
     public readonly struct CoffSection
     {
         internal const int Size = 40;
-
-        /// <summary>
-        /// The size in bytes of a single COFF relocation entry (IMAGE_RELOCATION).
-        /// </summary>
-        internal const int RelocationSize = 10;
 
         private readonly CoffSectionTableReader _reader;
         internal readonly int _index;
@@ -935,6 +954,72 @@ namespace Coff
         }
     }
 
+    /// <summary>A single IMAGE_RELOCATION record.</summary>
+    public readonly struct CoffRelocation
+    {
+        internal const int Size = 10;
+
+        private readonly CoffRelocationTableReader _reader;
+        private readonly int _index;
+
+        internal CoffRelocation(CoffRelocationTableReader reader, int index)
+            => (_reader, _index) = (reader, index);
+
+        public uint Offset => _reader.GetOffset(_index);
+        public CoffSymbolHandle Symbol => new CoffSymbolHandle(_reader.GetSymbolIndex(_index));
+        public ImageRelocation Type => _reader.GetType(_index);
+    }
+
+    /// <summary>Reads the relocation records for one COFF section.</summary>
+    public sealed class CoffRelocationTableReader
+    {
+        private readonly MemoryBlock _block;
+        private readonly int _numberOfRelocations;
+        private readonly object _memoryOwner;
+
+        public unsafe CoffRelocationTableReader(byte* relocations, int length)
+            : this(relocations, length, memoryOwner: null)
+        {
+        }
+
+        internal unsafe CoffRelocationTableReader(byte* relocations, int length, object memoryOwner)
+        {
+            if (length < 0)
+                throw new ArgumentOutOfRangeException(nameof(length));
+            if (relocations == null && length != 0)
+                throw new ArgumentNullException(nameof(relocations));
+            if (length % CoffRelocation.Size != 0)
+                throw new BadImageFormatException("Invalid COFF relocation table size.");
+
+            _block = new MemoryBlock(relocations, length);
+            _numberOfRelocations = length / CoffRelocation.Size;
+            _memoryOwner = memoryOwner;
+        }
+
+        public int NumberOfRelocations => _numberOfRelocations;
+
+        public CoffRelocation GetRelocation(int index)
+        {
+            if ((uint)index >= (uint)_numberOfRelocations)
+                throw new ArgumentOutOfRangeException(nameof(index));
+            return new CoffRelocation(this, index);
+        }
+
+        internal uint GetOffset(int index)
+            => _block.PeekUInt32(index * CoffRelocation.Size);
+
+        internal int GetSymbolIndex(int index)
+        {
+            uint symbolIndex = _block.PeekUInt32(index * CoffRelocation.Size + 4);
+            if (symbolIndex > int.MaxValue)
+                throw new BadImageFormatException("COFF relocation symbol index is too large.");
+            return (int)symbolIndex;
+        }
+
+        internal ImageRelocation GetType(int index)
+            => (ImageRelocation)_block.PeekUInt16(index * CoffRelocation.Size + 8);
+    }
+
     internal readonly partial struct PEBinaryReader
     {
         public bool ReadSectionNameEquals(ReadOnlySpan<byte> name)
@@ -1133,6 +1218,69 @@ namespace Coff
         /// The number of auxiliary records that follow this symbol record.
         /// </summary>
         public byte NumberOfAuxSymbols => _reader.GetNumberOfAuxSymbols(_index);
+
+        /// <summary>
+        /// Gets the section-definition auxiliary record, or a default value if this
+        /// symbol has no section definition.
+        /// </summary>
+        /// <exception cref="BadImageFormatException">The auxiliary record is truncated.</exception>
+        public CoffSectionDefinition GetSectionDefinition()
+        {
+            if (StorageClass != CoffSymbolStorageClass.Static || Type != CoffSymbolType.Null ||
+                SectionNumber.Kind != CoffSectionHandleKind.Physical || NumberOfAuxSymbols == 0)
+                return default;
+
+            return new CoffSectionDefinition(_reader, _reader.GetAuxiliaryRecordIndex(_index));
+        }
+
+        /// <summary>
+        /// Gets the CLR-token-definition auxiliary record, or a default value if
+        /// this symbol has no CLR token definition.
+        /// </summary>
+        /// <exception cref="BadImageFormatException">The auxiliary record is malformed or truncated.</exception>
+        public CoffClrTokenDefinition GetClrTokenDefinition()
+        {
+            if (StorageClass != CoffSymbolStorageClass.ClrToken || NumberOfAuxSymbols == 0)
+                return default;
+
+            int index = _reader.GetAuxiliaryRecordIndex(_index);
+            const byte tokenDefinitionAuxiliaryType = 1;
+            if (_reader.GetByte(index, 0) != tokenDefinitionAuxiliaryType || _reader.GetByte(index, 1) != 0)
+                throw new BadImageFormatException("Invalid CLR token auxiliary record.");
+            return new CoffClrTokenDefinition(_reader, index);
+        }
+    }
+
+    /// <summary>A queryable view of a section-definition auxiliary record.</summary>
+    public readonly struct CoffSectionDefinition
+    {
+        private readonly CoffSymbolTableReader _reader;
+        private readonly int _index;
+
+        internal CoffSectionDefinition(CoffSymbolTableReader reader, int index)
+            => (_reader, _index) = (reader, index);
+
+        public bool IsDefault => _reader == null;
+        public uint Length => _reader.GetUInt32(_index, 0);
+        public ushort RelocationCount => _reader.GetUInt16(_index, 4);
+        public ushort LineNumberCount => _reader.GetUInt16(_index, 6);
+        public uint Checksum => _reader.GetUInt32(_index, 8);
+        public CoffComdatSelection ComdatSelection => (CoffComdatSelection)_reader.GetByte(_index, 14);
+        public CoffSectionHandle AssociatedSection => new CoffSectionHandle(_reader.GetUInt16(_index, 12));
+    }
+
+    /// <summary>A queryable view of a CLR-token-definition auxiliary record.</summary>
+    public readonly struct CoffClrTokenDefinition
+    {
+        private readonly CoffSymbolTableReader _reader;
+        private readonly int _index;
+
+        internal CoffClrTokenDefinition(CoffSymbolTableReader reader, int index)
+            => (_reader, _index) = (reader, index);
+
+        /// <summary>True when no record is present; associated symbol index zero is valid.</summary>
+        public bool IsDefault => _reader == null;
+        public CoffSymbolHandle AssociatedSymbol => new CoffSymbolHandle((int)_reader.GetUInt32(_index, 2));
     }
 
     /// <summary>
@@ -1167,7 +1315,24 @@ namespace Coff
         /// Gets the <see cref="CoffSymbol"/> referred to by <paramref name="handle"/>.
         /// </summary>
         public CoffSymbol GetCoffSymbol(CoffSymbolHandle handle)
-            => new CoffSymbol(this, handle._value);
+        {
+            if ((uint)handle._value >= (uint)_numberOfSymbols)
+                throw new BadImageFormatException("Invalid COFF symbol index.");
+            return new CoffSymbol(this, handle._value);
+        }
+
+        internal int GetAuxiliaryRecordIndex(int index)
+        {
+            if (GetNumberOfAuxSymbols(index) == 0 || (long)index + 1 >= _numberOfSymbols)
+                throw new BadImageFormatException("Invalid COFF auxiliary symbol record.");
+            return index + 1;
+        }
+
+        internal byte GetByte(int index, int offset) => _block.PeekByte(index * CoffSymbol.Size + offset);
+
+        internal ushort GetUInt16(int index, int offset) => _block.PeekUInt16(index * CoffSymbol.Size + offset);
+
+        internal uint GetUInt32(int index, int offset) => _block.PeekUInt32(index * CoffSymbol.Size + offset);
 
         /// <summary>
         /// Enumerates handles to the primary symbol records, skipping auxiliary records.
@@ -1178,19 +1343,19 @@ namespace Coff
             => new CoffStringHandle(index * CoffSymbol.Size);
 
         internal uint GetValue(int index)
-            => _block.PeekUInt32(index * CoffSymbol.Size + 8);
+            => GetUInt32(index, 8);
 
         internal short GetSectionNumber(int index)
-            => (short)_block.PeekUInt16(index * CoffSymbol.Size + 12);
+            => (short)GetUInt16(index, 12);
 
         internal CoffSymbolType GetSymbolType(int index)
-            => (CoffSymbolType)_block.PeekUInt16(index * CoffSymbol.Size + 14);
+            => (CoffSymbolType)GetUInt16(index, 14);
 
         internal CoffSymbolStorageClass GetStorageClass(int index)
-            => (CoffSymbolStorageClass)_block.PeekByte(index * CoffSymbol.Size + 16);
+            => (CoffSymbolStorageClass)GetByte(index, 16);
 
         internal byte GetNumberOfAuxSymbols(int index)
-            => _block.PeekByte(index * CoffSymbol.Size + 17);
+            => GetByte(index, 17);
     }
 
     /// <summary>
@@ -1236,6 +1401,8 @@ namespace Coff
 
                 _current = _next;
                 _next += 1 + _reader.GetNumberOfAuxSymbols(_current);
+                if (_next > _reader.NumberOfSymbols)
+                    throw new BadImageFormatException("Truncated COFF auxiliary symbol records.");
                 return true;
             }
 
