@@ -3,6 +3,8 @@ using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
+using System.Collections.Immutable;
+using System.Security.Cryptography;
 using Coff;
 
 namespace Chilink;
@@ -22,7 +24,7 @@ internal sealed partial class Linker
 
     public Linker(LinkOptions options) => _options = options;
 
-    public byte[] Link()
+    public LinkResult Link()
     {
         try
         {
@@ -49,6 +51,14 @@ internal sealed partial class Linker
                 _options.Output ??= Path.ChangeExtension(Path.GetFileName(_options.Inputs[0]), _options.Dll ? ".dll" : ".exe");
                 if (resolvedPaths.Contains(Path.GetFullPath(_options.Output)))
                     throw new LinkException("output file must not overwrite an input");
+                if (_options.Debug && !_options.EmbeddedPdb)
+                {
+                    _options.Pdb = Path.GetFullPath(_options.Pdb ?? Path.ChangeExtension(_options.Output, ".pdb"));
+                    if (_options.Pdb.Equals(Path.GetFullPath(_options.Output), StringComparison.OrdinalIgnoreCase) ||
+                        resolvedPaths.Contains(_options.Pdb) ||
+                        _libraries.Any(l => l.Path.Equals(_options.Pdb, StringComparison.OrdinalIgnoreCase)))
+                        throw new LinkException("PDB file must not overwrite the output or an input");
+                }
                 if (_inputs.Count == 0)
                 {
                     var roots = _options.Includes.Concat(_options.Dll ? [] : new[] { _options.Entry ?? "mainCRTStartup" });
@@ -357,7 +367,7 @@ internal sealed partial class Linker
                 MarkSection(child);
     }
 
-    private byte[] Emit(SourceToken entry)
+    private LinkResult Emit(SourceToken entry)
     {
         var codeSections = _inputs.SelectMany(i => i.Sections).Where(s => s.Live && s.IsCode).ToArray();
         int ilSize = 0, codeAlignment = 4;
@@ -392,7 +402,29 @@ internal sealed partial class Linker
             token => _definitions.TryGetValue(_merger.Resolve(token), out Definition method) && method.Section?.OutputCodeOffset >= 0
                 ? checked(method.Section.OutputCodeOffset + method.Offset) : -1,
             token => _definitions.TryGetValue(_merger.Resolve(token), out Definition d) && d.Section?.OutputDataOffset >= 0
-                ? checked(d.Section.OutputDataOffset + d.Offset) : -1, initialization);
+                ? checked(d.Section.OutputDataOffset + d.Offset) : -1, initialization,
+            _options.Debug ? token => _definitions.GetValueOrDefault(token)?.Token : null);
+        var entryHandle = _options.Dll ? default : (MethodDefinitionHandle)_merger.Map(entry.Input, entry.Handle);
+        var warnings = new HashSet<string>(StringComparer.Ordinal);
+        PortablePdb pdb = _options.Debug
+            ? PortablePdbEmitter.Emit(md, _merger.OutputMethods, ReadDebugInformation(warnings), entryHandle, _merger)
+            : null;
+        DebugDirectoryBuilder debugDirectory = null;
+        byte[] pdbBytes = null;
+        if (pdb != null)
+        {
+            const ushort portablePdbVersion = 0x0100;
+            byte[] serializedPdb = pdb.Image.ToArray();
+            debugDirectory = new DebugDirectoryBuilder();
+            string pdbPath = _options.EmbeddedPdb
+                ? Path.ChangeExtension(Path.GetFileName(_options.Output), ".pdb") : _options.Pdb;
+            debugDirectory.AddCodeViewEntry(pdbPath, pdb.Id, portablePdbVersion);
+            debugDirectory.AddPdbChecksumEntry("SHA256", ImmutableArray.Create(SHA256.HashData(serializedPdb)));
+            if (_options.EmbeddedPdb)
+                debugDirectory.AddEmbeddedPortablePdbEntry(pdb.Image, portablePdbVersion);
+            else
+                pdbBytes = serializedPdb;
+        }
         var il = new BlobBuilder();
         foreach (InputSection section in codeSections)
         {
@@ -415,13 +447,13 @@ internal sealed partial class Linker
         // to honor larger COFF alignments once the actual stream RVAs are known.
         if (ilSize != 0) il.WriteBytes(0, codeAlignment - 4);
         if (dataSize != 0) data.WriteBytes(0, dataAlignment - ManagedPEBuilder.MappedFieldDataAlignment);
-        var entryHandle = _options.Dll ? default : (MethodDefinitionHandle)_merger.Map(entry.Input, entry.Handle);
         var header = new PEHeaderBuilder(machine: Machine.Amd64,
             imageCharacteristics: Characteristics.ExecutableImage | Characteristics.LargeAddressAware |
                 (_options.Dll ? Characteristics.Dll : 0),
             subsystem: _options.Subsystem);
         var pe = new ManagedPEBuilder(header, new MetadataRootBuilder(md, "v4.0.30319"),
-            il, mappedFieldData: data, strongNameSignatureSize: 0, entryPoint: entryHandle, flags: CorFlags.ILOnly);
+            il, mappedFieldData: data, strongNameSignatureSize: 0, entryPoint: entryHandle, flags: CorFlags.ILOnly,
+            debugDirectoryBuilder: debugDirectory);
         var image = new BlobBuilder();
         pe.Serialize(image);
         byte[] result = image.ToArray();
@@ -441,7 +473,7 @@ internal sealed partial class Linker
                 field == null ? initialization.Copies[0].DataField : (EntityHandle)_merger.Map(field.Token.Input, field.Token.Handle),
                 field == null ? initialization.Copies[0].Offset : field.Definition.Section.OutputDataOffset + field.Definition.Offset);
         }
-        return result;
+        return new LinkResult(result, pdbBytes, warnings);
     }
 
     private static int Align(int value, int alignment) => checked(value + alignment - 1) & -alignment;

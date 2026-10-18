@@ -166,15 +166,19 @@ public sealed class ChilinkTests : ChibiTestBase
     public void DeadStrippingRespectsFunctionSectionGranularity(
         bool functionSections, string options, bool keepsUnused)
     {
-        Compile("""
+        var builder = Compile("""
             int probe_methods(void);
             int frag_unused(void) { return 99; }
             int helper(int value) { return value + 1; }
             int main(void) { return helper(41) + probe_methods(); }
             """, functionSections ? ["-ffunction-sections"] : null)
-            .AddAsm2ObjAssembly("ReflectionProbe.dll")
+            .AddAsm2ObjAssembly("ReflectionProbe.dll");
+        builder
             .Link(["/entry:main", .. options.Split(' ', StringSplitOptions.RemoveEmptyEntries)])
             .RunAndCheck(keepsUnused ? 43 : 42);
+
+        if (options.Contains("/debug", StringComparison.OrdinalIgnoreCase))
+            Assert.True(File.Exists(Path.Combine(builder._tempDir, "output.pdb")));
     }
 
     [Fact]

@@ -43,7 +43,9 @@ generation and MSVC-only tests still need Visual Studio.
 | `/noentry` | Accepted with `/dll`. Native DLL startup is not supported. |
 | `/subsystem:console` or `/subsystem:windows` | Set the PE subsystem. |
 | `/machine:x64` | Validate the supported target machine. |
-| `/debug` | Default to `/opt:noref`; currently does not emit debug information or a PDB. |
+| `/debug` | Emit a sidecar Portable PDB and matching PE debug-directory entries; default to `/opt:noref`. |
+| `/debug:embedded` | Embed the Portable PDB in the output PE instead of writing a sidecar; default to `/opt:noref`. |
+| `/pdb:file` | Override the sidecar PDB path (default: the output path with a `.pdb` extension). Ignored without `/debug`, like link.exe, and in embedded mode. |
 | `/opt:ref` or `/opt:noref` | Remove unreferenced COMDATs, or retain them; REF is the default without `/debug`. |
 | `/opt:noicf` | Disable identical-code folding (the only supported ICF policy). |
 | `/include:symbol` | Retain a managed symbol and its dependencies. |
@@ -67,7 +69,32 @@ or malformed archives are errors even when they would supply no retained code.
 Other unsupported switches, directives and required input features are errors.
 
 An explicit `/opt:ref` or `/opt:noref` overrides the `/debug` default regardless
-of argument order.
+of argument order. The last `/debug` or `/debug:embedded` selects sidecar or
+embedded output, respectively.
+
+### Debug information
+
+`/debug` translates chibil's C13 CodeView into a Portable PDB using
+System.Reflection.Metadata. It preserves source paths and available SHA-256
+checksums, source lines, local-variable names and slots, lexical scopes present
+in the object, and parameter names in the assembly's metadata. Objects without
+debug information are allowed. Per-function debug COMDATs use their object's
+shared file tables; discarded functions and losing COMDAT definitions do not
+contribute debug information. Debug records never retain code or select library
+members.
+
+With `/debug`, the PE contains a CodeView reference to the resolved sidecar PDB
+path. `/pdb:` also works through response files and accepts quoted paths.
+`/debug:embedded` instead stores the Portable PDB in the PE, uses the output
+basename with a `.pdb` extension for its CodeView reference, and ignores `/pdb:`
+entirely. It does not write or remove a sidecar PDB. Both modes include a separate
+SHA-256 checksum entry for the uncompressed Portable PDB and use the same PDB
+serialization, source mappings, and metadata identities.
+
+Malformed debug information needed by retained methods is an error; unsupported
+source-bearing records produce warnings instead of silently losing information.
+General MSVC debug records, `.debug$T` types, native globals, and embedding source
+files are not supported.
 
 Use `/Zl /d1clrNoPureCRT` when compiling managed-only MSVC fixtures: `/Zl`
 omits default-library directives, and `/d1clrNoPureCRT` suppresses the native CRT
@@ -248,8 +275,8 @@ Overlapping/aliased field storage and incompatible common field sizes are errors
 Not supported: native/from-unmanaged vtfixup-associated fields and other vtfixup
 flags, legacy native NEP/UNEP dependencies, native method bodies, default-library
 resolution, `/wholearchive`, ordinal/data imports, input P/Invoke/marshalling
-metadata, native exports, debug
-information, manifest resources, security metadata, properties/events, bigobj,
+metadata, native exports, native Windows PDBs, manifest resources, security
+metadata, properties/events, bigobj,
 and relocation-overflow encodings. An ordinary call to a framework API does not
 require chilink to link that API's native implementation.
 
