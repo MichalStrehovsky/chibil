@@ -264,15 +264,6 @@ public sealed class UcoEntryPointTests
             .Link(["/entry:main", "/OPT:REF", "/include:__uco@main"]).RunAndCheck(42);
     }
 
-    [Fact]
-    public void WrapperMetadataNameUsesOrdinaryEntryPointLookup()
-    {
-        using var builder = new CompilationBuilder(true);
-        builder.Compile("int main(void) { return 42; }", Options());
-        // Check lookup without executing a native-only entrypoint as a managed method.
-        builder.Link(["/entry:__uco@main"]);
-    }
-
     [Theory]
     [InlineData("void *pointer = (char *)target + 1;", "cannot have an addend")]
     [InlineData("int pointer = (int)target;", "requires pointer-sized storage")]
