@@ -52,6 +52,38 @@ public sealed class EvalResult
 }
 
 /// <summary>
+/// An already-evaluated compile-time constant scalar: either an integer (held as a
+/// <see cref="long"/> at its promoted stack width) or a floating-point value, tagged
+/// with its C type. Produced by the recursive evaluator and by code-gen folding, and
+/// consumed by the single-level <c>Fold*</c> combinators.
+/// </summary>
+public readonly struct ConstValue
+{
+    public readonly long IntValue;
+    public readonly double FloatValue;
+    public readonly CType Ty;
+
+    private ConstValue(long i, double f, CType ty)
+    {
+        IntValue = i;
+        FloatValue = f;
+        Ty = ty;
+    }
+
+    public static ConstValue Int(long value, CType ty) => new(value, 0, ty);
+    public static ConstValue Float(double value, CType ty) => new(0, value, ty);
+
+    /// <summary>Whether this value is floating-point (derived from its type).</summary>
+    public bool IsFloat => Ty != null && TypeSystem.IsFlonum(Ty);
+
+    /// <summary>The value as a double, applying unsigned interpretation for integer values.</summary>
+    public double AsDouble => IsFloat ? FloatValue : (Ty.IsUnsigned ? (ulong)IntValue : IntValue);
+
+    /// <summary>C truthiness of the value (nonzero).</summary>
+    public bool IsTruthy => IsFloat ? FloatValue != 0 : IntValue != 0;
+}
+
+/// <summary>
 /// Compile-time constant expression evaluation, shared by the parser (contexts
 /// where C requires a constant expression: enum/case/array-size/bitfield/#if and
 /// static initializers) and by the code generator (folding of constant numeric
@@ -145,21 +177,19 @@ public sealed class ConstEval
                 if (!rl.IsSuccess) return rl;
                 EvalResult rr = EvalDouble(node.Rhs, strict, out double r);
                 if (!rr.IsSuccess) return rr;
-                result = node.Kind switch
-                {
-                    NodeKind.Add => l + r,
-                    NodeKind.Sub => l - r,
-                    NodeKind.Mul => l * r,
-                    _ => l / r,
-                };
-                break;
+                EvalResult rf = FoldBinary(node.Kind, node.Ty, node.Ty,
+                    ConstValue.Float(l, node.Ty), ConstValue.Float(r, node.Ty), out ConstValue cv);
+                if (!rf.IsSuccess) return rf;
+                value = cv.FloatValue;
+                return EvalResult.Success;
             }
             case NodeKind.Neg:
             {
                 EvalResult r = EvalDouble(node.Lhs, strict, out double l);
                 if (!r.IsSuccess) return r;
-                result = -l;
-                break;
+                FoldUnary(NodeKind.Neg, node.Ty, ConstValue.Float(l, node.Ty), out ConstValue cv);
+                value = cv.FloatValue;
+                return EvalResult.Success;
             }
             case NodeKind.Cond:
             {
@@ -233,143 +263,49 @@ public sealed class ConstEval
                     if (!rl.IsSuccess) return rl;
                     EvalResult rr = EvalInt(node.Rhs, false, strict, out long r, out _);
                     if (!rr.IsSuccess) return rr;
-                    value = node.Kind == NodeKind.Add ? l + r : l - r;
-                    if (label == null) value = NarrowPromoted(value, node.Ty);
-                    return EvalResult.Success;
+                    // Address (relocation) arithmetic is not narrowed and bypasses the
+                    // numeric fold; the label carries the symbol, value the addend.
+                    if (label != null)
+                    {
+                        value = node.Kind == NodeKind.Add ? l + r : l - r;
+                        return EvalResult.Success;
+                    }
+                    return FoldIntBinary(node, l, r, out value);
                 }
 
                 case NodeKind.Mul:
-                {
-                    EvalResult r = EvalBothInt(node, strict, out long a, out long b);
-                    if (!r.IsSuccess) return r;
-                    value = NarrowPromoted(a * b, node.Ty);
-                    return EvalResult.Success;
-                }
-
                 case NodeKind.Div:
                 case NodeKind.Mod:
-                {
-                    EvalResult r = EvalBothInt(node, strict, out long a, out long b);
-                    if (!r.IsSuccess) return r;
-                    if (b == 0)
-                        return EvalResult.IllFormed("division by zero in constant expression");
-                    if (!node.Ty.IsUnsigned && b == -1 && a == IntTypeMin(node.Ty))
-                        return EvalResult.IllFormed("overflow in constant expression");
-                    long res;
-                    if (node.Kind == NodeKind.Div)
-                        res = node.Ty.IsUnsigned ? (long)((ulong)a / (ulong)b) : a / b;
-                    else
-                        res = node.Ty.IsUnsigned ? (long)((ulong)a % (ulong)b) : a % b;
-                    value = NarrowPromoted(res, node.Ty);
-                    return EvalResult.Success;
-                }
-
-                case NodeKind.Neg:
-                {
-                    EvalResult r = EvalInt(node.Lhs, false, strict, out long l, out _);
-                    if (!r.IsSuccess) return r;
-                    value = NarrowPromoted(-l, node.Ty);
-                    return EvalResult.Success;
-                }
-
                 case NodeKind.BitAnd:
                 case NodeKind.BitOr:
                 case NodeKind.BitXor:
+                case NodeKind.Shl:
+                case NodeKind.Shr:
                 {
                     EvalResult r = EvalBothInt(node, strict, out long a, out long b);
                     if (!r.IsSuccess) return r;
-                    long res = node.Kind switch
-                    {
-                        NodeKind.BitAnd => a & b,
-                        NodeKind.BitOr => a | b,
-                        _ => a ^ b,
-                    };
-                    value = NarrowPromoted(res, node.Ty);
-                    return EvalResult.Success;
+                    return FoldIntBinary(node, a, b, out value);
                 }
 
+                case NodeKind.Neg:
                 case NodeKind.BitNot:
                 {
                     EvalResult r = EvalInt(node.Lhs, false, strict, out long l, out _);
                     if (!r.IsSuccess) return r;
-                    value = NarrowPromoted(~l, node.Ty);
-                    return EvalResult.Success;
-                }
-
-                case NodeKind.Shl:
-                case NodeKind.Shr:
-                {
-                    EvalResult r = EvalBothInt(node, strict, out long l, out long cnt);
-                    if (!r.IsSuccess) return r;
-                    // The shifted operand is evaluated at its promoted stack width
-                    // (32 or 64 bits). C leaves counts < 0 or >= width undefined.
-                    int width = node.Lhs.Ty.Size <= 4 ? 32 : 64;
-                    if (cnt < 0 || cnt >= width)
-                        return EvalResult.IllFormed("shift count out of range in constant expression");
-                    int c = (int)cnt;
-                    long res;
-                    if (node.Kind == NodeKind.Shl)
-                    {
-                        res = l << c; // high bits dropped by NarrowPromoted below
-                    }
-                    else if (node.Lhs.Ty.IsUnsigned)
-                    {
-                        // Logical shift (matches shr.un on the promoted stack value).
-                        res = width == 32 ? (long)((uint)l >> c) : (long)((ulong)l >> c);
-                    }
-                    else
-                    {
-                        // Arithmetic shift (matches shr).
-                        res = width == 32 ? (int)l >> c : l >> c;
-                    }
-                    value = NarrowPromoted(res, node.Ty);
+                    FoldUnary(node.Kind, node.Ty, ConstValue.Int(l, node.Ty), out ConstValue cv);
+                    value = cv.IntValue;
                     return EvalResult.Success;
                 }
 
                 case NodeKind.Eq:
                 case NodeKind.Ne:
-                {
-                    bool eq;
-                    if (TypeSystem.IsFlonum(node.Lhs.Ty))
-                    {
-                        EvalResult rl = EvalDouble(node.Lhs, strict, out double l);
-                        if (!rl.IsSuccess) return rl;
-                        EvalResult rr = EvalDouble(node.Rhs, strict, out double r);
-                        if (!rr.IsSuccess) return rr;
-                        eq = l == r;
-                    }
-                    else
-                    {
-                        EvalResult r = EvalBothInt(node, strict, out long a, out long b);
-                        if (!r.IsSuccess) return r;
-                        eq = a == b;
-                    }
-                    value = (node.Kind == NodeKind.Eq ? eq : !eq) ? 1 : 0;
-                    return EvalResult.Success;
-                }
-
                 case NodeKind.Lt:
                 case NodeKind.Le:
                 {
-                    bool res;
-                    if (TypeSystem.IsFlonum(node.Lhs.Ty))
-                    {
-                        EvalResult rl = EvalDouble(node.Lhs, strict, out double l);
-                        if (!rl.IsSuccess) return rl;
-                        EvalResult rr = EvalDouble(node.Rhs, strict, out double r);
-                        if (!rr.IsSuccess) return rr;
-                        res = node.Kind == NodeKind.Lt ? l < r : l <= r;
-                    }
-                    else
-                    {
-                        EvalResult r = EvalBothInt(node, strict, out long a, out long b);
-                        if (!r.IsSuccess) return r;
-                        if (node.Lhs.Ty.IsUnsigned)
-                            res = node.Kind == NodeKind.Lt ? (ulong)a < (ulong)b : (ulong)a <= (ulong)b;
-                        else
-                            res = node.Kind == NodeKind.Lt ? a < b : a <= b;
-                    }
-                    value = res ? 1 : 0;
+                    EvalResult r = EvalBothOperands(node, strict, out ConstValue a, out ConstValue b);
+                    if (!r.IsSuccess) return r;
+                    FoldBinary(node.Kind, node.Ty, node.Lhs.Ty, a, b, out ConstValue cv);
+                    value = cv.IntValue;
                     return EvalResult.Success;
                 }
 
@@ -433,12 +369,14 @@ public sealed class ConstEval
                     {
                         EvalResult r = EvalDouble(node.Lhs, strict, out double d);
                         if (!r.IsSuccess) return r;
-                        value = DoubleToInt(d, node.Ty);
+                        FoldCast(node.Lhs.Ty, node.Ty, ConstValue.Float(d, node.Lhs.Ty), out ConstValue cvf);
+                        value = cvf.IntValue;
                         return EvalResult.Success;
                     }
                     EvalResult rc = EvalInt(node.Lhs, allowLabel, strict, out long v, out label);
                     if (!rc.IsSuccess) return rc;
-                    value = TruncateCast(v, node.Ty);
+                    FoldCast(node.Lhs.Ty, node.Ty, ConstValue.Int(v, node.Lhs.Ty), out ConstValue cv);
+                    value = cv.IntValue;
                     return EvalResult.Success;
                 }
 
@@ -493,6 +431,240 @@ public sealed class ConstEval
         }
         return EvalResult.NotConstant("invalid initializer");
     }
+
+    /// <summary>
+    /// Fold an integer binary operator over two evaluated operand values, using the
+    /// node's result type and its left-operand type (for signedness / shift width).
+    /// </summary>
+    private EvalResult FoldIntBinary(Node node, long a, long b, out long value)
+    {
+        EvalResult r = FoldBinary(node.Kind, node.Ty, node.Lhs.Ty,
+            ConstValue.Int(a, node.Lhs.Ty), ConstValue.Int(b, node.Rhs.Ty), out ConstValue cv);
+        value = cv.IntValue;
+        return r;
+    }
+
+    /// <summary>
+    /// Evaluate both operands of a comparison as <see cref="ConstValue"/>s, choosing
+    /// the floating-point or integer path from the (converted) left-operand type.
+    /// </summary>
+    private EvalResult EvalBothOperands(Node node, bool strict, out ConstValue a, out ConstValue b)
+    {
+        a = default;
+        b = default;
+        if (TypeSystem.IsFlonum(node.Lhs.Ty))
+        {
+            EvalResult rl = EvalDouble(node.Lhs, strict, out double dl);
+            if (!rl.IsSuccess) return rl;
+            EvalResult rr = EvalDouble(node.Rhs, strict, out double dr);
+            if (!rr.IsSuccess) return rr;
+            a = ConstValue.Float(dl, node.Lhs.Ty);
+            b = ConstValue.Float(dr, node.Rhs.Ty);
+            return EvalResult.Success;
+        }
+        EvalResult ri = EvalBothInt(node, strict, out long ia, out long ib);
+        if (!ri.IsSuccess) return ri;
+        a = ConstValue.Int(ia, node.Lhs.Ty);
+        b = ConstValue.Int(ib, node.Rhs.Ty);
+        return EvalResult.Success;
+    }
+
+    // ─── Single-level fold combinators ─────────────────────────────
+    //
+    // These combine ALREADY-EVALUATED operand constants for one operator and are
+    // the single source of truth for constant arithmetic semantics. Both the
+    // recursive evaluator above and code-gen's bottom-up folding call them, so the
+    // integer-promotion narrowing, signed/unsigned selection, float rounding, and
+    // ill-formed diagnostics live in exactly one place.
+
+    /// <summary>
+    /// Combine two operand constants with a binary operator, normalizing the result
+    /// to <paramref name="resultTy"/>. <paramref name="operandTy"/> is the common
+    /// (converted) operand type that selects signedness / float-ness and — for
+    /// shifts — the promoted width of the shifted value.
+    /// </summary>
+    public EvalResult FoldBinary(NodeKind kind, CType resultTy, CType operandTy,
+        ConstValue lhs, ConstValue rhs, out ConstValue result)
+    {
+        result = default;
+        bool flonum = TypeSystem.IsFlonum(operandTy);
+
+        // Floating-point arithmetic (only these four operators are float-valued).
+        if (flonum && kind is NodeKind.Add or NodeKind.Sub or NodeKind.Mul or NodeKind.Div)
+        {
+            double l = lhs.AsDouble, r = rhs.AsDouble;
+            double d = kind switch
+            {
+                NodeKind.Add => l + r,
+                NodeKind.Sub => l - r,
+                NodeKind.Mul => l * r,
+                _ => l / r,
+            };
+            result = MakeFloat(d, resultTy);
+            return EvalResult.Success;
+        }
+
+        switch (kind)
+        {
+            case NodeKind.Add:
+            case NodeKind.Sub:
+            case NodeKind.Mul:
+            case NodeKind.Div:
+            case NodeKind.Mod:
+            case NodeKind.BitAnd:
+            case NodeKind.BitOr:
+            case NodeKind.BitXor:
+            case NodeKind.Shl:
+            case NodeKind.Shr:
+            {
+                unchecked
+                {
+                    long a = lhs.IntValue, b = rhs.IntValue;
+                    long res;
+                    switch (kind)
+                    {
+                        case NodeKind.Add: res = a + b; break;
+                        case NodeKind.Sub: res = a - b; break;
+                        case NodeKind.Mul: res = a * b; break;
+                        case NodeKind.Div:
+                        case NodeKind.Mod:
+                            if (b == 0)
+                                return EvalResult.IllFormed("division by zero in constant expression");
+                            if (!resultTy.IsUnsigned && b == -1 && a == IntTypeMin(resultTy))
+                                return EvalResult.IllFormed("overflow in constant expression");
+                            if (kind == NodeKind.Div)
+                                res = resultTy.IsUnsigned ? (long)((ulong)a / (ulong)b) : a / b;
+                            else
+                                res = resultTy.IsUnsigned ? (long)((ulong)a % (ulong)b) : a % b;
+                            break;
+                        case NodeKind.BitAnd: res = a & b; break;
+                        case NodeKind.BitOr: res = a | b; break;
+                        case NodeKind.BitXor: res = a ^ b; break;
+                        default: // Shl / Shr
+                        {
+                            // The shifted operand is evaluated at its promoted stack
+                            // width (32 or 64 bits). C leaves counts < 0 or >= width
+                            // undefined.
+                            int width = operandTy.Size <= 4 ? 32 : 64;
+                            if (b < 0 || b >= width)
+                                return EvalResult.IllFormed("shift count out of range in constant expression");
+                            int c = (int)b;
+                            if (kind == NodeKind.Shl)
+                                res = a << c; // high bits dropped by NarrowPromoted below
+                            else if (operandTy.IsUnsigned)
+                                res = width == 32 ? (long)((uint)a >> c) : (long)((ulong)a >> c);
+                            else
+                                res = width == 32 ? (int)a >> c : a >> c;
+                            break;
+                        }
+                    }
+                    result = ConstValue.Int(NarrowPromoted(res, resultTy), resultTy);
+                    return EvalResult.Success;
+                }
+            }
+
+            case NodeKind.Eq:
+            case NodeKind.Ne:
+            {
+                bool eq = flonum ? lhs.AsDouble == rhs.AsDouble : lhs.IntValue == rhs.IntValue;
+                long v = (kind == NodeKind.Eq ? eq : !eq) ? 1 : 0;
+                result = ConstValue.Int(v, resultTy);
+                return EvalResult.Success;
+            }
+
+            case NodeKind.Lt:
+            case NodeKind.Le:
+            {
+                bool res;
+                if (flonum)
+                {
+                    double l = lhs.AsDouble, r = rhs.AsDouble;
+                    res = kind switch
+                    {
+                        NodeKind.Lt => l < r,
+                        NodeKind.Le => l <= r,
+                        _ => l >= r,
+                    };
+                }
+                else if (operandTy.IsUnsigned)
+                {
+                    ulong l = (ulong)lhs.IntValue, r = (ulong)rhs.IntValue;
+                    res = kind switch
+                    {
+                        NodeKind.Lt => l < r,
+                        NodeKind.Le => l <= r,
+                        _ => l >= r,
+                    };
+                }
+                else
+                {
+                    long l = lhs.IntValue, r = rhs.IntValue;
+                    res = kind switch
+                    {
+                        NodeKind.Lt => l < r,
+                        NodeKind.Le => l <= r,
+                        _ => l >= r,
+                    };
+                }
+                result = ConstValue.Int(res ? 1 : 0, resultTy);
+                return EvalResult.Success;
+            }
+        }
+
+        return EvalResult.NotConstant($"not a foldable binary operator ({kind})");
+    }
+
+    /// <summary>Combine one operand constant with a unary operator.</summary>
+    public EvalResult FoldUnary(NodeKind kind, CType resultTy, ConstValue operand, out ConstValue result)
+    {
+        result = default;
+        switch (kind)
+        {
+            case NodeKind.Neg:
+                if (TypeSystem.IsFlonum(resultTy))
+                    result = MakeFloat(-operand.AsDouble, resultTy);
+                else
+                    result = ConstValue.Int(NarrowPromoted(unchecked(-operand.IntValue), resultTy), resultTy);
+                return EvalResult.Success;
+
+            case NodeKind.BitNot:
+                result = ConstValue.Int(NarrowPromoted(~operand.IntValue, resultTy), resultTy);
+                return EvalResult.Success;
+
+            case NodeKind.Not:
+                result = ConstValue.Int(operand.IsTruthy ? 0 : 1, resultTy);
+                return EvalResult.Success;
+        }
+        return EvalResult.NotConstant($"not a foldable unary operator ({kind})");
+    }
+
+    /// <summary>Apply a scalar cast to an operand constant.</summary>
+    public EvalResult FoldCast(CType fromTy, CType toTy, ConstValue operand, out ConstValue result)
+    {
+        if (toTy.Kind == TypeKind.Bool)
+        {
+            result = ConstValue.Int(operand.IsTruthy ? 1 : 0, toTy);
+            return EvalResult.Success;
+        }
+        if (TypeSystem.IsFlonum(toTy))
+        {
+            double d = operand.IsFloat
+                ? operand.FloatValue
+                : (fromTy.IsUnsigned ? (ulong)operand.IntValue : operand.IntValue);
+            result = MakeFloat(d, toTy);
+            return EvalResult.Success;
+        }
+        // Target is integer.
+        if (operand.IsFloat)
+            result = ConstValue.Int(DoubleToInt(operand.FloatValue, toTy), toTy);
+        else
+            result = ConstValue.Int(TruncateCast(operand.IntValue, toTy), toTy);
+        return EvalResult.Success;
+    }
+
+    /// <summary>Round a double to <c>float</c> precision when the target type is <c>float</c>.</summary>
+    private static ConstValue MakeFloat(double value, CType ty)
+        => ConstValue.Float(ty.Kind == TypeKind.Float ? (float)value : value, ty);
 
     // ─── Helpers ───────────────────────────────────────────────────
 

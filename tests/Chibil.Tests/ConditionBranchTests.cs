@@ -313,4 +313,77 @@ public sealed class ConditionBranchTests : ChibiTestBase
         .Link(ConsoleMain)
         .RunAndCheck(exitCode: 0);
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Compare-against-constant-zero folds to brtrue/brfalse, and a
+    //  fully-constant condition folds to an unconditional / elided
+    //  branch. These pin down the behavior of those lowerings.
+    // ═══════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void CompareAgainstZeroBranches()
+    {
+        Compile("""
+            int nz(int x) { if (x != 0) return 1; return 0; }
+            int iz(int x) { if (x == 0) return 1; return 0; }
+            int nz_rev(int x) { if (0 != x) return 1; return 0; }
+            int iz_rev(int x) { if (0 == x) return 1; return 0; }
+            int main(void) {
+                if (nz(0) != 0) return 1;
+                if (nz(5) != 1) return 2;
+                if (nz(-5) != 1) return 3;
+                if (iz(0) != 1) return 4;
+                if (iz(9) != 0) return 5;
+                if (nz_rev(0) != 0) return 6;
+                if (nz_rev(7) != 1) return 7;
+                if (iz_rev(0) != 1) return 8;
+                if (iz_rev(7) != 0) return 9;
+                return 0;
+            }
+            """)
+        .Link(ConsoleMain)
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
+    public void PointerCompareAgainstZeroBranches()
+    {
+        Compile("""
+            int is_null(int *p) { if (p == 0) return 1; return 0; }
+            int non_null(int *p) { if (p != 0) return 1; return 0; }
+            int main(void) {
+                int v = 7;
+                if (is_null(0) != 1) return 1;
+                if (is_null(&v) != 0) return 2;
+                if (non_null(0) != 0) return 3;
+                if (non_null(&v) != 1) return 4;
+                return 0;
+            }
+            """)
+        .Link(ConsoleMain)
+        .RunAndCheck(exitCode: 0);
+    }
+
+    [Fact]
+    public void ConstantConditionsFoldToUnconditionalControlFlow()
+    {
+        Compile("""
+            int main(void) {
+                int hit = 0;
+                if (1) hit++;          // always taken
+                if (0) return 90;      // never taken
+                if (2 + 3 == 5) hit++; // constant-true
+                if (1 && 0) return 91; // constant-false
+                if (0 || 7) hit++;     // constant-true
+                int count = 0;
+                while (1) { count++; if (count == 4) break; }  // constant-true loop
+                for (int i = 0; ; i++) { if (i == 3) break; }  // no condition
+                if (hit != 3) return 1;
+                if (count != 4) return 2;
+                return 0;
+            }
+            """)
+        .Link(ConsoleMain)
+        .RunAndCheck(exitCode: 0);
+    }
 }
