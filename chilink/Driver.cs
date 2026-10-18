@@ -16,12 +16,14 @@ internal sealed class LinkOptions
     public readonly List<string> Includes = new();
     public readonly List<string> DefaultLibraries = new();
     public readonly HashSet<string> IgnoredLibraries = new(StringComparer.OrdinalIgnoreCase);
-    public string Output, Entry;
-    public bool Dll, NoEntry, Debug, NoDefaultLib;
+    public string Output, Entry, Pdb;
+    public bool Dll, NoEntry, Debug, EmbeddedPdb, NoDefaultLib;
     public bool? RefOptimization;
     public bool OptRef => RefOptimization ?? !Debug;
     public Subsystem Subsystem = Subsystem.WindowsCui;
 }
+
+internal sealed record LinkResult(byte[] Image, byte[] Pdb, IReadOnlyCollection<string> Warnings);
 
 public sealed class Driver
 {
@@ -36,24 +38,34 @@ public sealed class Driver
                     (arg[1..].Equals("?", StringComparison.OrdinalIgnoreCase) ||
                      arg[1..].Equals("help", StringComparison.OrdinalIgnoreCase)))
                 {
-                    Console.WriteLine("chilink [/out:file] [/entry:symbol | /dll] [/debug] [/opt:ref|noref] [/libpath:dir] objects/libraries...");
+                    Console.WriteLine("chilink [/out:file] [/entry:symbol | /dll] [/debug[:embedded]] [/pdb:file] [/opt:ref|noref] [/libpath:dir] objects/libraries...");
                     return;
                 }
                 Parse(options, arg);
             }
             if (options.Inputs.Count == 0)
                 throw new LinkException("no input object or library files");
-            byte[] image = new Linker(options).Link();
+            LinkResult result = new Linker(options).Link();
+            foreach (string warning in result.Warnings)
+                Console.Error.WriteLine($"chilink: warning: {warning}");
             string temporary = Path.GetFullPath(options.Output) + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            string temporaryPdb = result.Pdb == null ? null : options.Pdb + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
-                File.WriteAllBytes(temporary, image);
+                File.WriteAllBytes(temporary, result.Image);
+                if (temporaryPdb != null)
+                {
+                    File.WriteAllBytes(temporaryPdb, result.Pdb);
+                    File.Move(temporaryPdb, options.Pdb, overwrite: true);
+                }
                 File.Move(temporary, options.Output, overwrite: true);
             }
             finally
             {
                 if (File.Exists(temporary))
                     File.Delete(temporary);
+                if (temporaryPdb != null && File.Exists(temporaryPdb))
+                    File.Delete(temporaryPdb);
             }
         }
         catch (IOException ex) { throw new LinkException(ex.Message); }
@@ -92,10 +104,19 @@ public sealed class Driver
         switch (name)
         {
             case "nologo": NoValue(); break;
-            case "debug": NoValue(); options.Debug = true; break;
+            case "debug":
+                if (value != null && !RequiredValue().Equals("embedded", StringComparison.OrdinalIgnoreCase))
+                    throw new LinkException($"unsupported /debug option '{value}'");
+                options.Debug = true;
+                options.EmbeddedPdb = value != null;
+                break;
             case "out":
                 if (directive) throw new LinkException("/out is not supported in object directives");
                 options.Output = RequiredValue();
+                break;
+            case "pdb":
+                if (directive) throw new LinkException("/pdb is not supported in object directives");
+                options.Pdb = RequiredValue();
                 break;
             case "entry": options.Entry = RequiredValue(); break;
             case "dll": NoValue(); options.Dll = true; break;

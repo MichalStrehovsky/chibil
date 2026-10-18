@@ -7,6 +7,8 @@ namespace Chilink;
 
 internal sealed partial class MetadataMerger
 {
+    public IReadOnlyList<SourceToken?> OutputMethods { get; private set; } = [];
+
     public UserStringHandle GetUserString(string value) => _output.GetOrAddUserString(value);
 
     public Handle Map(int input, Handle handle)
@@ -55,7 +57,8 @@ internal sealed partial class MetadataMerger
     }
 
     public void Build(MetadataBuilder output, IReadOnlySet<SourceToken> live,
-        Func<SourceToken, int> bodyOffset, Func<SourceToken, int> fieldOffset, DataInitialization initialization)
+        Func<SourceToken, int> bodyOffset, Func<SourceToken, int> fieldOffset, DataInitialization initialization,
+        Func<SourceToken, SourceToken?> selectedMethod = null)
     {
         if (_output != null)
             throw new LinkException("Metadata merger can only be built once.");
@@ -93,6 +96,16 @@ internal sealed partial class MetadataMerger
             .OrderBy(p => Reader(p).GetParameter((ParameterHandle)p.Handle).SequenceNumber).ToArray());
         var parameters = methods.SelectMany(t => parametersByMethod[t]).ToArray();
         int syntheticMethods = initialization.HasInitializer ? 1 : 0;
+        OutputMethods = [.. Enumerable.Repeat<SourceToken?>(null, syntheticMethods), .. methods.Select(t => (SourceToken?)t)];
+        var parameterNames = new Dictionary<SourceToken, string>();
+        if (selectedMethod != null)
+            foreach (var token in methods)
+                if (selectedMethod(token) is SourceToken source && source.Handle.Kind == HandleKind.MethodDefinition)
+                    foreach (var handle in Reader(source).GetMethodDefinition((MethodDefinitionHandle)source.Handle).GetParameters())
+                    {
+                        var parameter = Reader(source).GetParameter(handle);
+                        parameterNames[Resolve(new(source.Input, handle))] = Reader(source).GetString(parameter.Name);
+                    }
         Predict(types, TableIndex.TypeDef);
         Predict(incompleteTypes, TableIndex.TypeDef, types.Length);
         Predict(fields, TableIndex.Field, initialization.Copies.Count);
@@ -286,7 +299,9 @@ internal sealed partial class MetadataMerger
         foreach (var token in parameters)
         {
             var parameter = Reader(token).GetParameter((ParameterHandle)token.Handle);
-            Check(token, output.AddParameter(parameter.Attributes, String(token, parameter.Name), parameter.SequenceNumber));
+            var name = parameterNames.TryGetValue(token, out string selectedName)
+                ? output.GetOrAddString(selectedName) : String(token, parameter.Name);
+            Check(token, output.AddParameter(parameter.Attributes, name, parameter.SequenceNumber));
         }
         foreach (var token in RowsOf(HandleKind.MemberReference))
         {
