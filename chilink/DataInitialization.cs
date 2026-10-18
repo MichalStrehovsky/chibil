@@ -120,7 +120,7 @@ internal sealed partial class Linker
             target = ResolveManagedVtableTarget(section.Input, symbol);
         }
         else
-            target = ResolveDataTarget(section.Input, symbol, ref addend);
+            target = ResolveDataTarget(section.Input, symbol);
         if (_dataRelocations.Any(r => r.Field == owner.Token &&
             r.Offset < relocation.Offset - owners[0].Offset + PointerSize && r.Offset + PointerSize > relocation.Offset - owners[0].Offset))
             throw section.Input.Error($"overlapping data relocations in '{section.Name}'");
@@ -145,7 +145,7 @@ internal sealed partial class Linker
         return token;
     }
 
-    private SourceToken ResolveDataTarget(InputFile input, InputSymbol symbol, ref long addend)
+    private SourceToken ResolveDataTarget(InputFile input, InputSymbol symbol)
     {
         Definition target;
         if (symbol.Section?.Ignored == true || symbol.Section?.IsUnsupportedVtableFixup(symbol.Coff.Value) == true)
@@ -162,23 +162,6 @@ internal sealed partial class Linker
                         ? $"data relocation requires unsupported native/IJW symbol '{symbol.Name}'"
                         : $"unresolved data relocation symbol '{symbol.Name}'");
                 }
-            }
-            else if (symbol.Section != null && !symbol.Section.IsCode)
-            {
-                long offset;
-                try { offset = checked((long)symbol.Coff.Value + addend); }
-                catch (OverflowException) { throw input.Error($"data relocation offset overflow for '{symbol.Name}'"); }
-                var candidates = input.Definitions.Values.Where(d => d.Section == symbol.Section &&
-                    d.Token.Handle.Kind == HandleKind.FieldDefinition && offset >= d.Offset &&
-                    offset < (long)d.Offset + FieldSize(d.Token)).ToArray();
-                if (candidates.Length == 0)
-                    candidates = input.Definitions.Values.Where(d => d.Section == symbol.Section &&
-                        d.Token.Handle.Kind == HandleKind.FieldDefinition &&
-                        offset == (long)d.Offset + FieldSize(d.Token)).ToArray();
-                if (candidates.Length != 1)
-                    throw input.Error($"data relocation symbol '{symbol.Name}' has no unambiguous managed storage");
-                target = candidates[0];
-                addend = offset - target.Offset;
             }
             else
                 throw input.Error($"unsupported native data relocation symbol '{symbol.Name}'");

@@ -486,34 +486,23 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
         Assert.Contains("vtfixup", error.Message);
     }
 
-    [Fact]
-    public void SectionSymbolDataRelocationPreservesInteriorOffset()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FieldSymbolDataRelocationsPreserveGlobalBoundaryPointers(bool dataSections)
     {
-        var builder = Compile("""
-            int values[2] = { 20, 42 };
-            int *pointer = &values[1];
-            int main(void) { return *pointer; }
-            """, ["-fdata-sections"]);
-        byte[] bytes = File.ReadAllBytes(builder._objFiles[0]);
-        using (var coff = new CoffReader(new MemoryStream(bytes)))
-        {
-            var symbols = coff.GetSymbolTableReader();
-            var sections = coff.GetSectionTableReader();
-            var data = sections.Sections.Select(sections.GetCoffSection).Single(s =>
-                s.NumberOfRelocations == 1 &&
-                coff.GetRelocationTableReader(s).GetRelocation(0).Type == ImageRelocation.Amd64_ADDR64);
-            var relocation = coff.GetRelocationTableReader(data).GetRelocation(0);
-            var target = symbols.GetCoffSymbol(relocation.Symbol);
-            var sectionSymbol = symbols.Symbols.Single(h =>
-            {
-                var symbol = symbols.GetCoffSymbol(h);
-                return symbol.StorageClass == CoffSymbolStorageClass.Static && symbol.NumberOfAuxSymbols != 0 &&
-                    symbol.SectionNumber.Number == target.SectionNumber.Number;
-            });
-            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(data.PointerToRelocations + 4), (uint)sectionSymbol.Index);
-        }
-        File.WriteAllBytes(builder._objFiles[0], bytes);
-        builder.Link(ConsoleMain).RunAndCheck(42);
+        Compile("""
+            int second = 22;
+            int first = 20;
+            char *end = (char *)&first + sizeof(first);
+            int *start = &second;
+            int main(void) {
+                if (end != (char *)&first + sizeof(first)) return 1;
+                if (start != &second) return 2;
+                return first + *start;
+            }
+            """, dataSections ? ["-fdata-sections"] : null)
+            .Link(ConsoleMain).RunAndCheck(42);
     }
 
     [Theory]
