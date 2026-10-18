@@ -74,7 +74,7 @@ public class MsilObjectEmitter
         _dm = options.DataModel;
         _nameMangler = nameMangler;
         _aggregateModel = aggregateModel;
-        _binder = new BclBinder(this);
+        _binder = options.TargetNetCore ? new NetCoreBclBinder(this) : new NetFrameworkBclBinder(this);
     }
 
     internal BclBinder Binder => _binder;

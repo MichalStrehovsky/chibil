@@ -435,6 +435,7 @@ public class CompilerOptions
     public bool OptFixedAddressStatics;
     public bool Optimize;
     public bool UseFieldBackedManagedAggregates;
+    public bool TargetNetCore;
     public string BaseFile;
     public DataModel DataModel = DataModel.LLP64;
 }

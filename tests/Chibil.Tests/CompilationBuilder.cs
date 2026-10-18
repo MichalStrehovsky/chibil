@@ -12,13 +12,21 @@ namespace Chibil.Tests;
 /// </summary>
 public sealed class CompilationBuilder : IDisposable
 {
+#if NETCORE_TESTS
+    internal const bool DefaultNetCore = true;
+#else
+    internal const bool DefaultNetCore = false;
+#endif
+    internal const string ExecutableName = DefaultNetCore ? "output.dll" : "output.exe";
+    internal readonly bool _netCore;
     internal readonly string _tempDir;
     internal readonly List<string> _objFiles = new();
     private int _fileCounter;
     private bool _disposed;
 
-    internal CompilationBuilder()
+    internal CompilationBuilder(bool netCore = DefaultNetCore)
     {
+        _netCore = netCore;
         _tempDir = Path.GetFullPath(Path.Combine("artifacts", $"chibil-test-{Guid.NewGuid():N}"));
         Directory.CreateDirectory(_tempDir);
     }
@@ -78,6 +86,8 @@ public sealed class CompilationBuilder : IDisposable
         File.WriteAllText(sourceFile, source);
 
         var args = new List<string> { "-ffixed-address-statics" };
+        if (_netCore)
+            args.Add("-fnetcore");
 #if FIELD_BACKED_AGGREGATES
         args.Add("-fmanaged-aggregate-fields");
 #endif
@@ -105,6 +115,9 @@ public sealed class CompilationBuilder : IDisposable
     /// </param>
     public CompilationBuilder MsvcCompile(string source, string[] extraArgs = null)
     {
+        if (_netCore)
+            throw Xunit.Sdk.SkipException.ForSkip("MSVC's /BC C frontend cannot compile with /clr:netcore.");
+
         var name = $"input{_fileCounter++}";
         var sourceFile = Path.Combine(_tempDir, $"{name}.c");
         var objFile = Path.Combine(_tempDir, $"{name}.obj");
@@ -156,7 +169,7 @@ public sealed class CompilationBuilder : IDisposable
         if (_objFiles.Count == 0)
             throw new InvalidOperationException("No object files to link. Call Compile() first.");
 
-        var exePath = Path.Combine(_tempDir, "output.exe");
+        var exePath = Path.Combine(_tempDir, _netCore ? "output.dll" : "output.exe");
 
         var psi = new ProcessStartInfo("link.exe")
         {
@@ -183,7 +196,7 @@ public sealed class CompilationBuilder : IDisposable
             throw new InvalidOperationException(
                 $"link.exe failed with exit code {proc.ExitCode}.\nstdout:\n{stdout}\nstderr:\n{stderr}");
 
-        return new LinkResult(exePath);
+        return new LinkResult(exePath, _netCore);
     }
 
     /// <summary>
@@ -197,7 +210,7 @@ public sealed class CompilationBuilder : IDisposable
         bool isDll = extraArgs?.Any(arg =>
             arg.Equals("/dll", StringComparison.OrdinalIgnoreCase) ||
             arg.Equals("-dll", StringComparison.OrdinalIgnoreCase)) == true;
-        var imagePath = Path.Combine(_tempDir, isDll ? "output.dll" : "output.exe");
+        var imagePath = Path.Combine(_tempDir, isDll || _netCore ? "output.dll" : "output.exe");
         var args = new List<string> { $"/out:{imagePath}" };
         if (extraArgs != null)
             args.AddRange(extraArgs);
@@ -212,7 +225,7 @@ public sealed class CompilationBuilder : IDisposable
             throw new InvalidOperationException($"chilink failed: {ex.Message}", ex);
         }
 
-        return new LinkResult(imagePath);
+        return new LinkResult(imagePath, _netCore);
     }
 
     public void Dispose()
@@ -234,20 +247,40 @@ public sealed class CompilationBuilder : IDisposable
 public sealed class LinkResult
 {
     private readonly string _exePath;
+    private readonly bool _netCore;
 
-    internal LinkResult(string exePath) => _exePath = exePath;
+    internal LinkResult(string exePath, bool netCore = CompilationBuilder.DefaultNetCore)
+    {
+        _exePath = exePath;
+        _netCore = netCore;
+    }
 
     /// <summary>
     /// Run the linked executable and assert that it exits with the expected code.
     /// </summary>
     public void RunAndCheck(int exitCode)
     {
-        var psi = new ProcessStartInfo(_exePath)
+        if (_netCore)
+            File.WriteAllText(Path.ChangeExtension(_exePath, ".runtimeconfig.json"), """
+                {
+                  "runtimeOptions": {
+                    "tfm": "net10.0",
+                    "framework": {
+                      "name": "Microsoft.NETCore.App",
+                      "version": "10.0.0"
+                    }
+                  }
+                }
+                """);
+
+        var psi = new ProcessStartInfo(_netCore ? "dotnet" : _exePath)
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
+        if (_netCore)
+            psi.ArgumentList.Add(_exePath);
 
         using var proc = Process.Start(psi)!;
         var stderrTask = proc.StandardError.ReadToEndAsync();

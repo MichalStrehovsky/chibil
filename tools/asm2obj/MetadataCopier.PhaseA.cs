@@ -16,11 +16,11 @@ public sealed partial class MetadataCopier
     private const string CompilerGlobalScopeAttrFullName = "System.Runtime.CompilerServices.CompilerGlobalScopeAttribute";
     private const string DecoratedNameAttrFullName = "System.Runtime.CompilerServices.DecoratedNameAttribute";
 
-    private static readonly string[] AcceptedCoreLibs = { "mscorlib" };
+    private string _coreLibraryName;
+    private static readonly byte[] NetCorePublicKeyToken = { 0xB0, 0x3F, 0x5F, 0x7F, 0x11, 0xD5, 0x0A, 0x3A };
 
     private void ClassifyTypesAndMethods()
     {
-        // Validate core-lib references (loudly reject System.Runtime-based assemblies).
         ValidateCoreLibReferences();
 
         int typeDefCount = _reader.GetTableRowCount(TableIndex.TypeDef);
@@ -315,15 +315,30 @@ public sealed partial class MetadataCopier
         {
             var ar = _reader.GetAssemblyReference(MetadataTokens.AssemblyReferenceHandle(row));
             string name = _reader.GetString(ar.Name);
-            // The first AssemblyRef is treated as the core-lib by convention.
-            // We loudly reject System.Runtime / System.Private.CoreLib.
-            if (name == "System.Runtime" || name == "System.Private.CoreLib" || name == "netstandard")
+            if (name == "System.Private.CoreLib" || name == "netstandard")
             {
                 throw new NotSupportedException(
-                    $"Input references '{name}'. v1 requires inputs compiled against 'mscorlib'. " +
-                    "Build the C# CRT code against a Framework mscorlib.dll reference assembly.");
+                    $"Input references '{name}'. Compile against .NET Framework or .NET 10 reference assemblies.");
+            }
+            if (name == "mscorlib" || name == "System.Runtime")
+            {
+                if (_coreLibraryName != null && _coreLibraryName != name)
+                    throw new NotSupportedException("Input mixes .NET Framework and .NET Core reference assemblies.");
+                if (name == "System.Runtime")
+                    ValidateNetCoreAssemblyReference(ar);
+                _coreLibraryName = name;
             }
         }
+    }
+
+    private void ValidateNetCoreAssemblyReference(AssemblyReference reference)
+    {
+        if (reference.Version != new Version(10, 0, 0, 0) ||
+            !_reader.GetBlobBytes(reference.PublicKeyOrToken).AsSpan().SequenceEqual(NetCorePublicKeyToken) ||
+            !string.IsNullOrEmpty(_reader.GetString(reference.Culture)) ||
+            (reference.Flags & AssemblyFlags.PublicKey) != 0)
+            throw new NotSupportedException(
+                $"Unsupported identity for '{_reader.GetString(reference.Name)}'. Use .NET 10 reference assemblies.");
     }
 
     private bool HasCustomAttribute(CustomAttributeHandleCollection caCollection, string fullName)
