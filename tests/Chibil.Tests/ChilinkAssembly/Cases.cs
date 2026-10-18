@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using Asm2Obj;
@@ -6,6 +7,39 @@ using Asm2Obj;
 [CompilerGlobalScope]
 internal static class Cases
 {
+    [return: CallConvCdecl]
+    internal static int load_global_dll()
+    {
+        var assembly = Assembly.LoadFile(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "globals.dll"));
+        var method = assembly.ManifestModule.GetMethod("read",
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null,
+            CallingConventions.Standard, Type.EmptyTypes, null);
+        int first = (int)method.Invoke(null, null);
+        int second = (int)method.Invoke(null, null);
+        return first == 41 && second == 42 ? 42 : 1;
+    }
+
+    [return: CallConvCdecl]
+    internal static int load_global_dll_value()
+    {
+        var assembly = Assembly.LoadFile(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "globals.dll"));
+        var field = assembly.ManifestModule.GetField("value",
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+        return (int)field.GetValue(null);
+    }
+
+    [return: CallConvCdecl]
+    internal static void collect_globals()
+    {
+        for (int i = 0; i < 10; i++)
+        {
+            for (int j = 0; j < 100; j++)
+                GC.KeepAlive(new byte[1024]);
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+            GC.WaitForPendingFinalizers();
+        }
+    }
+
     [return: CallConvCdecl]
     internal static int managed_string()
     {

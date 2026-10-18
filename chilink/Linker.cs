@@ -8,8 +8,9 @@ using Coff;
 
 namespace Chilink;
 
-internal sealed class Linker
+internal sealed partial class Linker
 {
+    private const int PointerSize = 8; // Only x64 inputs are supported.
     private readonly LinkOptions _options;
     private readonly List<InputFile> _inputs = new();
     private readonly Dictionary<string, Definition> _symbols = new(StringComparer.Ordinal);
@@ -53,6 +54,9 @@ internal sealed class Linker
                 Mark(FindSymbol(symbol));
             foreach (SourceToken root in _merger.GetRoots())
                 Mark(root);
+            foreach (var pair in _definitions)
+                if (pair.Value.IsCommon)
+                    Mark(pair.Key);
             foreach (InputSection section in _inputs.SelectMany(i => i.Sections))
                 if (!section.Ignored && (!section.IsComdat || !_options.OptRef) &&
                     section.Header.SizeOfRawData > 0)
@@ -75,9 +79,10 @@ internal sealed class Linker
                         throw _inputs[token.Input].Error("RVA field has no COFF storage definition");
                     continue;
                 }
-                if (definition.Section == null)
+                if (definition.Section == null && !definition.IsCommon)
                     throw _inputs[token.Input].Error($"common or undefined storage '{definition.Symbol.Name}' is not supported");
-                MarkSection(definition.Section);
+                if (definition.Section != null)
+                    MarkSection(definition.Section);
                 if (token.Handle.Kind == HandleKind.MethodDefinition)
                 {
                     var method = definition.Section.Input.Metadata.GetMethodDefinition((MethodDefinitionHandle)definition.Token.Handle);
@@ -88,7 +93,7 @@ internal sealed class Linker
                         throw definition.Section.Input.Error($"method '{definition.Symbol.Name}' is outside its section");
                 }
                 else if (token.Handle.Kind == HandleKind.FieldDefinition)
-                    ValidateFieldStorage(definition);
+                    GetFieldStorage(token);
             }
             return Emit(entry);
         }
@@ -150,12 +155,25 @@ internal sealed class Linker
                 if (definition.Section?.Ignored == true || definition.Section?.Winner != definition.Section)
                     continue;
                 SourceToken canonical = _merger.Resolve(definition.Token);
-                _definitions.TryAdd(canonical, definition);
                 if (definition.Symbol.Coff.StorageClass != CoffSymbolStorageClass.External)
+                {
+                    _definitions.TryAdd(canonical, definition);
                     continue;
+                }
                 string name = definition.Symbol.Name;
-                if (!_symbols.TryAdd(name, definition))
-                    throw input.Error($"duplicate symbol '{name}' (also in {_inputs[_symbols[name].Token.Input].Path})");
+                if (_symbols.TryGetValue(name, out Definition previous))
+                {
+                    if (_merger.Resolve(previous.Token) != canonical ||
+                        (previous.IsCommon && previous.Symbol.Coff.Value != FieldSize(canonical)) ||
+                        (definition.IsCommon && definition.Symbol.Coff.Value != FieldSize(canonical)))
+                        throw input.Error($"incompatible storage for symbol '{name}'");
+                    if (!previous.IsCommon && !definition.IsCommon)
+                        throw input.Error($"duplicate symbol '{name}' (also in {_inputs[previous.Token.Input].Path})");
+                    if (!previous.IsCommon)
+                        continue;
+                }
+                _symbols[name] = definition;
+                _definitions[canonical] = definition;
             }
     }
 
@@ -234,15 +252,30 @@ internal sealed class Linker
         if (section.Live)
             return;
         section.Live = true;
-        var definitions = section.Input.Definitions.Values.Where(d => d.Section == section).ToArray();
-        if (definitions.Length == 0 && section.Header.SizeOfRawData > 0)
+        var definitions = section.Input.Definitions.Values.Where(d => d.Section == section &&
+            !section.IsUnsupportedVtableFixup(d.Offset)).ToArray();
+        if (definitions.Length == 0 && section.Header.SizeOfRawData > 0 && section.VtableFixups.Count == 0)
             throw section.Input.Error($"unsupported retained section '{section.Name}' without managed definitions");
         foreach (Definition definition in definitions)
             Mark(definition.Token);
+        var managedSlots = new HashSet<uint>();
+        foreach (var fixup in section.VtableFixups.Where(f => f.Type == 0x02))
+            for (int offset = fixup.Offset; offset < (long)fixup.Offset + fixup.Size; offset += PointerSize)
+                if (!managedSlots.Add((uint)offset))
+                    throw section.Input.Error($"overlapping managed vtfixup slots in '{section.Name}'");
         for (int i = 0; i < section.Relocations.NumberOfRelocations; i++)
         {
             CoffRelocation relocation = section.Relocations.GetRelocation(i);
-            if (!section.IsCode || relocation.Type != ImageRelocation.Amd64_TOKEN)
+            if (!section.IsCode)
+            {
+                if (!section.IsUnsupportedVtableFixup(relocation.Offset))
+                {
+                    MarkDataRelocation(section, definitions, relocation);
+                    managedSlots.Remove(relocation.Offset);
+                }
+                continue;
+            }
+            if (relocation.Type != ImageRelocation.Amd64_TOKEN)
                 throw section.Input.Error($"unsupported relocation {relocation.Type} in retained section '{section.Name}'");
             InputSymbol symbol = section.Input.Symbols[relocation.Symbol];
             if (symbol.Coff.StorageClass != CoffSymbolStorageClass.ClrToken || symbol.Token.IsNil)
@@ -255,21 +288,11 @@ internal sealed class Linker
             if (symbol.Token.Kind != HandleKind.UserString)
                 Mark(new SourceToken(section.Input.Index, (EntityHandle)symbol.Token));
         }
+        if (managedSlots.Count != 0)
+            throw section.Input.Error($"managed vtfixup slot requires a TOKEN relocation in '{section.Name}'");
         foreach (InputSection child in section.Input.Sections)
             if (child.Associated == section && !child.Ignored)
                 MarkSection(child);
-    }
-
-    private static void ValidateFieldStorage(Definition definition)
-    {
-        var section = definition.Section;
-        if (section.IsWritable ||
-            (section.Header.SectionCharacteristics & SectionCharacteristics.ContainsUninitializedData) != 0)
-            throw section.Input.Error($"mutable RVA global '{definition.Symbol.Name}' is not supported");
-        if (section.IsCode || section.Relocations.NumberOfRelocations != 0)
-            throw section.Input.Error($"native or address-relocated data '{definition.Symbol.Name}' is not supported");
-        if (definition.Offset < 0 || definition.Offset >= section.Header.SizeOfRawData)
-            throw section.Input.Error($"field '{definition.Symbol.Name}' is outside its section");
     }
 
     private byte[] Emit(SourceToken entry)
@@ -288,7 +311,8 @@ internal sealed class Linker
         int dataAlignment = ManagedPEBuilder.MappedFieldDataAlignment;
         foreach (InputSection section in _inputs.SelectMany(i => i.Sections))
         {
-            if (!section.Live || section.IsCode)
+            if (!section.Live || section.IsCode || !_fieldStorage.Values.Any(f =>
+                _live.Contains(f.Token) && !f.Convert && f.Definition.Section == section))
                 continue;
             int alignment = Alignment(section);
             dataAlignment = Math.Max(dataAlignment, alignment);
@@ -296,6 +320,8 @@ internal sealed class Linker
             section.OutputDataOffset = data.Count;
             data.WriteBytes(section.GetData());
         }
+        var initialization = PlanInitialization(data);
+        initialization.CodeOffset = Align(ilSize, 4);
         var md = new MetadataBuilder();
         md.AddModule(0, md.GetOrAddString(Path.GetFileName(_options.Output)), md.GetOrAddGuid(Guid.NewGuid()), default, default);
         md.AddAssembly(md.GetOrAddString(Path.GetFileNameWithoutExtension(_options.Output)),
@@ -304,7 +330,7 @@ internal sealed class Linker
             token => _definitions.TryGetValue(_merger.Resolve(token), out Definition method) && method.Section?.OutputCodeOffset >= 0
                 ? checked(method.Section.OutputCodeOffset + method.Offset) : -1,
             token => _definitions.TryGetValue(_merger.Resolve(token), out Definition d) && d.Section?.OutputDataOffset >= 0
-                ? checked(d.Section.OutputDataOffset + d.Offset) : -1);
+                ? checked(d.Section.OutputDataOffset + d.Offset) : -1, initialization);
         var il = new BlobBuilder();
         foreach (InputSection section in codeSections)
         {
@@ -319,6 +345,9 @@ internal sealed class Linker
             }
             il.WriteBytes(bytes);
         }
+        if (initialization.HasInitializer)
+            initialization.Emit(il, _merger);
+        ilSize = il.Count;
         int dataSize = data.Count;
         // SRM guarantees 4-byte IL and 8-byte mapped-data alignment. Reserve room
         // to honor larger COFF alignments once the actual stream RVAs are known.
@@ -334,27 +363,35 @@ internal sealed class Linker
         var image = new BlobBuilder();
         pe.Serialize(image);
         byte[] result = image.ToArray();
-        if (ilSize != 0) AlignStream(result, ilSize, codeAlignment, code: true);
-        if (dataSize != 0) AlignStream(result, dataSize, dataAlignment, code: false);
+        if (ilSize != 0)
+        {
+            var method = _definitions.Values.FirstOrDefault(d => d.Token.Handle.Kind == HandleKind.MethodDefinition &&
+                d.Section?.OutputCodeOffset >= 0);
+            AlignStream(result, ilSize, codeAlignment, code: true,
+                method == null ? initialization.Method : (EntityHandle)_merger.Map(method.Token.Input, method.Token.Handle),
+                method == null ? initialization.CodeOffset : method.Section.OutputCodeOffset + method.Offset);
+        }
+        if (dataSize != 0)
+        {
+            var field = _fieldStorage.Values.FirstOrDefault(f => _live.Contains(f.Token) &&
+                !f.Convert && f.Definition.Section?.OutputDataOffset >= 0);
+            AlignStream(result, dataSize, dataAlignment, code: false,
+                field == null ? initialization.Copies[0].DataField : (EntityHandle)_merger.Map(field.Token.Input, field.Token.Handle),
+                field == null ? initialization.Copies[0].Offset : field.Definition.Section.OutputDataOffset + field.Definition.Offset);
+        }
         return result;
     }
 
     private static int Align(int value, int alignment) => checked(value + alignment - 1) & -alignment;
 
-    private void AlignStream(byte[] image, int size, int alignment, bool code)
+    private static void AlignStream(byte[] image, int size, int alignment, bool code, EntityHandle handle, int offset)
     {
         using var pe = new PEReader(new MemoryStream(image, writable: false));
         var md = pe.GetMetadataReader();
-        HandleKind kind = code ? HandleKind.MethodDefinition : HandleKind.FieldDefinition;
-        Definition definition = _definitions.Values.First(d =>
-            d.Token.Handle.Kind == kind && d.Section?.Live == true &&
-            (code ? d.Section.OutputCodeOffset : d.Section.OutputDataOffset) >= 0);
-        var handle = _merger.Map(definition.Token.Input, definition.Token.Handle);
         int rva = code
             ? md.GetMethodDefinition((MethodDefinitionHandle)handle).RelativeVirtualAddress
             : md.GetFieldDefinition((FieldDefinitionHandle)handle).GetRelativeVirtualAddress();
-        int streamRva = rva - definition.Offset -
-            (code ? definition.Section.OutputCodeOffset : definition.Section.OutputDataOffset);
+        int streamRva = rva - offset;
         int padding = Align(streamRva, alignment) - streamRva;
         if (padding == 0)
             return;

@@ -376,6 +376,10 @@ internal sealed partial class MetadataMerger
     private bool Suppressed(SourceToken token) => Reader(token).GetCustomAttributes(token.Handle)
         .Any(h => AttributeName(new(token.Input, h)) == "System.Runtime.CompilerServices.SuppressMergeCheckAttribute");
 
+    public bool HasFixedAddress(SourceToken field) => _sources[Resolve(field)].Any(source =>
+        Reader(source).GetCustomAttributes(source.Handle).Any(h =>
+            AttributeName(new(source.Input, h)) == "System.Runtime.CompilerServices.FixedAddressValueTypeAttribute"));
+
     private bool UnmanagedType(SourceToken token)
     {
         foreach (var handle in Reader(token).GetCustomAttributes(token.Handle))

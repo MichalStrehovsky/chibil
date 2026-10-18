@@ -16,7 +16,7 @@ public class AuditBugTests : ChibiTestBase
             long long ll = 0;
             int main(void) { return ((uintptr_t)&ll) & 7; }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 0);
     }
 
@@ -469,7 +469,7 @@ public class AuditBugTests : ChibiTestBase
                 return g + 1;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .Link(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 

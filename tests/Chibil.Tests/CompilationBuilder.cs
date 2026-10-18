@@ -77,7 +77,7 @@ public sealed class CompilationBuilder : IDisposable
 
         File.WriteAllText(sourceFile, source);
 
-        var args = new List<string>();
+        var args = new List<string> { "-ffixed-address-statics" };
 #if FIELD_BACKED_AGGREGATES
         args.Add("-fmanaged-aggregate-fields");
 #endif
