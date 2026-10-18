@@ -2,6 +2,39 @@
 
 namespace Coff
 {
+    [Flags]
+    public enum CoffArchiveStreamOptions
+    {
+        Default = 0,
+        LeaveOpen = 1,
+        PrefetchEntireArchive = 2,
+    }
+
+    public enum CoffArchiveMemberKind
+    {
+        Regular,
+        FirstLinkerMember,
+        SecondLinkerMember,
+        LongNames,
+        OtherSpecial,
+    }
+
+    public enum CoffImportType : ushort
+    {
+        Code = 0,
+        Data = 1,
+        Const = 2,
+    }
+
+    public enum CoffImportNameType : ushort
+    {
+        Ordinal = 0,
+        Name = 1,
+        NoPrefix = 2,
+        Undecorate = 3,
+        ExportAs = 4,
+    }
+
     public enum CodeViewChecksumType : byte
     {
         None = 0,

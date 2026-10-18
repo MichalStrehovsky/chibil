@@ -317,11 +317,18 @@ namespace Coff
     {
         private byte* _memory;
         private int _size;
+        private readonly object? _memoryOwner;
 
         public ExternalMemoryBlockProvider(byte* memory, int size)
+            : this(memory, size, memoryOwner: null)
+        {
+        }
+
+        internal ExternalMemoryBlockProvider(byte* memory, int size, object? memoryOwner)
         {
             _memory = memory;
             _size = size;
+            _memoryOwner = memoryOwner;
         }
 
         public override int Size
