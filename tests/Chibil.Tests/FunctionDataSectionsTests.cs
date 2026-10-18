@@ -59,7 +59,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // helper(0)=s_helper(0)+5 = 100+5; +msg[0]('h'=104) -209 +s_init(9) +0 +0
         // = 105 + 104 - 209 + 9 = 9.
         Compile(MultiFuncMultiData, flags)
-            .Link(["/entry:main", "/subsystem:console"])
+            .MsvcLink(["/entry:main", "/subsystem:console"])
             .RunAndCheck(9);
     }
 
@@ -80,7 +80,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
             """;
 
         Compile(src, ["-fdata-sections"])
-            .Link(["/entry:main", "/subsystem:console"])
+            .MsvcLink(["/entry:main", "/subsystem:console"])
             .RunAndCheck(0);
     }
 
@@ -97,7 +97,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
             """;
 
         Compile(src)
-            .Link(["/entry:main", "/subsystem:console"])
+            .MsvcLink(["/entry:main", "/subsystem:console"])
             .RunAndCheck(0);
     }
 
@@ -108,7 +108,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // two TUs' copies into one — the addresses compare equal (main returns 0).
         Compile(CrossTuMain, ["-fdata-sections"])
             .Compile(CrossTuOther, ["-fdata-sections"])
-            .Link(["/entry:main", "/subsystem:console"])
+            .MsvcLink(["/entry:main", "/subsystem:console"])
             .RunAndCheck(0);
     }
 
@@ -119,7 +119,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // TU keeps its own copy and the addresses differ (main returns 1).
         Compile(CrossTuMain)
             .Compile(CrossTuOther)
-            .Link(["/entry:main", "/subsystem:console"])
+            .MsvcLink(["/entry:main", "/subsystem:console"])
             .RunAndCheck(1);
     }
 
@@ -146,7 +146,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // frag_* functions: the probe finds none of them in the linked module.
         Compile(UnusedFunctions, ["-ffunction-sections"])
             .AddAsm2ObjAssembly("ReflectionProbe.dll")
-            .Link(["/entry:main", "/subsystem:console", "/OPT:REF"])
+            .MsvcLink(["/entry:main", "/subsystem:console", "/OPT:REF"])
             .RunAndCheck(0);
     }
 
@@ -157,7 +157,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // /OPT:REF cannot strip them — the probe still finds both frag_* functions.
         Compile(UnusedFunctions)
             .AddAsm2ObjAssembly("ReflectionProbe.dll")
-            .Link(["/entry:main", "/subsystem:console", "/OPT:REF"])
+            .MsvcLink(["/entry:main", "/subsystem:console", "/OPT:REF"])
             .RunAndCheck(2);
     }
 
@@ -168,7 +168,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // unreferenced frag_data globals: the probe finds none of them.
         Compile(UnusedGlobals, ["-fdata-sections"])
             .AddAsm2ObjAssembly("ReflectionProbe.dll")
-            .Link(["/entry:main", "/subsystem:console", "/OPT:REF"])
+            .MsvcLink(["/entry:main", "/subsystem:console", "/OPT:REF"])
             .RunAndCheck(0);
     }
 
@@ -179,7 +179,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // /OPT:REF cannot strip them — the probe still finds both frag_data globals.
         Compile(UnusedGlobals)
             .AddAsm2ObjAssembly("ReflectionProbe.dll")
-            .Link(["/entry:main", "/subsystem:console", "/OPT:REF"])
+            .MsvcLink(["/entry:main", "/subsystem:console", "/OPT:REF"])
             .RunAndCheck(2);
     }
 }

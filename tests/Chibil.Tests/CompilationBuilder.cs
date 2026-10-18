@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Reflection.PortableExecutable;
 using Asm2Obj;
-using Chibil;
 using Xunit;
 
 namespace Chibil.Tests;
@@ -20,7 +19,7 @@ public sealed class CompilationBuilder : IDisposable
 
     internal CompilationBuilder()
     {
-        _tempDir = Path.Combine(Path.GetTempPath(), $"chibil-test-{Guid.NewGuid():N}");
+        _tempDir = Path.GetFullPath(Path.Combine("artifacts", $"chibil-test-{Guid.NewGuid():N}"));
         Directory.CreateDirectory(_tempDir);
     }
 
@@ -89,7 +88,7 @@ public sealed class CompilationBuilder : IDisposable
             args.AddRange(extraArgs);
         args.AddRange(["-cc1", "-cc1-input", sourceFile, "-cc1-output", objFile]);
 
-        new Driver().Run(args.ToArray());
+        new Chibil.Driver().Run(args.ToArray());
 
         _objFiles.Add(objFile);
         return this;
@@ -97,8 +96,8 @@ public sealed class CompilationBuilder : IDisposable
 
     /// <summary>
     /// Compile a C source string into an object file using MSVC (cl.exe)
-    /// with <c>/clr /BC</c> to produce a mixed-mode assembly, and add it
-    /// to this builder.
+    /// with <c>/clr /BC /Zl /d1clrNoPureCRT</c> to omit default-library
+    /// directives and native CRT initialization, and add it to this builder.
     /// </summary>
     /// <param name="source">C source code.</param>
     /// <param name="extraArgs">
@@ -122,6 +121,8 @@ public sealed class CompilationBuilder : IDisposable
         psi.ArgumentList.Add("/c");
         psi.ArgumentList.Add("/clr");
         psi.ArgumentList.Add("/BC");
+        psi.ArgumentList.Add("/Zl");
+        psi.ArgumentList.Add("/d1clrNoPureCRT");
         psi.ArgumentList.Add($"/Fo{objFile}");
         if (extraArgs != null)
             foreach (var arg in extraArgs)
@@ -150,7 +151,7 @@ public sealed class CompilationBuilder : IDisposable
     /// <param name="extraArgs">
     /// Additional linker flags (e.g. "/entry:main", "/subsystem:console").
     /// </param>
-    public LinkResult Link(string[] extraArgs = null)
+    public LinkResult MsvcLink(string[] extraArgs = null)
     {
         if (_objFiles.Count == 0)
             throw new InvalidOperationException("No object files to link. Call Compile() first.");
@@ -183,6 +184,35 @@ public sealed class CompilationBuilder : IDisposable
                 $"link.exe failed with exit code {proc.ExitCode}.\nstdout:\n{stdout}\nstderr:\n{stderr}");
 
         return new LinkResult(exePath);
+    }
+
+    /// <summary>
+    /// Link all accumulated object files using chilink, without native libraries.
+    /// </summary>
+    public LinkResult Link(string[] extraArgs = null)
+    {
+        if (_objFiles.Count == 0)
+            throw new InvalidOperationException("No object files to link. Call Compile() first.");
+
+        bool isDll = extraArgs?.Any(arg =>
+            arg.Equals("/dll", StringComparison.OrdinalIgnoreCase) ||
+            arg.Equals("-dll", StringComparison.OrdinalIgnoreCase)) == true;
+        var imagePath = Path.Combine(_tempDir, isDll ? "output.dll" : "output.exe");
+        var args = new List<string> { $"/out:{imagePath}" };
+        if (extraArgs != null)
+            args.AddRange(extraArgs);
+        args.AddRange(_objFiles);
+
+        try
+        {
+            new Chilink.Driver().Run(args.ToArray());
+        }
+        catch (Chilink.LinkException ex)
+        {
+            throw new InvalidOperationException($"chilink failed: {ex.Message}", ex);
+        }
+
+        return new LinkResult(imagePath);
     }
 
     public void Dispose()

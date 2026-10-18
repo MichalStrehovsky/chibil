@@ -187,7 +187,7 @@ public struct EcmaSignatureRewriter
 
     public static void RewriteStandaloneSignatureBlob(BlobReader signatureReader, TokenMap tokenMap, BlobBuilder blobBuilder)
     {
-        new EcmaSignatureRewriter(signatureReader, tokenMap).RewriteStandaloneSignatureBlob(blobBuilder);
+        Coff.EcmaSignature.Rewrite(signatureReader, tokenMap.MapReference).WriteContentTo(blobBuilder);
     }
 
     private void RewriteStandaloneSignatureBlob(BlobBuilder blobBuilder)
@@ -250,7 +250,7 @@ public struct EcmaSignatureRewriter
 
     public static void RewriteMethodSignature(BlobReader signatureReader, TokenMap tokenMap, BlobBuilder blobBuilder)
     {
-        new EcmaSignatureRewriter(signatureReader, tokenMap).RewriteMethodSignature(blobBuilder);
+        Coff.EcmaSignature.Rewrite(signatureReader, tokenMap.MapReference).WriteContentTo(blobBuilder);
     }
 
     /// <summary>
@@ -264,7 +264,10 @@ public struct EcmaSignatureRewriter
     public static void RewriteMethodSignature(BlobReader signatureReader, TokenMap tokenMap, BlobBuilder blobBuilder,
         ISignatureModifierInjector injector)
     {
-        new EcmaSignatureRewriter(signatureReader, tokenMap, injector).RewriteMethodSignature(blobBuilder);
+        if (injector == null)
+            RewriteMethodSignature(signatureReader, tokenMap, blobBuilder);
+        else
+            new EcmaSignatureRewriter(signatureReader, tokenMap, injector).RewriteMethodSignature(blobBuilder);
     }
 
     private void RewriteMethodSignature(BlobBuilder blobBuilder)
@@ -350,7 +353,7 @@ public struct EcmaSignatureRewriter
 
     public static void RewriteFieldSignature(BlobReader signatureReader, TokenMap tokenMap, BlobBuilder blobBuilder)
     {
-        new EcmaSignatureRewriter(signatureReader, tokenMap).RewriteFieldSignature(blobBuilder);
+        Coff.EcmaSignature.Rewrite(signatureReader, tokenMap.MapReference).WriteContentTo(blobBuilder);
     }
 
     private void RewriteFieldSignature(BlobBuilder blobBuilder)
@@ -382,7 +385,7 @@ public struct EcmaSignatureRewriter
 
     public static void RewriteMemberReferenceSignature(BlobReader signatureReader, TokenMap tokenMap, BlobBuilder blobBuilder)
     {
-        new EcmaSignatureRewriter(signatureReader, tokenMap).RewriteMemberReferenceSignature(blobBuilder);
+        Coff.EcmaSignature.Rewrite(signatureReader, tokenMap.MapReference).WriteContentTo(blobBuilder);
     }
 
     private void RewriteMemberReferenceSignature(BlobBuilder blobBuilder)
@@ -399,7 +402,7 @@ public struct EcmaSignatureRewriter
 
     public static void RewriteTypeSpecSignature(BlobReader signatureReader, TokenMap tokenMap, BlobBuilder blobBuilder)
     {
-        new EcmaSignatureRewriter(signatureReader, tokenMap).RewriteTypeSpecSignature(blobBuilder);
+        Coff.EcmaSignature.Rewrite(signatureReader, tokenMap.MapReference, typeSpecification: true).WriteContentTo(blobBuilder);
     }
 
     private void RewriteTypeSpecSignature(BlobBuilder blobBuilder)
@@ -410,7 +413,7 @@ public struct EcmaSignatureRewriter
 
     public static void RewriteMethodSpecSignature(BlobReader signatureReader, TokenMap tokenMap, BlobBuilder blobBuilder)
     {
-        new EcmaSignatureRewriter(signatureReader, tokenMap).RewriteMethodSpecSignature(blobBuilder);
+        Coff.EcmaSignature.Rewrite(signatureReader, tokenMap.MapReference).WriteContentTo(blobBuilder);
     }
 
     private void RewriteMethodSpecSignature(BlobBuilder blobBuilder)
@@ -426,7 +429,7 @@ public struct EcmaSignatureRewriter
 
     public static void RewritePropertySignature(BlobReader signatureReader, TokenMap tokenMap, BlobBuilder blobBuilder)
     {
-        new EcmaSignatureRewriter(signatureReader, tokenMap).RewritePropertySignature(blobBuilder);
+        Coff.EcmaSignature.Rewrite(signatureReader, tokenMap.MapReference).WriteContentTo(blobBuilder);
     }
 
     private void RewritePropertySignature(BlobBuilder blobBuilder)

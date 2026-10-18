@@ -41,7 +41,7 @@ public class MsvcInteropTests : ChibiTestBase
                 return add(30, 12);
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -62,7 +62,7 @@ public class MsvcInteropTests : ChibiTestBase
                 return multiply(6, 7);
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -90,7 +90,7 @@ public class MsvcInteropTests : ChibiTestBase
                 return (int)output.value;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(42);
     }
 
@@ -118,7 +118,7 @@ public class MsvcInteropTests : ChibiTestBase
                 return (int)output.value;
             }
             """, ["-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(42);
     }
 
@@ -140,7 +140,7 @@ public class MsvcInteropTests : ChibiTestBase
                 return addftn(30, 12);
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -162,7 +162,7 @@ public class MsvcInteropTests : ChibiTestBase
                 return multiplyftn(6, 7);
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 }

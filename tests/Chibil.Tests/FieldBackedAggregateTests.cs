@@ -173,7 +173,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return (int)((char *)&container.values - (char *)&container);
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(alignment);
     }
 
@@ -200,7 +200,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return *(int *)container.pointers[0] + *(int *)container.pointers[1];
             }
             """, option == null ? null : [option])
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(12);
     }
 
@@ -238,7 +238,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                        (int)container.grids[1].cells[1][1];
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(18);
     }
 
@@ -271,7 +271,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return (int)container.items[0].values[1] + (int)container.items[1].values[1];
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(12);
     }
 
@@ -307,7 +307,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return sum;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(78);
     }
 
@@ -400,7 +400,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return packet.length + packet.values[0] + packet.values[1] + packet.values[2];
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 18);
     }
 

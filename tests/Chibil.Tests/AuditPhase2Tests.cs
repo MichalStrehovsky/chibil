@@ -22,7 +22,7 @@ public class AuditPhase2Tests : ChibiTestBase
                 return make_a().x + make_b().a;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 40);
     }
 
@@ -39,7 +39,7 @@ public class AuditPhase2Tests : ChibiTestBase
             }
             """)
         .AddCrt()
-        .Link(["/subsystem:console"])
+        .MsvcLink(["/subsystem:console"])
         .RunAndCheck(exitCode: 1);
     }
 
@@ -54,7 +54,7 @@ public class AuditPhase2Tests : ChibiTestBase
                 return x << shift;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 8);
     }
 
@@ -73,7 +73,7 @@ public class AuditPhase2Tests : ChibiTestBase
                 return (int)test(0x100000000LL);
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 1);
     }
 
@@ -90,7 +90,7 @@ public class AuditPhase2Tests : ChibiTestBase
                 return f(42);
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -104,7 +104,7 @@ public class AuditPhase2Tests : ChibiTestBase
                 return make(10, 20).x + make(30, 40).y;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 50);
     }
 
@@ -120,7 +120,7 @@ public class AuditPhase2Tests : ChibiTestBase
                 return (int)u + (int)s + 1;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 255);
     }
 
@@ -145,7 +145,7 @@ public class AuditPhase2Tests : ChibiTestBase
             volatile CI x = 42;
             int main() { return x; }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
 
@@ -157,7 +157,7 @@ public class AuditPhase2Tests : ChibiTestBase
             int *bar(void) { static int a = 22; static int *p = &a; return p; }
             int main(void) { return *foo() + *bar(); }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 33);
     }
 
@@ -173,7 +173,7 @@ public class AuditPhase2Tests : ChibiTestBase
             }
             int main(void) { return foo(); }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 12);
     }
 }

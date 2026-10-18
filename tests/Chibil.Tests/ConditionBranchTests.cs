@@ -182,7 +182,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .MsvcLink(ConsoleMain)
         .RunAndCheck(exitCode: 0);
     }
 
@@ -213,7 +213,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .MsvcLink(ConsoleMain)
         .RunAndCheck(exitCode: 0);
     }
 
