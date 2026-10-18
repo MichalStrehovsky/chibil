@@ -1374,7 +1374,6 @@ class Program
     {
         using var owner = new global::Coff.CoffReader(new MemoryStream(coff.FileData), PEStreamOptions.PrefetchEntireImage);
         var sections = owner.GetSectionTableReader();
-        var names = owner.GetStringTableReader();
         var readers = new List<(int Section, global::Coff.CodeViewReader Reader)>();
         var strings = new List<(int Section, global::Coff.CodeViewStringTable Table)>();
         var checksums = new List<(int Section, global::Coff.CodeViewFileChecksumTable Table)>();
@@ -1382,7 +1381,7 @@ class Program
         foreach (var handle in sections.Sections)
         {
             var section = sections.GetCoffSection(handle);
-            if (names.GetString(section.Name) == ".debug$S")
+            if (coff.Sections[si].Name == ".debug$S")
             {
                 var reader = owner.GetCodeViewReader(section);
                 readers.Add((si, reader));

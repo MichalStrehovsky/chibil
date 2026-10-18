@@ -366,7 +366,13 @@ namespace Coff
         public unsafe CodeViewReader GetCodeViewReader(CoffSection section, MetadataStringDecoder utf8Decoder)
         {
             ArgumentNullException.ThrowIfNull(utf8Decoder);
-            if (GetStringTableReader().GetString(section.Name) != ".debug$S")
+            AbstractMemoryBlock headers = GetSectionHeadersBlock();
+            var sectionTable = new MemoryBlock(headers.Pointer, headers.Size);
+            int nameOffset = section.Name.SectionTableOffset;
+            string name = sectionTable.PeekByte(nameOffset) == (byte)'/'
+                ? GetStringTableReader().GetString(section.Name)
+                : sectionTable.PeekUtf8NullTerminated(nameOffset, CoffSectionNameHandle.Size, MetadataStringDecoder.DefaultUTF8);
+            if (name != ".debug$S")
                 throw new ArgumentException("The section must be named .debug$S.", nameof(section));
             AbstractMemoryBlock block = GetCoffSectionBlock(section);
             return new CodeViewReader(block.Pointer, block.Size, utf8Decoder, memoryOwner: this);
@@ -658,7 +664,7 @@ namespace Coff
     /// <see cref="CoffSectionTableReader.GetCoffSection(CoffSectionHandle)"/> to get a queryable view of a
     /// physical section.
     /// </summary>
-    public readonly struct CoffSectionHandle
+    public readonly struct CoffSectionHandle : IEquatable<CoffSectionHandle>
     {
         internal readonly int _value;
 
@@ -671,6 +677,12 @@ namespace Coff
         /// </summary>
         public CoffSectionHandleKind Kind
             => _value >= 1 ? CoffSectionHandleKind.Physical : (CoffSectionHandleKind)_value;
+
+        public bool Equals(CoffSectionHandle other) => _value == other._value;
+        public override bool Equals(object obj) => obj is CoffSectionHandle other && Equals(other);
+        public override int GetHashCode() => _value;
+        public static bool operator ==(CoffSectionHandle left, CoffSectionHandle right) => left.Equals(right);
+        public static bool operator !=(CoffSectionHandle left, CoffSectionHandle right) => !left.Equals(right);
     }
 
     /// <summary>
