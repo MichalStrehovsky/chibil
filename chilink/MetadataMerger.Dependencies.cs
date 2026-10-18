@@ -138,6 +138,12 @@ internal sealed partial class MetadataMerger
                     break;
                 case HandleKind.MemberReference:
                     var reference = reader.GetMemberReference((MemberReferenceHandle)source.Handle);
+                    if (GetImport(token) != null)
+                    {
+                        dependencies.Add(ModuleType);
+                        Signature(reference.Signature);
+                        break;
+                    }
                     SourceToken parent = _referenceParents[source];
                     if (parent == ModuleType || parent.Handle.Kind == HandleKind.ModuleDefinition)
                         throw Failure(source, $"unresolved managed member '{reader.GetString(reference.Name)}'");
@@ -227,6 +233,9 @@ internal sealed partial class MetadataMerger
         if (AttributeName(token) == "System.Runtime.CompilerServices.SuppressMergeCheckAttribute")
             return true;
         var attribute = Reader(token).GetCustomAttribute((CustomAttributeHandle)token.Handle);
+        if (AttributeName(token) == "System.Runtime.CompilerServices.DecoratedNameAttribute" &&
+            GetImport(new(token.Input, attribute.Parent)) != null)
+            return true;
         if (attribute.Parent.Kind is HandleKind.TypeReference or HandleKind.MemberReference)
         {
             var parent = Resolve(new(token.Input, attribute.Parent));

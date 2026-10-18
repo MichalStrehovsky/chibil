@@ -47,20 +47,24 @@ generation and MSVC-only tests still need Visual Studio.
 | `/opt:ref` or `/opt:noref` | Remove unreferenced COMDATs, or retain them; REF is the default without `/debug`. |
 | `/opt:noicf` | Disable identical-code folding (the only supported ICF policy). |
 | `/include:symbol` | Retain a managed symbol and its dependencies. |
+| `/libpath:directory` | Search this directory for bare library names, before `LIB`. Repeat for additional directories. |
 | `/nodefaultlib[:name]` | Suppress input default-library directives. |
-| `/defaultlib:name` | Accepted only when suppressed by `/nodefaultlib`; library resolution is not implemented. |
+| `/defaultlib:name` | Accepted only when suppressed by `/nodefaultlib`; default-library resolution is not implemented. |
 | `/nologo`, `/?`, `/help` | Banner compatibility and usage. |
 | `@file` | Read arguments from a response file, including quoted paths. |
 
-Input objects may use `.obj` or `.o` extensions. Switch names are case-insensitive
+Input objects may use `.obj` or `.o` extensions; archives use `.lib`.
+Switch names are case-insensitive
 and accept `/` or `-` prefixes; symbol names are case-sensitive.
 
-Positional `.lib` inputs, including those in response files, are currently ignored
-without being opened. This includes `mscoree.lib`, even if the file does not exist.
-Library support will be added later; ignored libraries do not provide symbols or
-suppress unresolved-symbol errors. `/defaultlib` options and object directives
-still require explicit suppression. Other unsupported switches, directives and
-required input features are errors.
+The bare positional argument `mscoree.lib` is ignored without being opened,
+including in response files and regardless of case. This accommodates chibil's
+automatic linker argument; pure IL needs no native CLR bootstrap library.
+Path-qualified `mscoree.lib` inputs are not special, and `/defaultlib:mscoree.lib`
+still requires explicit suppression. Other libraries are real inputs: missing
+or malformed archives are errors even when they would supply no retained code.
+`/defaultlib` options and object directives still require explicit suppression.
+Other unsupported switches, directives and required input features are errors.
 
 An explicit `/opt:ref` or `/opt:noref` overrides the `/debug` default regardless
 of argument order.
@@ -69,6 +73,90 @@ Use `/Zl /d1clrNoPureCRT` when compiling managed-only MSVC fixtures: `/Zl`
 omits default-library directives, and `/d1clrNoPureCRT` suppresses the native CRT
 initializer dependency. `/nodefaultlib` can also suppress default libraries,
 but does not implement the native initialization code.
+
+### Libraries
+
+For a bare library filename, chilink searches its working directory, each
+`/libpath` directory in argument order, then the semicolon-separated directories
+in `LIB`. A qualified path is used as given, without search-directory fallback.
+`LIB` is read once per invocation. Response files support quoted library paths
+and `/libpath` directories containing spaces.
+
+Explicit objects are always loaded. Libraries are searched in command-line
+order and supply whole object members on demand; unused members do not become
+managed roots or contribute linker directives. A selected member's dependencies
+search its own library first, then following libraries, then wrap to earlier
+libraries. Libraries can thus have transitive and cyclic dependencies without
+requiring repeated arguments. A selected member is loaded only once.
+
+Already-loaded definitions take precedence. A common definition does not force
+extraction of a strong archive definition; if that member is selected for
+another symbol, its strong definition replaces compatible common storage.
+The normal COMDAT, duplicate-definition and metadata checks apply to selected
+members. Archive selection and `/opt:ref` stripping are separate: unresolved
+managed globals in a selected object can still fail even in dead COMDATs.
+Discarded data-address relocations do not select members.
+
+Archive entry/include roots can use exact COFF symbols. The convenient global
+metadata-name fallback works for loaded objects; chilink does not open every
+unused member to discover metadata-name aliases. Microsoft archives must have
+the supported second linker-member symbol index.
+
+### Native import libraries
+
+Named x64 function imports in short COFF import members become static DllImport
+methods, not native code. The DLL and exact export name come from the import
+record, including its name normalization; neither is inferred from the `.lib`
+filename. The unresolved global MemberRef supplies the signature and
+native calling-convention modifiers. These are preserved and translated into
+the P/Invoke mapping, with exact spelling and `PreserveSig`.
+
+Ordinary C managed-entry names are matched to their native C export names;
+explicit decorated-name identities and assisted UCO address references are
+also supported. Purely managed `__clrcall` declarations are not native imports.
+Conflicting declarations of an imported symbol are errors. The caller is
+responsible for native ABI/layout compatibility and the runtime's marshalling
+behavior; import libraries contain no signature information with which to
+verify those assumptions. No ABI adapters are synthesized.
+
+Direct imports work on .NET Framework and modern .NET for signatures supported
+by that runtime. Selected ordinal and data/const imports are errors; unused
+unsupported imports and native descriptor objects in the library are harmless.
+Existing P/Invoke/FieldMarshal metadata in input objects is not implemented.
+Native static-library method bodies are not converted to IL.
+
+For example, compile a declaration/call of `GetCurrentProcessId` into `process.obj`
+and supply the Windows SDK import library:
+
+```powershell
+chilink /entry:main /out:process.exe process.obj kernel32.lib
+```
+
+For native function addresses, compile with `-fnetcore -fuco-entrypoints`.
+Retained deferred slots are initialized with actual native export addresses,
+not `ldftn` of a DllImport method, a UCO wrapper, or an IJW thunk. The caller
+must provide the managed CRT resolver symbol `__chilink_get_native_export`
+as an object or a member of an explicit library. Its exact signature is static
+`native int (string dllName, string entryPoint)`.
+
+The implementation is included in the modern-.NET build of `crt.dll`. It uses
+assembly-aware `NativeLibrary.Load` and `NativeLibrary.GetExport`, caches
+handles with thread-safe access for process lifetime, and propagates load/export
+errors. The Framework build excludes the resolver. The CRT object also contains
+startup and its `__CxxPureMSILEntry` reference, which chibil supplies for C `main`.
+
+```powershell
+dotnet build .\crt\crt.csproj -f net10.0
+dotnet run --project .\tools\asm2obj\Asm2Obj.csproj -- .\crt\bin\Debug\net10.0\crt.dll --machine x64 -o crt.obj
+chilink /entry:main /out:process.dll process.obj crt.obj kernel32.lib
+```
+
+The resolver is needed only for retained native-address slots; direct calls and
+discarded address slots need no resolver. An address-only import need not emit
+a DllImport method. Missing or incorrectly typed resolvers fail during linking.
+Legacy/MSVC IJW and Framework native-address paths remain unsupported.
+The existing module-initializer conflict rule also applies to native-address
+initialization.
 
 EXE entrypoints must be static, non-generic methods returning `void` or `int`,
 with no parameters or one `string[]` parameter. Without `/entry`, the console
@@ -158,8 +246,9 @@ and COFF alignment; converted statics use CLR storage and alignment instead.
 Overlapping/aliased field storage and incompatible common field sizes are errors.
 
 Not supported: native/from-unmanaged vtfixup-associated fields and other vtfixup
-flags, legacy native NEP/UNEP dependencies, native method bodies, library/archive
-parsing, P/Invoke, native exports, debug
+flags, legacy native NEP/UNEP dependencies, native method bodies, default-library
+resolution, `/wholearchive`, ordinal/data imports, input P/Invoke/marshalling
+metadata, native exports, debug
 information, manifest resources, security metadata, properties/events, bigobj,
 and relocation-overflow encodings. An ordinary call to a framework API does not
 require chilink to link that API's native implementation.
@@ -219,12 +308,10 @@ entrypoints; no native thunk bytes are embedded in the IL-only image.
 
 This indirection leaves address materialization to the linker without rewriting
 input method bodies. A UCO-address MemberRef has a `__uco@`-prefixed metadata name
-and a `DecoratedName` attribute identifying its bare COFF symbol. Future
-import-library support could use this contract to initialize a slot with the
-actual native export address rather than a managed DllImport entrypoint or a
-wrapper address. That resolution is not implemented: unresolved UCO-address
-references still fail, and ordinary ADDR64 relocations to method bodies remain
-unsupported.
+and a `DecoratedName` attribute identifying its bare COFF symbol.
+Import-library bindings use this contract to initialize the slot through the CRT
+resolver with the actual native export address. Unresolved UCO-address references
+still fail, and ordinary ADDR64 relocations to method bodies remain unsupported.
 
 UCO methods remain token-resolvable but are excluded from chilink's COFF-name
 index. `/entry:main` therefore selects the ordinary implementation, not its
@@ -238,7 +325,7 @@ are not compatible with MSVC or unassisted chibil's Boolean signatures.
 Matching signatures are required across input boundaries; adapters are not
 synthesized. UCO arguments and returns must be blittable and native ABI layouts
 must match. This does not add support for old retained NEP/UNEP dependencies,
-native code, P/Invoke, native exports, or library linking, and link.exe
+native code or native exports, and link.exe
 compatibility for assisted objects is not promised.
 
 ```powershell
@@ -259,6 +346,10 @@ for Framework, without retrying a failed link. Native function-pointer tests
 use this helper when Framework still needs IJW; cases supported on both targets
 use `Link` directly. New coverage prefers compile/link/run behavior over
 generated IL or metadata assertions.
+Native-import fixtures use cl.exe/link.exe to produce their DLL/import library;
+automated tests do not invoke lib.exe. Managed archive extraction is checked
+manually with libraries containing used, unused, transitive and conflicting
+members, including a resolver supplied as an archive member.
 The compilation helper enables `-ffixed-address-statics`; tests for unannotated
 inputs override it with `-fno-fixed-address-statics`.
 Modern-.NET test compilation also enables `-fuco-entrypoints` by default.

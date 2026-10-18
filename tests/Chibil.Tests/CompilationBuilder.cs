@@ -32,7 +32,7 @@ public sealed class CompilationBuilder : IDisposable
     }
 
     /// <summary>
-    /// Extract the embedded <c>crt.dll</c> resource from this test assembly,
+    /// Extract the target-matching CRT resource from this test assembly,
     /// run asm2obj on it to produce a managed COFF <c>crt.obj</c>, and add
     /// the obj to this builder. The CRT shim defines the
     /// <c>mainCRTStartup</c> entry point and the <c>__CxxPureMSILEntry</c>
@@ -42,13 +42,14 @@ public sealed class CompilationBuilder : IDisposable
     {
         var crtAsmPath = Path.Combine(_tempDir, "crt.dll");
         var crtObjPath = Path.Combine(_tempDir, "crt.obj");
+        string resourceName = _netCore ? "crt.net10.dll" : "crt.net481.dll";
 
         var asm = typeof(CompilationBuilder).Assembly;
-        using (var stream = asm.GetManifestResourceStream("crt.dll"))
+        using (var stream = asm.GetManifestResourceStream(resourceName))
         {
             if (stream == null)
                 throw new InvalidOperationException(
-                    "Embedded resource 'crt.dll' not found in test assembly. " +
+                    $"Embedded resource '{resourceName}' not found in test assembly. " +
                     "Check the ProjectReference to crt.csproj in Chibil.Tests.csproj.");
             using var file = File.Create(crtAsmPath);
             stream.CopyTo(file);
@@ -203,7 +204,7 @@ public sealed class CompilationBuilder : IDisposable
     }
 
     /// <summary>
-    /// Link all accumulated object files using chilink, without native libraries.
+    /// Link all accumulated object and library files using chilink.
     /// </summary>
     public LinkResult Link(string[] extraArgs = null)
     {
@@ -233,6 +234,39 @@ public sealed class CompilationBuilder : IDisposable
 
     public LinkResult LinkOnNetCoreOrMsvcLinkOnFramework(string[] extraArgs = null)
         => _netCore ? Link(extraArgs) : MsvcLink(extraArgs);
+
+    public CompilationBuilder NativeLibrary(string source, string exports,
+        string dllName = "native.dll", string libraryName = "native.lib")
+    {
+        string name = $"native{_fileCounter++}";
+        string sourcePath = Path.Combine(_tempDir, name + ".c");
+        string definitionPath = Path.Combine(_tempDir, name + ".def");
+        File.WriteAllText(sourcePath, source);
+        File.WriteAllText(definitionPath, "EXPORTS\n" + exports);
+        var psi = new ProcessStartInfo("cl.exe")
+        {
+            WorkingDirectory = _tempDir,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (string argument in new[] {
+            "/nologo", "/LD", "/GS-", "/Fo" + Path.Combine(_tempDir, name + ".obj"),
+            sourcePath, "/link", "/NOENTRY", "/NODEFAULTLIB", "/OUT:" + Path.Combine(_tempDir, dllName),
+            "/IMPLIB:" + Path.Combine(_tempDir, libraryName), "/DEF:" + definitionPath })
+            psi.ArgumentList.Add(argument);
+        using var proc = Process.Start(psi);
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        proc.WaitForExit();
+        var stderr = stderrTask.Result;
+        var stdout = stdoutTask.Result;
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"cl.exe failed with exit code {proc.ExitCode}.\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        _objFiles.Add(Path.Combine(_tempDir, libraryName));
+        return this;
+    }
 
     public void Dispose()
     {

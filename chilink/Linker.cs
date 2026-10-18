@@ -3,7 +3,6 @@ using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
-using System.Text;
 using Coff;
 
 namespace Chilink;
@@ -18,6 +17,8 @@ internal sealed partial class Linker
     private readonly HashSet<SourceToken> _live = new();
     private readonly Queue<SourceToken> _pending = new();
     private MetadataMerger _merger;
+    private SourceToken _nativeResolver;
+    private const string NativeResolverSymbol = "__chilink_get_native_export";
 
     public Linker(LinkOptions options) => _options = options;
 
@@ -25,92 +26,145 @@ internal sealed partial class Linker
     {
         try
         {
+            var resolvedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (string path in _options.Inputs)
-                _inputs.Add(new InputFile(path, _inputs.Count));
-            ReadDirectives();
-            if (_options.Dll && _options.Entry != null)
-                throw new LinkException("/entry is not supported for a managed DLL");
-            if (_options.NoEntry && !_options.Dll)
-                throw new LinkException("/noentry requires /dll");
-            _options.Output ??= Path.ChangeExtension(Path.GetFileName(_options.Inputs[0]), _options.Dll ? ".dll" : ".exe");
-            if (_options.Inputs.Any(p => Path.GetFullPath(p).Equals(Path.GetFullPath(_options.Output), StringComparison.OrdinalIgnoreCase)))
-                throw new LinkException("output file must not overwrite an input");
-            foreach (string library in _options.DefaultLibraries)
-                if (!_options.NoDefaultLib && !_options.IgnoredLibraries.Contains(library))
-                    throw new LinkException($"library linking is not supported: /defaultlib:{library}; use /nodefaultlib or compile with /Zl");
-            SelectComdats();
-            _merger = new MetadataMerger(_inputs.Select(i => i.Metadata).ToArray());
-            IndexDefinitions();
-            _merger.ValidateReferences();
-
-            SourceToken entry = default;
-            if (!_options.Dll)
             {
-                entry = FindSymbol(_options.Entry ?? "mainCRTStartup");
-                ValidateEntry(entry);
-                Mark(entry);
-            }
-            foreach (string symbol in _options.Includes)
-                Mark(FindSymbol(symbol));
-            foreach (SourceToken root in _merger.GetRoots())
-                Mark(root);
-            foreach (var pair in _definitions)
-                if (pair.Value.IsCommon)
-                    Mark(pair.Key);
-            foreach (InputSection section in _inputs.SelectMany(i => i.Sections))
-                if (!section.Ignored && (!section.IsComdat || !_options.OptRef) &&
-                    section.Header.SizeOfRawData > 0)
-                    MarkSection(section);
-            while (_pending.TryDequeue(out SourceToken token))
-            {
-                foreach (SourceToken dependency in _merger.GetDependencies(token))
-                    Mark(dependency);
-                if (!_definitions.TryGetValue(token, out Definition definition))
+                bool library = Path.GetExtension(path).Equals(".lib", StringComparison.OrdinalIgnoreCase);
+                string resolved = library ? ResolveLibraryPath(path) : Path.GetFullPath(path);
+                resolvedPaths.Add(resolved);
+                if (library)
                 {
-                    if (token.Handle.Kind == HandleKind.MethodDefinition)
+                    if (!_libraries.Any(l => l.Path.Equals(resolved, StringComparison.OrdinalIgnoreCase)))
+                        _libraries.Add(new InputLibrary(resolved));
+                }
+                else
+                    AddInput(new InputFile(resolved, _inputs.Count));
+            }
+            while (true)
+            {
+                if (_options.Dll && _options.Entry != null)
+                    throw new LinkException("/entry is not supported for a managed DLL");
+                if (_options.NoEntry && !_options.Dll)
+                    throw new LinkException("/noentry requires /dll");
+                _options.Output ??= Path.ChangeExtension(Path.GetFileName(_options.Inputs[0]), _options.Dll ? ".dll" : ".exe");
+                if (resolvedPaths.Contains(Path.GetFullPath(_options.Output)))
+                    throw new LinkException("output file must not overwrite an input");
+                if (_inputs.Count == 0)
+                {
+                    var roots = _options.Includes.Concat(_options.Dll ? [] : new[] { _options.Entry ?? "mainCRTStartup" });
+                    if (roots.Any(root => SelectLibrarySymbol(root, null)))
+                        continue;
+                    throw new LinkException("no managed object selected from input libraries; specify an exact COFF /entry or /include symbol");
+                }
+                ResetAnalysis();
+                if (ExpandLibraries())
+                    continue;
+                _merger.ValidateReferences();
+
+                try
+                {
+                    SourceToken entry = default;
+                    if (!_options.Dll)
                     {
-                        var md = _inputs[token.Input].Metadata.GetMethodDefinition((MethodDefinitionHandle)token.Handle);
-                        if ((md.Attributes & MethodAttributes.Abstract) == 0 &&
-                            (md.ImplAttributes & (MethodImplAttributes.Runtime | MethodImplAttributes.InternalCall)) == 0)
-                            throw _inputs[token.Input].Error($"missing body for method '{_inputs[token.Input].Metadata.GetString(md.Name)}'");
+                        entry = FindSymbol(_options.Entry ?? "mainCRTStartup");
+                        ValidateEntry(entry);
+                        Mark(entry);
                     }
-                    else if (token.Handle.Kind == HandleKind.FieldDefinition &&
-                        (_inputs[token.Input].Metadata.GetFieldDefinition((FieldDefinitionHandle)token.Handle).Attributes & FieldAttributes.HasFieldRVA) != 0)
-                        throw _inputs[token.Input].Error("RVA field has no COFF storage definition");
+                    foreach (string symbol in _options.Includes)
+                        Mark(FindSymbol(symbol));
+                    foreach (SourceToken root in _merger.GetRoots())
+                        Mark(root);
+                    foreach (var pair in _definitions)
+                        if (pair.Value.IsCommon)
+                            Mark(pair.Key);
+                    foreach (InputSection section in _inputs.SelectMany(i => i.Sections))
+                        if (!section.Ignored && (!section.IsComdat || !_options.OptRef) &&
+                            section.Header.SizeOfRawData > 0)
+                            MarkSection(section);
+                    DrainPending();
+                    if (_dataRelocations.Any(r => r.Import != null))
+                    {
+                        if (!HasSymbol(NativeResolverSymbol) && SelectLibrarySymbol(NativeResolverSymbol, null))
+                            continue;
+                        _nativeResolver = FindSymbol(NativeResolverSymbol);
+                        ValidateNativeResolver(_nativeResolver);
+                        Mark(_nativeResolver);
+                        DrainPending();
+                    }
+                    foreach (string library in _options.DefaultLibraries)
+                        if (!_options.NoDefaultLib && !_options.IgnoredLibraries.Contains(library))
+                            throw new LinkException($"default-library resolution is not supported: /defaultlib:{library}; use /nodefaultlib or compile with /Zl");
+                    ValidateFieldAddresses();
+                    return Emit(entry);
+                }
+                catch (ArchiveExpansionException)
+                {
+                    // A live data relocation selected a member; rebuild all token identities.
                     continue;
                 }
-                if (definition.Section == null && !definition.IsCommon)
-                    throw _inputs[token.Input].Error($"common or undefined storage '{definition.Symbol.Name}' is not supported");
-                if (definition.Section != null)
-                    MarkSection(definition.Section);
-                if (token.Handle.Kind == HandleKind.MethodDefinition)
-                {
-                    var method = definition.Section.Input.Metadata.GetMethodDefinition((MethodDefinitionHandle)definition.Token.Handle);
-                    if ((method.ImplAttributes & MethodImplAttributes.CodeTypeMask) != MethodImplAttributes.IL ||
-                        (method.ImplAttributes & MethodImplAttributes.Unmanaged) != 0 || !definition.Section.IsCode)
-                        throw definition.Section.Input.Error($"native method '{definition.Symbol.Name}' is not supported");
-                    if (definition.Offset < 0 || definition.Offset >= definition.Section.Header.SizeOfRawData)
-                        throw definition.Section.Input.Error($"method '{definition.Symbol.Name}' is outside its section");
-                }
-                else if (token.Handle.Kind == HandleKind.FieldDefinition)
-                    GetFieldStorage(token);
             }
-            ValidateFieldAddresses();
-            return Emit(entry);
         }
         finally
         {
             foreach (InputFile input in _inputs)
                 input.Dispose();
+            foreach (InputLibrary library in _libraries)
+                library.Dispose();
         }
     }
 
-    private void ReadDirectives()
+    private void DrainPending()
     {
-        foreach (InputFile input in _inputs)
-            foreach (InputSection section in input.Sections.Where(s => s.Name == ".drectve"))
-                foreach (string arg in Driver.SplitArguments(Encoding.UTF8.GetString(section.GetData()).TrimStart('\uFEFF')))
-                    Driver.Parse(_options, arg, directive: true);
+        while (_pending.TryDequeue(out SourceToken token))
+        {
+            foreach (SourceToken dependency in _merger.GetDependencies(token))
+                Mark(dependency);
+            if (_merger.GetImport(token) != null)
+                continue;
+            if (!_definitions.TryGetValue(token, out Definition definition))
+            {
+                if (token.Handle.Kind == HandleKind.MethodDefinition)
+                {
+                    var md = _inputs[token.Input].Metadata.GetMethodDefinition((MethodDefinitionHandle)token.Handle);
+                    if ((md.Attributes & MethodAttributes.Abstract) == 0 &&
+                        (md.ImplAttributes & (MethodImplAttributes.Runtime | MethodImplAttributes.InternalCall)) == 0)
+                        throw _inputs[token.Input].Error($"missing body for method '{_inputs[token.Input].Metadata.GetString(md.Name)}'");
+                }
+                else if (token.Handle.Kind == HandleKind.FieldDefinition &&
+                    (_inputs[token.Input].Metadata.GetFieldDefinition((FieldDefinitionHandle)token.Handle).Attributes & FieldAttributes.HasFieldRVA) != 0)
+                    throw _inputs[token.Input].Error("RVA field has no COFF storage definition");
+                continue;
+            }
+            if (definition.Section == null && !definition.IsCommon)
+                throw _inputs[token.Input].Error($"common or undefined storage '{definition.Symbol.Name}' is not supported");
+            if (definition.Section != null)
+                MarkSection(definition.Section);
+            if (token.Handle.Kind == HandleKind.MethodDefinition)
+            {
+                var method = definition.Section.Input.Metadata.GetMethodDefinition((MethodDefinitionHandle)definition.Token.Handle);
+                if ((method.ImplAttributes & MethodImplAttributes.CodeTypeMask) != MethodImplAttributes.IL ||
+                    (method.ImplAttributes & MethodImplAttributes.Unmanaged) != 0 || !definition.Section.IsCode)
+                    throw definition.Section.Input.Error($"native method '{definition.Symbol.Name}' is not supported");
+                if (definition.Offset < 0 || definition.Offset >= definition.Section.Header.SizeOfRawData)
+                    throw definition.Section.Input.Error($"method '{definition.Symbol.Name}' is outside its section");
+            }
+            else if (token.Handle.Kind == HandleKind.FieldDefinition)
+                GetFieldStorage(token);
+        }
+    }
+
+    private void ValidateNativeResolver(SourceToken token)
+    {
+        if (token.Handle.Kind == HandleKind.MethodDefinition)
+        {
+            var reader = _inputs[token.Input].Metadata;
+            var method = reader.GetMethodDefinition((MethodDefinitionHandle)token.Handle);
+            if ((method.Attributes & MethodAttributes.Static) != 0 &&
+                reader.GetBlobBytes(method.Signature).AsSpan().SequenceEqual(new byte[] {
+                    0, 2, (byte)SignatureTypeCode.IntPtr, (byte)SignatureTypeCode.String, (byte)SignatureTypeCode.String }))
+                return;
+        }
+        throw new LinkException($"{NativeResolverSymbol} must be a static managed method returning native int and accepting (string, string)");
     }
 
     private void SelectComdats()

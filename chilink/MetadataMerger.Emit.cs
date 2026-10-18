@@ -7,6 +7,8 @@ namespace Chilink;
 
 internal sealed partial class MetadataMerger
 {
+    public UserStringHandle GetUserString(string value) => _output.GetOrAddUserString(value);
+
     public Handle Map(int input, Handle handle)
     {
         if (_output == null)
@@ -69,18 +71,22 @@ internal sealed partial class MetadataMerger
             .ThenBy(t => MetadataTokens.GetRowNumber(t.Handle)).ToArray();
         var incompleteSet = incompleteTypes.ToHashSet();
         SourceToken[] RowsOf(HandleKind kind) => retained.Where(t => t.Handle.Kind == kind)
-            .Where(t => !incompleteSet.Contains(t))
+            .Where(t => !incompleteSet.Contains(t) && GetImport(t) == null)
             .OrderBy(t => t.Input).ThenBy(t => MetadataTokens.GetRowNumber(t.Handle)).ToArray();
         SourceToken[] Members(SourceToken owner, bool methods) => _sources[owner]
             .SelectMany(t => methods
                 ? Reader(t).GetTypeDefinition((TypeDefinitionHandle)t.Handle).GetMethods().Select(h => new SourceToken(t.Input, h))
                 : Reader(t).GetTypeDefinition((TypeDefinitionHandle)t.Handle).GetFields().Select(h => new SourceToken(t.Input, h)))
-            .Select(Resolve).Where(retained.Contains).Distinct().ToArray();
+            .Select(Resolve).Where(t => retained.Contains(t) && GetImport(t) == null).Distinct().ToArray();
         var fieldsByType = types.ToDictionary(t => t, t => Members(t, false));
         var methodsByType = types.ToDictionary(t => t, t => Members(t, true));
+        var imports = retained.Where(t => GetImport(t) != null).OrderBy(t => t.Input)
+            .ThenBy(t => MetadataTokens.GetToken(t.Handle)).ToArray();
+        methodsByType[ModuleType] = [.. methodsByType[ModuleType], .. imports];
         var fields = types.SelectMany(t => fieldsByType[t]).ToArray();
         var methods = types.SelectMany(t => methodsByType[t]).ToArray();
-        var parametersByMethod = methods.ToDictionary(t => t, t => _sources[t]
+        var parametersByMethod = methods.ToDictionary(t => t, t => t.Handle.Kind == HandleKind.MemberReference
+            ? [] : _sources[t]
             .SelectMany(s => Reader(s).GetMethodDefinition((MethodDefinitionHandle)s.Handle).GetParameters()
                 .Select(h => new SourceToken(s.Input, h)))
             .Select(Resolve).Where(retained.Contains).Distinct()
@@ -146,6 +152,13 @@ internal sealed partial class MetadataMerger
         }
         foreach (var token in RowsOf(HandleKind.ModuleReference))
             Check(token, output.AddModuleReference(String(token, Reader(token).GetModuleReference((ModuleReferenceHandle)token.Handle).Name)));
+        var nativeModules = new Dictionary<string, ModuleReferenceHandle>(StringComparer.Ordinal);
+        foreach (var token in imports)
+        {
+            string name = GetImport(token).Import.Library;
+            if (!nativeModules.ContainsKey(name))
+                nativeModules.Add(name, output.AddModuleReference(output.GetOrAddString(name)));
+        }
         foreach (var token in RowsOf(HandleKind.TypeReference))
         {
             var reference = Reader(token).GetTypeReference((TypeReferenceHandle)token.Handle);
@@ -236,6 +249,21 @@ internal sealed partial class MetadataMerger
         int parameterRow = 1;
         foreach (var token in methods)
         {
+            var import = GetImport(token);
+            if (import != null)
+            {
+                var reference = import.Reference;
+                string name = reference.Name.StartsWith("__uco@", StringComparison.Ordinal)
+                    ? reference.Name[6..] : reference.Name;
+                Check(token, output.AddMethodDefinition(MethodAttributes.Assembly | MethodAttributes.Static | MethodAttributes.PinvokeImpl,
+                    MethodImplAttributes.IL | MethodImplAttributes.PreserveSig, output.GetOrAddString(name),
+                    Signature(reference.Token, reference.Signature), -1, MetadataTokens.ParameterHandle(parameterRow)));
+                output.AddMethodImport((MethodDefinitionHandle)Output(token),
+                    import.Convention | MethodImportAttributes.ExactSpelling,
+                    output.GetOrAddString(import.Import.EntryPoint), nativeModules[import.Import.Library]);
+                parameterRow += parametersByMethod[token].Length;
+                continue;
+            }
             var method = Reader(token).GetMethodDefinition((MethodDefinitionHandle)token.Handle);
             var implementationSource = _methodSource[token];
             var implementation = Reader(implementationSource).GetMethodDefinition((MethodDefinitionHandle)implementationSource.Handle);

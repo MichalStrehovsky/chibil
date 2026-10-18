@@ -11,6 +11,8 @@ public sealed class LinkException : Exception
 internal sealed class LinkOptions
 {
     public readonly List<string> Inputs = new();
+    public readonly List<string> LibraryPaths = new();
+    public readonly string LibraryEnvironment = Environment.GetEnvironmentVariable("LIB");
     public readonly List<string> Includes = new();
     public readonly List<string> DefaultLibraries = new();
     public readonly HashSet<string> IgnoredLibraries = new(StringComparer.OrdinalIgnoreCase);
@@ -34,13 +36,13 @@ public sealed class Driver
                     (arg[1..].Equals("?", StringComparison.OrdinalIgnoreCase) ||
                      arg[1..].Equals("help", StringComparison.OrdinalIgnoreCase)))
                 {
-                    Console.WriteLine("chilink [/out:file] [/entry:symbol | /dll] [/debug] [/opt:ref|noref] objects...");
+                    Console.WriteLine("chilink [/out:file] [/entry:symbol | /dll] [/debug] [/opt:ref|noref] [/libpath:dir] objects/libraries...");
                     return;
                 }
                 Parse(options, arg);
             }
             if (options.Inputs.Count == 0)
-                throw new LinkException("no input object files");
+                throw new LinkException("no input object or library files");
             byte[] image = new Linker(options).Link();
             string temporary = Path.GetFullPath(options.Output) + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
@@ -56,7 +58,7 @@ public sealed class Driver
         }
         catch (IOException ex) { throw new LinkException(ex.Message); }
         catch (UnauthorizedAccessException ex) { throw new LinkException(ex.Message); }
-        catch (BadImageFormatException ex) { throw new LinkException($"invalid object or metadata: {ex.Message}"); }
+        catch (BadImageFormatException ex) { throw new LinkException($"invalid object, archive or metadata: {ex.Message}"); }
     }
 
     internal static void Parse(LinkOptions options, string arg, bool directive = false)
@@ -67,11 +69,12 @@ public sealed class Driver
         {
             if (directive)
                 throw new LinkException($"unsupported linker directive: {arg}");
-            if (Path.GetExtension(arg).Equals(".lib", StringComparison.OrdinalIgnoreCase))
+            if (arg.Equals("mscoree.lib", StringComparison.OrdinalIgnoreCase))
                 return;
             if (!Path.GetExtension(arg).Equals(".obj", StringComparison.OrdinalIgnoreCase) &&
-                !Path.GetExtension(arg).Equals(".o", StringComparison.OrdinalIgnoreCase))
-                throw new LinkException($"unsupported input '{arg}'; only managed COFF object files are supported");
+                !Path.GetExtension(arg).Equals(".o", StringComparison.OrdinalIgnoreCase) &&
+                !Path.GetExtension(arg).Equals(".lib", StringComparison.OrdinalIgnoreCase))
+                throw new LinkException($"unsupported input '{arg}'; expected a managed COFF object or library");
             options.Inputs.Add(arg);
             return;
         }
@@ -98,6 +101,10 @@ public sealed class Driver
             case "dll": NoValue(); options.Dll = true; break;
             case "noentry": NoValue(); options.NoEntry = true; break;
             case "include": options.Includes.Add(RequiredValue()); break;
+            case "libpath":
+                if (directive) throw new LinkException("/libpath is not supported in object directives");
+                options.LibraryPaths.Add(RequiredValue());
+                break;
             case "machine":
                 if (!RequiredValue().Equals("x64", StringComparison.OrdinalIgnoreCase))
                     throw new LinkException("only /machine:x64 is supported");

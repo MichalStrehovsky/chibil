@@ -11,6 +11,7 @@ internal sealed class InputFile : IDisposable
 {
     public readonly string Path;
     public readonly int Index;
+    public readonly InputLibrary Library;
     public readonly CoffReader Reader;
     public readonly MetadataReader Metadata;
     public readonly List<InputSection> Sections = new();
@@ -19,10 +20,16 @@ internal sealed class InputFile : IDisposable
     public readonly Dictionary<InputSymbol, Definition> SymbolDefinitions = new();
 
     public InputFile(string path, int index)
+        : this(path, index, new CoffReader(File.OpenRead(path), PEStreamOptions.PrefetchEntireImage))
+    {
+    }
+
+    public InputFile(string path, int index, CoffReader reader, InputLibrary library = null)
     {
         Path = path;
         Index = index;
-        Reader = new CoffReader(File.OpenRead(path), PEStreamOptions.PrefetchEntireImage);
+        Reader = reader;
+        Library = library;
         try
         {
             if (Reader.CoffHeaders.CoffHeader.Machine != Machine.Amd64)

@@ -131,8 +131,10 @@ internal sealed partial class Linker
         if (_dataRelocations.Any(r => r.Field == owner.Token &&
             r.Offset < relocation.Offset - owners[0].Offset + PointerSize && r.Offset + PointerSize > relocation.Offset - owners[0].Offset))
             throw section.Input.Error($"overlapping data relocations in '{section.Name}'");
-        _dataRelocations.Add(new(owner.Token, (int)relocation.Offset - owners[0].Offset, target, addend));
-        Mark(target);
+        var import = _merger.GetImport(target)?.Import;
+        _dataRelocations.Add(new(owner.Token, (int)relocation.Offset - owners[0].Offset, target, addend, import));
+        if (import == null)
+            Mark(target);
     }
 
     private SourceToken ResolveManagedVtableTarget(InputFile input, InputSymbol symbol)
@@ -141,6 +143,8 @@ internal sealed partial class Linker
             symbol.Token.Kind is not (HandleKind.MethodDefinition or HandleKind.MemberReference))
             throw input.Error("managed vtfixup TOKEN relocation does not reference a method token");
         var token = _merger.Resolve(new(input.Index, (EntityHandle)symbol.Token));
+        if (_merger.GetImport(token) != null)
+            return token;
         if (token.Handle.Kind != HandleKind.MethodDefinition)
             throw input.Error($"unresolved managed vtfixup method '{symbol.Name}'");
         var reader = _inputs[token.Input].Metadata;
@@ -163,6 +167,10 @@ internal sealed partial class Linker
             {
                 if (!_symbols.TryGetValue(symbol.Name, out target))
                 {
+                    if (_nativeImports.ContainsKey(symbol.Name))
+                        throw input.Error($"native import address '{symbol.Name}' requires an assisted TOKEN slot");
+                    if (SelectLibrarySymbol(symbol.Name, input.Library))
+                        throw new ArchiveExpansionException();
                     bool native = _inputs.Any(i => i.Symbols.Values.Any(s => s.Name == symbol.Name &&
                         s.Coff.StorageClass == CoffSymbolStorageClass.External && s.Section?.Ignored == true));
                     throw input.Error(native
@@ -186,7 +194,7 @@ internal sealed partial class Linker
 
     private DataInitialization PlanInitialization(BlobBuilder data)
     {
-        var result = new DataInitialization();
+        var result = new DataInitialization { NativeResolver = _nativeResolver };
         foreach (var field in _fieldStorage.Values.Where(f => _live.Contains(f.Token) && f.Convert)
             .OrderBy(f => f.Token.Input).ThenBy(f => MetadataTokens.GetRowNumber(f.Token.Handle)))
         {
@@ -207,7 +215,7 @@ internal sealed partial class Linker
     }
 }
 
-internal sealed record DataRelocation(SourceToken Field, int Offset, SourceToken Target, long Addend);
+internal sealed record DataRelocation(SourceToken Field, int Offset, SourceToken Target, long Addend, NativeImport Import);
 
 internal sealed record DataCopy(SourceToken Field, int Offset)
 {
@@ -219,7 +227,8 @@ internal sealed class DataInitialization
     public readonly HashSet<SourceToken> Converted = new();
     public readonly List<DataCopy> Copies = new();
     public readonly List<DataRelocation> Relocations = new();
-    public bool HasInitializer => Copies.Count != 0;
+    public bool HasInitializer => Copies.Count != 0 || Relocations.Count != 0;
+    public SourceToken NativeResolver;
     public int CodeOffset;
     public MethodDefinitionHandle Method;
 
@@ -252,7 +261,14 @@ internal sealed class DataInitialization
         {
             // Keep the destination GC-tracked while resolving the source address.
             Address(Map(relocation.Field), relocation.Offset, unmanaged: false);
-            Address(Map(relocation.Target), relocation.Addend, unmanaged: true);
+            if (relocation.Import != null)
+            {
+                encoder.LoadString(merger.GetUserString(relocation.Import.Library));
+                encoder.LoadString(merger.GetUserString(relocation.Import.EntryPoint));
+                encoder.Call((MethodDefinitionHandle)Map(NativeResolver));
+            }
+            else
+                Address(Map(relocation.Target), relocation.Addend, unmanaged: true);
             encoder.OpCode(ILOpCode.Unaligned);
             code.WriteByte(1);
             encoder.OpCode(ILOpCode.Stind_i);
