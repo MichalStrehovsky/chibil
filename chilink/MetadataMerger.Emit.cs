@@ -63,7 +63,13 @@ internal sealed partial class MetadataMerger
         _outputHandles.Add(Module, EntityHandle.ModuleDefinition);
         _outputHandles.Add(Assembly, EntityHandle.AssemblyDefinition);
         var types = _typeOrder.Where(retained.Contains).ToArray();
+        // Like link.exe, materialize unresolved local types as empty value types.
+        var incompleteTypes = retained.Where(t => t.Handle.Kind == HandleKind.TypeReference &&
+            _referenceParents[t] == Module).OrderBy(t => t.Input)
+            .ThenBy(t => MetadataTokens.GetRowNumber(t.Handle)).ToArray();
+        var incompleteSet = incompleteTypes.ToHashSet();
         SourceToken[] RowsOf(HandleKind kind) => retained.Where(t => t.Handle.Kind == kind)
+            .Where(t => !incompleteSet.Contains(t))
             .OrderBy(t => t.Input).ThenBy(t => MetadataTokens.GetRowNumber(t.Handle)).ToArray();
         SourceToken[] Members(SourceToken owner, bool methods) => _sources[owner]
             .SelectMany(t => methods
@@ -82,6 +88,7 @@ internal sealed partial class MetadataMerger
         var parameters = methods.SelectMany(t => parametersByMethod[t]).ToArray();
         int syntheticMethods = initialization.HasInitializer ? 1 : 0;
         Predict(types, TableIndex.TypeDef);
+        Predict(incompleteTypes, TableIndex.TypeDef, types.Length);
         Predict(fields, TableIndex.Field, initialization.Copies.Count);
         Predict(methods, TableIndex.MethodDef, syntheticMethods);
         Predict(parameters, TableIndex.Param);
@@ -151,6 +158,32 @@ internal sealed partial class MetadataMerger
             Check(token, output.AddTypeSpecification(Signature(token,
                 Reader(token).GetTypeSpecification((TypeSpecificationHandle)token.Handle).Signature, type: true)));
 
+        var valueTypes = new Dictionary<SourceToken, EntityHandle>();
+        var incompleteBaseTypes = new Dictionary<SourceToken, EntityHandle>();
+        foreach (var token in incompleteTypes)
+        {
+            var scopes = _sources[token].SelectMany(source => Reader(source).AssemblyReferences
+                .Where(h => Reader(source).GetString(Reader(source).GetAssemblyReference(h).Name)
+                    is "mscorlib" or "System.Runtime")
+                .Select(h => Resolve(new(source.Input, h)))).Distinct().ToArray();
+            if (scopes.Length != 1)
+                throw Failure(token, "incomplete type requires an unambiguous mscorlib or System.Runtime reference");
+            var scope = scopes[0];
+            if (!valueTypes.TryGetValue(scope, out var baseType))
+            {
+                var existing = RowsOf(HandleKind.TypeReference).Where(t =>
+                {
+                    var reference = Reader(t).GetTypeReference((TypeReferenceHandle)t.Handle);
+                    return _referenceParents[t] == scope && Reader(t).GetString(reference.Namespace) == "System" &&
+                        Reader(t).GetString(reference.Name) == "ValueType";
+                }).ToArray();
+                baseType = existing.Length != 0 ? Output(existing[0]) :
+                    output.AddTypeReference(Output(scope), output.GetOrAddString("System"), output.GetOrAddString("ValueType"));
+                valueTypes.Add(scope, baseType);
+            }
+            incompleteBaseTypes.Add(token, baseType);
+        }
+
         int fieldRow = 1, methodRow = 1;
         foreach (var token in types)
         {
@@ -164,6 +197,13 @@ internal sealed partial class MetadataMerger
                 fieldRow += initialization.Copies.Count;
                 methodRow += syntheticMethods;
             }
+        }
+        foreach (var token in incompleteTypes)
+        {
+            var reference = Reader(token).GetTypeReference((TypeReferenceHandle)token.Handle);
+            Check(token, output.AddTypeDefinition(TypeAttributes.SequentialLayout | TypeAttributes.Sealed,
+                String(token, reference.Namespace), String(token, reference.Name), incompleteBaseTypes[token],
+                MetadataTokens.FieldDefinitionHandle(fieldRow), MetadataTokens.MethodDefinitionHandle(methodRow)));
         }
         if (initialization.HasInitializer)
         {
@@ -223,6 +263,8 @@ internal sealed partial class MetadataMerger
         foreach (var token in RowsOf(HandleKind.MemberReference))
         {
             var reference = Reader(token).GetMemberReference((MemberReferenceHandle)token.Handle);
+            if (incompleteSet.Contains(_referenceParents[token]))
+                throw Failure(token, $"unresolved member '{Reader(token).GetString(reference.Name)}' on incomplete type");
             var parent = Output(_referenceParents[token]);
             if (parent.Kind is not (HandleKind.TypeDefinition or HandleKind.TypeReference or HandleKind.TypeSpecification or
                 HandleKind.ModuleReference or HandleKind.MethodDefinition))
