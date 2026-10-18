@@ -398,14 +398,9 @@ namespace Coff
         {
             if ((uint)handle.Offset >= (uint)_subsection.PayloadLength)
                 throw new BadImageFormatException("Invalid CodeView checksum-table offset.");
-            foreach (var candidate in Files)
-            {
-                if (candidate == handle)
-                    return new CodeViewFileChecksum(_subsection, _subsection.PayloadOffset + handle.Offset);
-                if (candidate.Offset > handle.Offset)
-                    break;
-            }
-            throw new BadImageFormatException("CodeView file reference does not point to a checksum entry.");
+            var checksum = new CodeViewFileChecksum(_subsection, _subsection.PayloadOffset + handle.Offset);
+            _ = checksum.End;
+            return checksum;
         }
     }
 

@@ -1603,9 +1603,13 @@ class Program
                             break;
                         case 0x111C:
                         case 0x111D:
+                            if (payload.Length >= 4 && tokens.TryGetValue(symbol.PayloadOffset, out int dataToken))
+                                BinaryPrimitives.WriteInt32LittleEndian(payload, dataToken);
                             DumpManData((ushort)symbol.Kind, payload);
                             break;
                         case 0x112D:
+                            if (payload.Length >= 4 && tokens.TryGetValue(symbol.PayloadOffset, out int constantToken))
+                                BinaryPrimitives.WriteInt32LittleEndian(payload, constantToken);
                             DumpManConstant(payload);
                             break;
                         case 0x114C:
