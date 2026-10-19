@@ -201,9 +201,12 @@ internal sealed partial class Linker
             result.Converted.Add(field.Token);
             if (field.Zero)
                 continue;
+            byte[] bytes = field.Definition.Section.GetData();
+            if (!bytes.AsSpan(field.Definition.Offset, field.Size).ContainsAnyExcept((byte)0))
+                continue;
             data.Align(PointerSize);
             result.Copies.Add(new(field.Token, data.Count));
-            data.WriteBytes(field.Definition.Section.GetData(), field.Definition.Offset, field.Size);
+            data.WriteBytes(bytes, field.Definition.Offset, field.Size);
         }
         result.Relocations.AddRange(_dataRelocations.Where(r => _live.Contains(r.Field)));
         if (result.HasInitializer)
