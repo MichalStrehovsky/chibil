@@ -510,7 +510,12 @@ public class Parser
         bool hasExplicitCc = TryParseCallConv(ref tok, out CallConv callConv);
         if (!hasExplicitCc && pendingCallConv.HasValue)
             callConv = pendingCallConv.Value;
-        if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
+        if (ty.Kind == TypeKind.Func)
+        {
+            ty = TypeSystem.CopyType(ty);
+            ty.Origin = null;
+            if (hasExplicitCc || pendingCallConv.HasValue) ty.CallConv = callConv;
+        }
         ty = Pointers(ref tok, tok, ty);
         // Calling convention can also appear after pointers (e.g., void* __stdcall fn())
         if (TryParseCallConv(ref tok, out CallConv cc2))
@@ -533,7 +538,8 @@ public class Parser
         Token name = null, namePos = tok;
         if (tok.Kind == TokenKind.Ident) { name = tok; tok = tok.Next; }
         ty = TypeSuffix(ref rest, tok, ty);
-        if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
+        if (ty.Kind == TypeKind.Func && (hasExplicitCc || pendingCallConv.HasValue))
+            ty.CallConv = callConv;
         ty.Name = name; ty.NamePos = namePos;
         return ty;
     }
@@ -543,10 +549,18 @@ public class Parser
         bool hasExplicitCc = TryParseCallConv(ref tok, out CallConv callConv);
         if (!hasExplicitCc && pendingCallConv.HasValue)
             callConv = pendingCallConv.Value;
-        if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
+        if (ty.Kind == TypeKind.Func)
+        {
+            ty = TypeSystem.CopyType(ty);
+            ty.Origin = null;
+            if (hasExplicitCc || pendingCallConv.HasValue) ty.CallConv = callConv;
+        }
         ty = Pointers(ref tok, tok, ty);
         if (TryParseCallConv(ref tok, out CallConv cc2))
+        {
             callConv = cc2;
+            hasExplicitCc = true;
+        }
         if (Util.Equal(tok, "("))
         {
             Token start = tok;
@@ -559,7 +573,8 @@ public class Parser
             return AbstractDeclarator(ref tok, start.Next, ty, pendingCallConv);
         }
         ty = TypeSuffix(ref rest, tok, ty);
-        if (ty.Kind == TypeKind.Func) ty.CallConv = callConv;
+        if (ty.Kind == TypeKind.Func && (hasExplicitCc || pendingCallConv.HasValue))
+            ty.CallConv = callConv;
         return ty;
     }
 
@@ -1320,7 +1335,7 @@ public class Parser
                 VarAttr attr = new();
                 CType basety = Declspec(ref tok, tok, attr);
                 if (attr.IsTypedef) { tok = ParseTypedef(tok, basety, attr.PendingCallConv); continue; }
-                if (IsFunction(tok)) { tok = Function(tok, basety, attr); continue; }
+                if (IsFunction(tok, basety)) { tok = Function(tok, basety, attr); continue; }
                 if (attr.IsExtern) { tok = GlobalVariable(tok, basety, attr); continue; }
                 cur = cur.Next = Declaration(ref tok, tok, basety, attr);
             }
@@ -1806,11 +1821,10 @@ public class Parser
         foreach (string name in var.Refs) { Obj fn = FindFunc(name); if (fn != null) MarkLive(fn); }
     }
 
-    private bool IsFunction(Token tok)
+    private bool IsFunction(Token tok, CType basety)
     {
         if (Util.Equal(tok, ";")) return false;
-        CType dummy = new();
-        CType ty = Declarator(ref tok, tok, dummy);
+        CType ty = Declarator(ref tok, tok, TypeSystem.CopyType(basety));
         return ty.Kind == TypeKind.Func;
     }
 
@@ -2022,7 +2036,7 @@ public class Parser
             VarAttr attr = new();
             CType basety = Declspec(ref tok, tok, attr);
             if (attr.IsTypedef) { tok = ParseTypedef(tok, basety, attr.PendingCallConv); continue; }
-            if (IsFunction(tok)) { tok = Function(tok, basety, attr); continue; }
+            if (IsFunction(tok, basety)) { tok = Function(tok, basety, attr); continue; }
             tok = GlobalVariable(tok, basety, attr);
         }
         for (Obj v = _globals; v != null; v = v.Next)

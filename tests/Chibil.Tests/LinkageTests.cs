@@ -5,6 +5,57 @@ namespace Chibil.Tests;
 public class LinkageTests : ChibiTestBase
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FunctionTypedefDeclarationsWork(bool blockScope)
+    {
+        Compile($$"""
+            typedef int Function(int);
+            {{(blockScope ? "" : "Function answer;")}}
+            int answer(int value) { return value + 1; }
+            int main(void) {
+                {{(blockScope ? "Function answer;" : "")}}
+                return answer(41);
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FunctionTypedefCallingConventionsArePreserved(bool useCast)
+    {
+        Compile($$"""
+            typedef int __clrcall Callback(int);
+            Callback answer;
+            int __clrcall answer(int value) { return value + 1; }
+            int main(void) {
+                {{(useCast ? "return ((Callback *)answer)(41);" :
+                    "Callback *callback = answer; return callback(41);")}}
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Fact]
+    public void FunctionTypedefCallingConventionOverridesDoNotMutateTheAlias()
+    {
+        Compile("""
+            typedef int __clrcall Callback(int);
+            Callback __cdecl native;
+            Callback managed;
+            int __cdecl native(int value) { return value; }
+            int __clrcall managed(int value) { return value + 1; }
+            int main(void) {
+                Callback *callback = managed;
+                return callback(41);
+            }
+            """)
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
     [InlineData(false, "")]
     [InlineData(false, "__clrcall")]
     [InlineData(true, "")]
