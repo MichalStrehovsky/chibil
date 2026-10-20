@@ -111,6 +111,32 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     }
 
     [Theory]
+    [InlineData("extern int missing;")]
+    [InlineData("extern int *missing;")]
+    [InlineData("struct Value { int member; }; extern struct Value missing;")]
+    [InlineData("extern int missing[4];")]
+    public void DiscardedVariablesDoNotRequireTheirDefinitions(string declaration)
+    {
+        Compile($$"""
+            {{declaration}}
+            int main(void) { missing; (void)missing; return 42; }
+            """).Link(ConsoleMain).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData("volatile")]
+    [InlineData("_Atomic")]
+    public void DiscardedQualifiedVariablesStillRequireTheirDefinitions(string qualifier)
+    {
+        var builder = Compile($$"""
+            extern {{qualifier}} int missing;
+            int main(void) { missing; (void)missing; return 42; }
+            """);
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        Assert.Contains("missing", error.Message);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void CompilerSwitchControlsFixedAddressAnnotations(bool enabled)

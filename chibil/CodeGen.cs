@@ -177,6 +177,8 @@ public class CodeGen
                 return;
             case NodeKind.Num:
                 return;
+            case NodeKind.Var when !node.Ty.IsVolatile && !node.Ty.IsAtomic:
+                return;
             // A discarded post-increment/decrement needs only its bump side
             // effect; the old value is never materialized.
             case NodeKind.PostIncDec:
