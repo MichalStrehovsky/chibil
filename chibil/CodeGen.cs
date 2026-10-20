@@ -746,6 +746,8 @@ public class CodeGen
                 return;
 
             case NodeKind.MemZero:
+                if (node.Var.Ty.Size == 0)
+                    return;
                 GenAddr(new Node { Kind = NodeKind.Var, Var = node.Var, Tok = node.Tok, Ty = node.Var.Ty });
                 EmitConstI4(0);
                 EmitConstI4(node.Var.Ty.Size);
