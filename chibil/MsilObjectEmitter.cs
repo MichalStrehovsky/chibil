@@ -46,7 +46,7 @@ public class MsilObjectEmitter
 
     // Bare-name NEP COFF symbols (func name → COFF symbol for the NEP thunk alias)
     private readonly Dictionary<string, CoffSymbolHandle> _nepBareNameSymbols = new();
-    private readonly Dictionary<string, Obj> _tokenAddressFunctions = new();
+    private readonly Dictionary<string, Obj> _functions = new();
 
     // __unep@ fields for address-taken native-convention functions
     private readonly Dictionary<string, UnepSlot> _unepSlots = new();
@@ -295,7 +295,7 @@ public class MsilObjectEmitter
     /// <summary>Encode an inline function pointer signature for FNPTR in method/local signatures.</summary>
     public void EncodeFnPtrSignature(BlobBuilder sig, CType funcTy)
     {
-        EncodeFunctionSignature(sig, funcTy, funcTy.CallConv switch
+        EncodeFunctionSignature(sig, funcTy, funcTy.IsVariadic ? (byte)SignatureCallingConvention.Default : funcTy.CallConv switch
         {
             CallConv.Clrcall => (byte)SignatureCallingConvention.Default,
             CallConv.Stdcall => (byte)SignatureCallingConvention.StdCall,
@@ -308,22 +308,21 @@ public class MsilObjectEmitter
         sig.WriteByte(callConv);
 
         // Count parameters
-        int paramCount = 0;
-        for (CType p = funcTy.Params; p != null; p = p.Next) paramCount++;
+        int paramCount = VariadicAbi.FixedParameterCount(funcTy) + (funcTy.IsVariadic ? 1 : 0);
         sig.WriteCompressedInteger(paramCount);
 
         // Return type
         EncodeReturnType(sig, funcTy);
 
         // Parameters
-        for (CType p = funcTy.Params; p != null; p = p.Next)
+        foreach (CType p in VariadicAbi.Parameters(funcTy, _types))
             EncodeType(sig, p);
     }
 
     /// <summary>Encode the return type for a function, with modopt(CallConvCdecl) for unmanaged calling conventions.</summary>
     private void EncodeReturnType(BlobBuilder sig, CType funcTy)
     {
-        if (funcTy.CallConv != CallConv.Clrcall)
+        if (funcTy.CallConv != CallConv.Clrcall && !funcTy.IsVariadic)
         {
             sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
             sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(funcTy.CallConv switch
@@ -368,10 +367,12 @@ public class MsilObjectEmitter
 
         // Add parameter rows
         int paramIdx = 1;
-        for (CType p = funcTy.Params; p != null; p = p.Next)
+        int fixedParamCount = VariadicAbi.FixedParameterCount(funcTy);
+        foreach (CType p in VariadicAbi.Parameters(funcTy, _types))
         {
             string paramName = parameterNames != null && paramIdx <= parameterNames.Length
                 ? parameterNames[paramIdx - 1]
+                : paramIdx > fixedParamCount ? "__va_area"
                 : p.Name != null ? Util.GetTokenText(p.Name) : $"_a{paramIdx}";
             _md.AddParameter(ParameterAttributes.None, _md.GetOrAddString(paramName), paramIdx);
             paramIdx++;
@@ -653,8 +654,7 @@ public class MsilObjectEmitter
                 continue;
             }
 
-            if (obj.Ty.CallConv == CallConv.Clrcall || _options.UcoEntryPoints)
-                _tokenAddressFunctions.Add(obj.Name, obj);
+            _functions.Add(obj.Name, obj);
 
             if (!obj.IsDefinition || !obj.IsLive)
                 continue;
@@ -670,6 +670,8 @@ public class MsilObjectEmitter
                 debugName: obj.Name,
                 localSlots: body.LocalDebugInfo,
                 localScopes: body.LocalScopes);
+            if (obj.Ty.IsVariadic)
+                continue;
             if (!_options.UcoEntryPoints)
                 GetOrCreateNepForDefinition(obj);
             else if (obj.Ty.CallConv != CallConv.Clrcall)
@@ -914,12 +916,14 @@ public class MsilObjectEmitter
             {
                 string targetName = rel.Label;
                 CoffSymbolHandle targetSym;
+                if (_functions.TryGetValue(targetName, out Obj function))
+                    VariadicAbi.ValidateAddress(function.Ty, rel.Tok, _options);
 
                 if (_dataCoffSymbols.TryGetValue(targetName, out targetSym))
                 {
                     // Data-to-data relocation (e.g., char* e = &hello[1])
                 }
-                else if (_tokenAddressFunctions.TryGetValue(targetName, out Obj function))
+                else if (function != null && (function.Ty.CallConv == CallConv.Clrcall || _options.UcoEntryPoints))
                 {
                     if (rel.Addend != 0)
                         Util.ErrorTok(rel.Tok, "managed function pointer initializer cannot have an addend");
@@ -1026,4 +1030,6 @@ public class MsilObjectEmitter
 
         return output.ToArray();
     }
+
+    internal CompilerOptions Options => _options;
 }

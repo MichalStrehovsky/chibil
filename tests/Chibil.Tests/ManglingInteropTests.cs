@@ -1349,28 +1349,4 @@ public class ManglingInteropTests : ChibiTestBase
         .MsvcLink(["/entry:main", "/subsystem:console"])
         .RunAndCheck(exitCode: 42);
     }
-
-    // ═══════════════════════════════════════════════════════════════
-    //  22. Variadic function consumption
-    //      chibil rejects variadic definitions but should be able to
-    //      declare and call MSVC-defined variadic functions.
-    // ═══════════════════════════════════════════════════════════════
-
-    [Fact(Skip = "BUG: variadic call site generates invalid IL — InvalidProgramException at runtime")]
-    public void Variadic_MsvcDefine_ChibiConsume()
-    {
-        // MSVC defines a variadic function, chibil declares and calls it
-        // Links successfully but crashes with InvalidProgramException
-        MsvcCompile("""
-            int var_sum(int n, ...) {
-                return 42;
-            }
-            """)
-        .Compile("""
-            int var_sum(int, ...);
-            int main(void) { return var_sum(1, 10); }
-            """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
-        .RunAndCheck(exitCode: 42);
-    }
 }
