@@ -165,7 +165,7 @@ internal sealed class ManagedAggregateRegistry
         CType canonical = ty.Canonicalize();
         return canonical.Kind == TypeKind.Array
             ? canonical.ArrayLen >= 0
-            : canonical.Members != null;
+            : canonical.Size >= 0;
     }
 
     private string GetAggregateKey(CType ty)

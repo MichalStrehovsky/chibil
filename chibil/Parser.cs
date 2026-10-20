@@ -1663,7 +1663,7 @@ public class Parser
     {
         if (ty.Kind == TypeKind.Array) { Node node = NewNode(NodeKind.NullExpr, tok); for (int i = 0; i < ty.ArrayLen; i++) { var d2 = new InitDesg { Next = desg, Idx = i }; node = NewBinary(NodeKind.Comma, node, CreateLvarInit(init.Children[i], ty.Base, d2, tok), tok); } return node; }
         if (ty.Kind == TypeKind.Struct && init.Expr == null) { Node node = NewNode(NodeKind.NullExpr, tok); for (Member mem = ty.Members; mem != null; mem = mem.Next) { var d2 = new InitDesg { Next = desg, Member = mem }; node = NewBinary(NodeKind.Comma, node, CreateLvarInit(init.Children[mem.Idx], mem.Ty, d2, tok), tok); } return node; }
-        if (ty.Kind == TypeKind.Union) { Member mem = init.Mem ?? ty.Members; var d2 = new InitDesg { Next = desg, Member = mem }; return CreateLvarInit(init.Children[mem.Idx], mem.Ty, d2, tok); }
+        if (ty.Kind == TypeKind.Union) { Member mem = init.Mem ?? ty.Members; if (mem == null) return NewNode(NodeKind.NullExpr, tok); var d2 = new InitDesg { Next = desg, Member = mem }; return CreateLvarInit(init.Children[mem.Idx], mem.Ty, d2, tok); }
         if (init.Expr == null) return NewNode(NodeKind.NullExpr, tok);
         return NewBinary(NodeKind.Assign, InitDesgExpr(desg, tok), init.Expr, tok);
     }
