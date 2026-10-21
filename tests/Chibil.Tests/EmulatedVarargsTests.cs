@@ -143,6 +143,35 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void PointerMemberAssignmentsPreserveTheArgumentArea(bool assignNamedArgument)
+    {
+        string arguments = assignNamedArgument
+            ? "holder.pointer = values, values, 22"
+            : "values, holder.pointer = values, 22";
+        Compile($$"""
+            struct Holder { int *pointer; };
+            int read(int *expected, ...) {
+                __builtin_va_list ap;
+                __builtin_va_start(ap, expected);
+                int *pointer = __builtin_va_arg(ap, int *);
+                int last = __builtin_va_arg(ap, int);
+                __builtin_va_end(ap);
+                if (pointer != expected || last != 22) return 1;
+                return *pointer + last;
+            }
+            int main(void) {
+                int values[8] = { 20 };
+                struct Holder holder = { 0 };
+                int result = read({{arguments}});
+                if (holder.pointer != values || values[0] != 20) return 2;
+                return result;
+            }
+            """, Enabled).Link(Main).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void ManagedPointersAndCrossTranslationUnitCalls(bool reverse)
     {
         const string definition = """

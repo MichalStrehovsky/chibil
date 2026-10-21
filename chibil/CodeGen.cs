@@ -20,7 +20,7 @@ public class CodeGen
     private readonly Obj _currentFn;
     private readonly Dictionary<Obj, int> _localSlots;
     private readonly Dictionary<Obj, int> _paramSlots;
-    private readonly List<(CType ty, int slot)> _scratchLocals;
+    private readonly List<(CType ty, int slot, bool reusable)> _scratchLocals;
     private readonly int _scratchLocalBase;
     private readonly LabelHandle[] _labels;
 
@@ -32,7 +32,7 @@ public class CodeGen
         _enc = new ILBuilder(optimize);
         _localSlots = new Dictionary<Obj, int>();
         _paramSlots = new Dictionary<Obj, int>();
-        _scratchLocals = new List<(CType, int)>();
+        _scratchLocals = new List<(CType, int, bool)>();
         _labels = new LabelHandle[fn.LabelCount];
         for (int i = 0; i < _labels.Length; i++)
             _labels[i] = _enc.DefineLabel();
@@ -105,7 +105,7 @@ public class CodeGen
             }
 
             // Scratch locals
-            foreach (var (ty, _) in _scratchLocals)
+            foreach (var (ty, _, _) in _scratchLocals)
                 _emit.EncodeType(localsSigBlob, ty);
 
             localsSig = _emit.AddStandaloneSignature(localsSigBlob);
@@ -203,8 +203,10 @@ public class CodeGen
         // Reuse existing scratch local of same type.
         // For struct/union/array, require exact type identity (TypeDef handle match)
         // since IL verifier requires assignment-compatible value types.
-        foreach (var (existingTy, slot) in _scratchLocals)
+        foreach (var (existingTy, slot, reusable) in _scratchLocals)
         {
+            if (!reusable)
+                continue;
             if (existingTy.Kind == ty.Kind && existingTy.Size == ty.Size &&
                 existingTy.IsUnsigned == ty.IsUnsigned)
             {
@@ -218,13 +220,13 @@ public class CodeGen
                 return slot;
             }
         }
-        return AddFreshScratchLocal(ty);
+        return AddFreshScratchLocal(ty, reusable: true);
     }
 
-    private int AddFreshScratchLocal(CType ty)
+    private int AddFreshScratchLocal(CType ty, bool reusable = false)
     {
         int newSlot = _scratchLocalBase + _scratchLocals.Count;
-        _scratchLocals.Add((ty, newSlot));
+        _scratchLocals.Add((ty, newSlot, reusable));
         return newSlot;
     }
 
