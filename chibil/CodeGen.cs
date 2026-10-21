@@ -20,7 +20,7 @@ public class CodeGen
     private readonly Obj _currentFn;
     private readonly Dictionary<Obj, int> _localSlots;
     private readonly Dictionary<Obj, int> _paramSlots;
-    private readonly List<(CType ty, int slot)> _scratchLocals;
+    private readonly List<(CType ty, int slot, bool reusable)> _scratchLocals;
     private readonly int _scratchLocalBase;
     private readonly LabelHandle[] _labels;
 
@@ -32,7 +32,7 @@ public class CodeGen
         _enc = new ILBuilder(optimize);
         _localSlots = new Dictionary<Obj, int>();
         _paramSlots = new Dictionary<Obj, int>();
-        _scratchLocals = new List<(CType, int)>();
+        _scratchLocals = new List<(CType, int, bool)>();
         _labels = new LabelHandle[fn.LabelCount];
         for (int i = 0; i < _labels.Length; i++)
             _labels[i] = _enc.DefineLabel();
@@ -105,7 +105,7 @@ public class CodeGen
             }
 
             // Scratch locals
-            foreach (var (ty, _) in _scratchLocals)
+            foreach (var (ty, _, _) in _scratchLocals)
                 _emit.EncodeType(localsSigBlob, ty);
 
             localsSig = _emit.AddStandaloneSignature(localsSigBlob);
@@ -203,8 +203,10 @@ public class CodeGen
         // Reuse existing scratch local of same type.
         // For struct/union/array, require exact type identity (TypeDef handle match)
         // since IL verifier requires assignment-compatible value types.
-        foreach (var (existingTy, slot) in _scratchLocals)
+        foreach (var (existingTy, slot, reusable) in _scratchLocals)
         {
+            if (!reusable)
+                continue;
             if (existingTy.Kind == ty.Kind && existingTy.Size == ty.Size &&
                 existingTy.IsUnsigned == ty.IsUnsigned)
             {
@@ -218,13 +220,13 @@ public class CodeGen
                 return slot;
             }
         }
-        return AddFreshScratchLocal(ty);
+        return AddFreshScratchLocal(ty, reusable: true);
     }
 
-    private int AddFreshScratchLocal(CType ty)
+    private int AddFreshScratchLocal(CType ty, bool reusable = false)
     {
         int newSlot = _scratchLocalBase + _scratchLocals.Count;
-        _scratchLocals.Add((ty, newSlot));
+        _scratchLocals.Add((ty, newSlot, reusable));
         return newSlot;
     }
 
@@ -298,6 +300,7 @@ public class CodeGen
             case NodeKind.FunCall when IsStructOrUnion(node.Ty):
             case NodeKind.Assign when IsStructOrUnion(node.Ty):
             case NodeKind.Cond when IsStructOrUnion(node.Ty):
+            case NodeKind.VaArg when IsStructOrUnion(node.Ty):
                 GenExpr(node);
                 if (!HasManagedTypeDefinition(node.Ty))
                 {
@@ -308,7 +311,7 @@ public class CodeGen
                     return;
                 }
 
-                int valueScratch = GetOrAddScratchLocal(node.Ty);
+                int valueScratch = AddFreshScratchLocal(node.Ty);
                 _enc.StoreLocal(valueScratch);
                 _enc.LoadLocalAddress(valueScratch);
                 return;
@@ -316,6 +319,7 @@ public class CodeGen
             case NodeKind.FunCall:
             case NodeKind.Assign:
             case NodeKind.Cond:
+            case NodeKind.VaArg:
                 break;
 
             case NodeKind.VlaPtr:
@@ -609,6 +613,7 @@ public class CodeGen
     /// <summary>Push a callable function address onto the evaluation stack.</summary>
     private void EmitFunctionAddress(Obj fn)
     {
+        VariadicAbi.ValidateAddress(fn.Ty, fn.Ty.Name, _emit.Options);
         CType funcTy = fn.Ty;
         if (funcTy.CallConv == CallConv.Clrcall)
         {
@@ -796,6 +801,14 @@ public class CodeGen
                 GenFunCall(node);
                 return;
 
+            case NodeKind.VaStart:
+                _enc.LoadArgument(VariadicAbi.FixedParameterCount(_currentFn.Ty));
+                return;
+
+            case NodeKind.VaArg:
+                GenVaArg(node);
+                return;
+
             case NodeKind.Cas:
                 GenCas(node);
                 return;
@@ -963,13 +976,49 @@ public class CodeGen
             return;
         }
 
-        // Push arguments
+        int area = -1;
+        if (funcTy.IsVariadic)
+        {
+            int remaining = VariadicAbi.FixedParameterCount(funcTy);
+            int size = 0, alignment = 1;
+            for (Node arg = node.Args; arg != null; arg = arg.Next)
+            {
+                if (remaining-- > 0) continue;
+                CType ty = VariadicAbi.ArgumentType(arg.Ty);
+                size = VariadicAbi.Advance(size, ty, arg.Tok, out _);
+                alignment = Math.Max(alignment, ty.Align);
+            }
+            area = AllocateArgumentArea(size, alignment);
+        }
+
+        // Push named arguments and pack the optional portion.
         int argCount = 0;
+        int cursor = 0;
         CType paramTy = funcTy.Params;
         for (Node arg = node.Args; arg != null; arg = arg.Next)
         {
+            if (funcTy.IsVariadic && paramTy == null)
+            {
+                CType ty = VariadicAbi.ArgumentType(arg.Ty);
+                cursor = VariadicAbi.Advance(cursor, ty, arg.Tok, out int offset);
+                if (ty.Size == 0)
+                {
+                    GenExprDiscard(arg);
+                    continue;
+                }
+                _enc.LoadLocal(area);
+                AddPointerOffset(offset);
+                GenByValueOperand(arg, ty);
+                Store(ty);
+                continue;
+            }
             GenByValueOperand(arg, paramTy);
             paramTy = paramTy?.Next;
+            argCount++;
+        }
+        if (funcTy.IsVariadic)
+        {
+            _enc.LoadLocal(area);
             argCount++;
         }
 
@@ -991,6 +1040,79 @@ public class CodeGen
             // Direct call
             _enc.Call(_emit.GetFunctionToken(node.Lhs.Var), retPush - argCount);
         }
+    }
+
+    private void AlignPointer(int alignment)
+    {
+        if (alignment == 1) return;
+        AddPointerOffset(alignment - 1);
+        EmitConstI4(-alignment);
+        _enc.OpCode(ILOpCode.Conv_i);
+        _enc.OpCode(ILOpCode.And);
+    }
+
+    private void AddPointerOffset(int offset)
+    {
+        if (offset == 0) return;
+        EmitConstI4(offset);
+        _enc.OpCode(ILOpCode.Conv_i);
+        _enc.OpCode(ILOpCode.Add);
+    }
+
+    private int AllocateArgumentArea(int size, int alignment)
+    {
+        int address = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
+        if (size == 0)
+        {
+            EmitTypedZero(_types.PointerTo(_types.TyVoid));
+        }
+        else
+        {
+            long storageSize = (long)size + alignment - 1;
+            int storage = AddFreshScratchLocal(TypeSystem.ArrayOf(_types.TyUchar, checked((int)storageSize)));
+            _enc.LoadLocalAddress(storage);
+            _enc.OpCode(ILOpCode.Conv_u);
+            AlignPointer(alignment);
+        }
+        _enc.StoreLocal(address);
+        return address;
+    }
+
+    private void GenVaArg(Node node)
+    {
+        CType ty = VariadicAbi.ArgumentType(node.Ty);
+        int cursorAddress = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
+        int valueAddress = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
+        GenAddr(node.Lhs);
+        _enc.OpCode(ILOpCode.Conv_u);
+        _enc.StoreLocal(cursorAddress);
+        _enc.LoadLocal(cursorAddress);
+        Load(node.Lhs.Ty);
+        AlignPointer(ty.Align);
+        _enc.StoreLocal(valueAddress);
+        _enc.LoadLocal(cursorAddress);
+        _enc.LoadLocal(valueAddress);
+        AddPointerOffset(ty.Size);
+        Store(node.Lhs.Ty);
+
+        if (IsStructOrUnion(ty))
+        {
+            int snapshot = AllocateArgumentArea(Math.Max(1, ty.Size), ty.Align);
+            if (ty.Size != 0)
+            {
+                _enc.LoadLocal(snapshot);
+                _enc.LoadLocal(valueAddress);
+                EmitConstI4(ty.Size);
+                _enc.OpCode(ILOpCode.Unaligned); _enc.WriteByte(1);
+                _enc.OpCode(ILOpCode.Cpblk);
+            }
+            _enc.LoadLocal(snapshot);
+        }
+        else
+        {
+            _enc.LoadLocal(valueAddress);
+        }
+        Load(ty);
     }
 
     // ─── Atomic operations ───────────────────────────────────────

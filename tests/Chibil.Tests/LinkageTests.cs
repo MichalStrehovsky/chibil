@@ -56,6 +56,21 @@ public class LinkageTests : ChibiTestBase
     }
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void CompositeFunctionReturnTypesRetainArrayBounds(bool reverse, bool prototype)
+    {
+        string incomplete = $"int (*(*pointer)({(prototype ? "int" : "")}))[];";
+        const string complete = "int (*(*pointer)())[4];";
+        Compile((reverse ? complete + incomplete : incomplete + complete) + """
+            int main(void) { return sizeof(*pointer(0)) == 16 ? 42 : 1; }
+            """)
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
     [InlineData(false, "")]
     [InlineData(false, "__clrcall")]
     [InlineData(true, "")]

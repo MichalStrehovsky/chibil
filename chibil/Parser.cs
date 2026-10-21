@@ -425,11 +425,16 @@ public class Parser
             return TypeSystem.FuncType(ty);
         }
         CType head = new(), cur = head;
+        bool hasPrototype = !Util.Equal(tok, ")");
         bool isVariadic = false;
         while (!Util.Equal(tok, ")"))
         {
             if (cur != head) tok = Util.Skip(tok, ",");
-            if (Util.Equal(tok, "...")) { isVariadic = true; tok = tok.Next; Util.Skip(tok, ")"); break; }
+            if (Util.Equal(tok, "..."))
+            {
+                if (cur == head) Util.ErrorTok(tok, "variadic functions require a named parameter");
+                isVariadic = true; tok = tok.Next; Util.Skip(tok, ")"); break;
+            }
             VarAttr paramAttr = new();
             CType ty2 = Declspec(ref tok, tok, paramAttr);
             ty2 = Declarator(ref tok, tok, ty2, paramAttr.PendingCallConv);
@@ -438,9 +443,9 @@ public class Parser
             else if (ty2.Kind == TypeKind.Func) { ty2 = _types.PointerTo(ty2); ty2.Name = name; }
             cur = cur.Next = TypeSystem.CopyType(ty2);
         }
-        if (cur == head) isVariadic = true;
         ty = TypeSystem.FuncType(ty);
         ty.Params = head.Next;
+        ty.HasPrototype = hasPrototype;
         ty.IsVariadic = isVariadic;
         rest = tok.Next;
         return ty;
@@ -1127,6 +1132,13 @@ public class Parser
         if (fn.Ty.Kind != TypeKind.Func && (fn.Ty.Kind != TypeKind.Ptr || fn.Ty.Base.Kind != TypeKind.Func))
             Util.ErrorTok(fn.Tok, "not a function");
         CType ty = fn.Ty.Kind == TypeKind.Func ? fn.Ty : fn.Ty.Base;
+        if (ty.IsVariadic)
+        {
+            if (!_options.EmulatedVarargs)
+                Util.ErrorTok(fn.Tok, "variadic calls require -femulated-varargs");
+            if (!(fn.Kind == NodeKind.Var && fn.Var.IsFunction) && ty.CallConv != CallConv.Clrcall)
+                Util.ErrorTok(fn.Tok, "variadic indirect calls require __clrcall");
+        }
         CType paramTy = ty.Params;
         Node head = new(), cur = head;
         while (!Util.Equal(tok, ")"))
@@ -1135,7 +1147,14 @@ public class Parser
             Node arg = Assign(ref tok, tok);
             _types.AddType(arg);
             if (paramTy != null) { if (paramTy.Kind != TypeKind.Struct && paramTy.Kind != TypeKind.Union) arg = _types.NewCast(arg, paramTy); paramTy = paramTy.Next; }
-            else if (arg.Ty.Kind == TypeKind.Float) arg = _types.NewCast(arg, _types.TyDouble);
+            else
+            {
+                if (ty.HasPrototype && !ty.IsVariadic)
+                    Util.ErrorTok(arg.Tok, "too many arguments");
+                arg = _types.DefaultArgumentPromotion(arg);
+                if (ty.IsVariadic)
+                    VariadicAbi.ValidateObjectType(VariadicAbi.ArgumentType(arg.Ty), arg.Tok);
+            }
             cur = cur.Next = arg;
         }
         if (paramTy != null) Util.ErrorTok(tok, "too few arguments");
@@ -1166,6 +1185,9 @@ public class Parser
         { CType ty = Typename(ref tok, tok.Next.Next); rest = Util.Skip(tok, ")"); return NewUlong(ty.Align, tok); }
         if (Util.Equal(tok, "_Alignof")) { Node node = Unary(ref rest, tok.Next); _types.AddType(node); return NewUlong(node.Ty.Align, tok); }
         if (Util.Equal(tok, "_Generic")) return GenericSelection(ref rest, tok.Next);
+        if (Util.Equal(tok, "__builtin_va_start") || Util.Equal(tok, "__builtin_va_arg") ||
+            Util.Equal(tok, "__builtin_va_copy") || Util.Equal(tok, "__builtin_va_end"))
+            return VaBuiltin(ref rest, tok);
         if (Util.Equal(tok, "__builtin_types_compatible_p"))
         { tok = Util.Skip(tok.Next, "("); CType t1 = Typename(ref tok, tok); tok = Util.Skip(tok, ","); CType t2 = Typename(ref tok, tok); rest = Util.Skip(tok, ")"); return NewNum(TypeSystem.IsCompatible(t1, t2) ? 1 : 0, start); }
         if (Util.Equal(tok, "__builtin_reg_class"))
@@ -1190,6 +1212,61 @@ public class Parser
             node.Ty = tok.Ty; rest = tok.Next; return node;
         }
         Util.ErrorTok(tok, "expected an expression"); return null;
+    }
+
+    private Node VaBuiltin(ref Token rest, Token tok)
+    {
+        Token start = tok;
+        string name = Util.GetTokenText(tok);
+        if (!_options.EmulatedVarargs)
+            Util.ErrorTok(tok, "variadic intrinsics require -femulated-varargs");
+        tok = Util.Skip(tok.Next, "(");
+        Node ap = Assign(ref tok, tok);
+        _types.AddType(ap);
+        bool isVaList = ap.Ty.Kind == TypeKind.Ptr && ap.Ty.Base.Kind == TypeKind.Char &&
+            !ap.Ty.Base.IsUnsigned && !ap.Ty.Base.IsConst;
+        if (!isVaList || ap.Ty.IsConst ||
+            ap.Kind is not (NodeKind.Var or NodeKind.Member or NodeKind.Deref))
+            Util.ErrorTok(ap.Tok, "variadic intrinsic requires a modifiable va_list lvalue");
+
+        Node result;
+        if (name == "__builtin_va_arg")
+        {
+            tok = Util.Skip(tok, ",");
+            CType ty = Typename(ref tok, tok);
+            VariadicAbi.ValidateObjectType(ty, start);
+            result = NewUnary(NodeKind.VaArg, ap, start);
+            result.Ty = ty;
+        }
+        else if (name == "__builtin_va_start")
+        {
+            if (_currentFn == null || !_currentFn.Ty.IsVariadic)
+                Util.ErrorTok(start, "va_start requires a variadic function definition");
+            tok = Util.Skip(tok, ",");
+            Node last = Assign(ref tok, tok);
+            Obj parameter = _currentFn.Params;
+            while (parameter?.Next != null) parameter = parameter.Next;
+            if (last.Kind != NodeKind.Var || !ReferenceEquals(last.Var, parameter))
+                Util.ErrorTok(last.Tok, "va_start requires the last named parameter");
+            Node area = NewNode(NodeKind.VaStart, start);
+            area.Ty = _types.PointerTo(_types.TyChar);
+            result = _types.NewCast(NewBinary(NodeKind.Assign, ap, area, start), _types.TyVoid);
+        }
+        else if (name == "__builtin_va_copy")
+        {
+            tok = Util.Skip(tok, ",");
+            Node source = Assign(ref tok, tok);
+            _types.AddType(source);
+            if (!TypeSystem.IsCompatible(ap.Ty, source.Ty))
+                Util.ErrorTok(source.Tok, "va_copy requires a va_list source");
+            result = _types.NewCast(NewBinary(NodeKind.Assign, ap, source, start), _types.TyVoid);
+        }
+        else
+        {
+            result = _types.NewCast(ap, _types.TyVoid);
+        }
+        rest = Util.Skip(tok, ")");
+        return result;
     }
 
     private Node GenericSelection(ref Token rest, Token tok)
@@ -1874,34 +1951,12 @@ public class Parser
             if (fn.Body != null && hasBody) Util.ErrorTok(tok, $"redefinition of {nameStr}");
             if (!fn.IsStatic && attr.IsStatic) Util.ErrorTok(tok, "static declaration follows a non-static declaration");
 
-            // MSIL unprototyped function handling:
-            //
-            // In old C, `void f()` declares a function with *unspecified* parameters
-            // (not "no parameters"). The parser sets IsVariadic=true, Params=null for
-            // these. In native code this works because the caller pushes args onto the
-            // stack and the callee pops what it expects — the ABI doesn't enforce
-            // signature matching.
-            //
-            // In MSIL, call-site signatures must exactly match the callee's MethodDef
-            // signature. There is no way to emit a correct call to an unprototyped
-            // function without knowing its actual parameters. This makes cross-TU
-            // unprototyped calls fundamentally unsupportable:
-            //
-            //   // tu1.c: void f(); void g() { f(42); }  — can't emit matching sig
-            //   // tu2.c: void f(int x) { ... }           — definition expects int
-            //
-            // For the same-TU case (forward decl followed by definition), we update
-            // fn.Ty here so the MethodDef gets the correct signature from the
-            // definition. For cross-TU, the linker will reject mismatched signatures.
-            if (hasBody)
-            {
-                // Check calling convention compatibility (MSVC rejects clrcall vs cdecl)
-                if (fn.Ty.CallConv != ty.CallConv)
-                    Util.ErrorTok(ty.Name, "conflicting calling conventions in redeclaration");
-
-                if (fn.Ty.IsVariadic && fn.Ty.Params == null)
-                    fn.Ty = ty; // unprototyped K&R → update from definition
-            }
+            if (fn.Ty.CallConv != ty.CallConv)
+                Util.ErrorTok(ty.Name, "conflicting calling conventions in redeclaration");
+            if (!TypeSystem.IsCompatible(fn.Ty, ty))
+                Util.ErrorTok(ty.Name, "conflicting function types in redeclaration");
+            fn.Ty = CompositeGlobalType(fn.Ty, ty);
+            PushScope(nameStr).Var = fn;
         }
         else
         {
@@ -1922,8 +1977,10 @@ public class Parser
         _currentFn = fn; _locals = null; _staticLocalScope = 0; _brkLabel = _contLabel = NoLabel; _labelCount = 0; EnterScope();
         CreateParamLvars(ty.Params);
         fn.Params = _locals;
-        if (ty.IsVariadic && ty.Params != null)
-            Util.ErrorTok(ty.Name, "variadic function definitions are not supported in MSIL mode");
+        if (ty.IsVariadic && !_options.EmulatedVarargs)
+            Util.ErrorTok(ty.Name, "variadic function definitions require -femulated-varargs");
+        if (ty.IsVariadic && nameStr == "main")
+            Util.ErrorTok(ty.Name, "main cannot be variadic");
         tok = Util.Skip(tok, "{");
         fn.Body = CompoundStmt(ref tok, tok);
         fn.Locals = _locals; LeaveScope(); ResolveGotoLabels(); fn.LabelCount = _labelCount; _currentFn = null;
@@ -1992,9 +2049,13 @@ public class Parser
         if (current.Kind == TypeKind.Func)
         {
             CType returnType = CompositeGlobalType(current.ReturnTy, declaration.ReturnTy);
-            CType parameters = CompositeParameterTypes(current.Params, declaration.Params);
+            CType parameters = !current.HasPrototype ? declaration.Params
+                : !declaration.HasPrototype ? current.Params
+                : CompositeParameterTypes(current.Params, declaration.Params);
+            bool hasPrototype = current.HasPrototype || declaration.HasPrototype;
             if (ReferenceEquals(returnType, current.ReturnTy) &&
-                ReferenceEquals(parameters, current.Params))
+                ReferenceEquals(parameters, current.Params) &&
+                current.HasPrototype == hasPrototype)
             {
                 return current;
             }
@@ -2003,6 +2064,7 @@ public class Parser
             compositeFunction.Origin = null;
             compositeFunction.ReturnTy = returnType;
             compositeFunction.Params = parameters;
+            compositeFunction.HasPrototype = hasPrototype;
             return compositeFunction;
         }
 
@@ -2050,6 +2112,7 @@ public class Parser
 
     private void DeclareBuiltinFunctions()
     {
+        PushScope("__builtin_va_list").TypeDef = _types.PointerTo(_types.TyChar);
         CType ty = TypeSystem.FuncType(_types.PointerTo(_types.TyVoid));
         ty.Params = TypeSystem.CopyType(_types.TyInt);
         _builtinAlloca = NewGvar("alloca", ty);

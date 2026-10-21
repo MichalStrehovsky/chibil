@@ -95,6 +95,14 @@ public class TypeSystem
                 if (!IsCompatible(t1.ReturnTy, t2.ReturnTy)) return false;
                 if (t1.IsVariadic != t2.IsVariadic) return false;
                 if (t1.CallConv != t2.CallConv) return false;
+                if (!t1.HasPrototype || !t2.HasPrototype)
+                {
+                    CType prototype = t1.HasPrototype ? t1 : t2;
+                    for (CType p = prototype.Params; p != null; p = p.Next)
+                        if (p.Kind == TypeKind.Float || IsInteger(p) && p.Size < 4)
+                            return false;
+                    return true;
+                }
                 CType p1 = t1.Params, p2 = t2.Params;
                 for (; p1 != null && p2 != null; p1 = p1.Next, p2 = p2.Next)
                     if (!IsCompatible(p1, p2)) return false;
@@ -133,6 +141,7 @@ public class TypeSystem
             EnclosingAggregate = ty.EnclosingAggregate,
             ReturnTy = ty.ReturnTy,
             Params = ty.Params,
+            HasPrototype = ty.HasPrototype,
             IsVariadic = ty.IsVariadic,
             CallConv = ty.CallConv,
             Next = ty.Next,
@@ -276,6 +285,22 @@ public class TypeSystem
             Ty = CopyType(ty),
         };
         return node;
+    }
+
+    public Node DefaultArgumentPromotion(Node arg)
+    {
+        CType ty = arg.Ty;
+        if (ty.Kind is TypeKind.Array or TypeKind.Vla)
+            return NewCast(arg, PointerTo(ty.Base));
+        if (ty.Kind == TypeKind.Func)
+            return NewCast(arg, PointerTo(ty));
+        if (ty.Kind == TypeKind.Float)
+            return NewCast(arg, TyDouble);
+        if (IsInteger(ty) && (ty.Size < 4 ||
+            arg.Kind == NodeKind.Member && arg.Member.IsBitfield &&
+            ty.Size == 4 && arg.Member.BitWidth < 32))
+            return NewCast(arg, TyInt);
+        return arg;
     }
 
     public void AddType(Node node)

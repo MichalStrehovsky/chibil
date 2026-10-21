@@ -36,7 +36,7 @@ public enum NodeKind
     Block, Goto, Label,
     FunCall, ExprStmt, StmtExpr,
     Var, VlaPtr, Num, Cast, MemZero, PostIncDec,
-    Asm, Cas, Exch,
+    Asm, Cas, Exch, VaStart, VaArg,
 }
 
 public enum CallConv
@@ -138,6 +138,7 @@ public class CType
     // Function type
     public CType ReturnTy;
     public CType Params;
+    public bool HasPrototype = true;
     public bool IsVariadic;
     public CallConv CallConv; // __cdecl (default), __clrcall, __stdcall
     public CType Next;
@@ -437,6 +438,7 @@ public class CompilerOptions
     public bool UseFieldBackedManagedAggregates;
     public bool TargetNetCore;
     public bool UcoEntryPoints;
+    public bool EmulatedVarargs;
     public string BaseFile;
     public DataModel DataModel = DataModel.LLP64;
 }

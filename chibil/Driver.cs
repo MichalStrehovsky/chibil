@@ -148,6 +148,8 @@ public class Driver
             if (arg == "-fnetframework") { Options.TargetNetCore = false; continue; }
             if (arg == "-fuco-entrypoints") { Options.UcoEntryPoints = true; continue; }
             if (arg == "-fno-uco-entrypoints") { Options.UcoEntryPoints = false; continue; }
+            if (arg == "-femulated-varargs") { Options.EmulatedVarargs = true; continue; }
+            if (arg == "-fno-emulated-varargs") { Options.EmulatedVarargs = false; continue; }
             if (arg == "-c") { _optC = true; continue; }
             if (arg == "-E") { _optE = true; continue; }
             if (arg.StartsWith("-I")) { Options.IncludePaths.Add(arg[2..]); continue; }
