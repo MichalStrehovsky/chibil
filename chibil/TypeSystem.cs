@@ -321,7 +321,7 @@ public class TypeSystem
             case NodeKind.Assign:
                 if (node.Lhs.Ty.Kind is TypeKind.Array or TypeKind.Vla or TypeKind.Func)
                     Util.ErrorTok(node.Lhs.Tok, "not an lvalue");
-                if (node.Lhs.Ty.Kind != TypeKind.Struct)
+                if (node.Lhs.Ty.Kind is not (TypeKind.Struct or TypeKind.Union))
                     node.Rhs = NewCast(node.Rhs, node.Lhs.Ty);
                 node.Ty = node.Lhs.Ty;
                 return;

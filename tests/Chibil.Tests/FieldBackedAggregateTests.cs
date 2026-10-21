@@ -4,6 +4,260 @@ namespace Chibil.Tests;
 
 public class FieldBackedAggregateTests : ChibiTestBase
 {
+    [Theory]
+    [InlineData("char", false)]
+    [InlineData("char", true)]
+    [InlineData("short", false)]
+    [InlineData("short", true)]
+    [InlineData("int", false)]
+    [InlineData("int", true)]
+    public void AggregateExpressionUnionCopiesPreserveValues(string type, bool fieldBacked)
+    {
+        Compile($$"""
+            union Value { {{type}} value; };
+            int calls;
+            union Value make(void) {
+                union Value value = { 42 };
+                calls++;
+                return value;
+            }
+            int main(void) {
+                union Value original = { 20 };
+                union Value copy = original;
+                if (copy.value != 20) return 1;
+                copy = make();
+                return calls == 1 ? copy.value : 2;
+            }
+            """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AggregateExpressionMemberDesignatorsOverrideUnionCopies(bool fieldBacked)
+    {
+        Compile("""
+            union Value { int value; };
+            struct Holder { union Value value; };
+            int main(void) {
+                union Value original = { 1 };
+                struct Holder holder = { .value = original, .value.value = 42 };
+                return holder.value.value;
+            }
+            """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData("struct", false)]
+    [InlineData("struct", true)]
+    [InlineData("union", false)]
+    [InlineData("union", true)]
+    public void AggregateExpressionReplacementBracesOverrideCopies(string kind, bool fieldBacked)
+    {
+        Compile($$"""
+            {{kind}} Value { int value; };
+            struct Holder { {{kind}} Value value; };
+            int main(void) {
+                {{kind}} Value original = { 1 };
+                struct Holder plain = { .value = original, .value = { 42 } };
+                struct Holder designated = { .value = original, .value = { .value = 42 } };
+                {{kind}} Value array[1] = { [0] = original, [0] = { 42 } };
+                if (plain.value.value != 42) return 1;
+                if (designated.value.value != 42) return 2;
+                return array[0].value;
+            }
+            """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData("struct", false)]
+    [InlineData("struct", true)]
+    [InlineData("union", false)]
+    [InlineData("union", true)]
+    public void AggregateExpressionReplacementBracesClearEarlierChildren(string kind, bool fieldBacked)
+    {
+        Compile($$"""
+            struct Pair { int x, y; };
+            {{kind}} Value { struct Pair pair; };
+            struct Holder { {{kind}} Value value; };
+            int main(void) {
+                {{kind}} Value original = { .pair = { 7, 8 } };
+                struct Holder holder = {
+                    .value = { .pair = { 1, 99 } },
+                    .value = original,
+                    .value = { .pair = { 42 } }
+                };
+                return holder.value.pair.x + holder.value.pair.y;
+            }
+            """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AggregateReplacementBracesClearOmittedChildren(bool fieldBacked)
+    {
+        Compile("""
+            struct Pair { int x, y; };
+            struct Holder { struct Pair pair; int values[2]; char text[4]; int sibling; };
+            int main(void) {
+                struct Holder holder = {
+                    .pair = { 1, 99 },
+                    .values = { 1, 99 },
+                    .text = "abc",
+                    .sibling = 2,
+                    .pair = { 20 },
+                    .values = { 20 },
+                    .text = "x"
+                };
+                if (holder.pair.y != 0) return 1;
+                if (holder.values[1] != 0) return 2;
+                if (holder.text[0] != 'x' || holder.text[1] != 0) return 3;
+                if (holder.text[2] != 0 || holder.text[3] != 0) return 4;
+                return holder.pair.x + holder.values[0] + holder.sibling;
+            }
+            """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AggregateReplacementMemberDesignatorsPreserveSiblings(bool fieldBacked)
+    {
+        Compile("""
+            struct Pair { int x, y; };
+            union Value { struct Pair pair; };
+            struct Holder { union Value value; int values[2]; int sibling; };
+            int main(void) {
+                struct Holder holder = {
+                    .value = { .pair = { 10, 11 } },
+                    .values = { 12, 13 },
+                    .sibling = 14,
+                    .value.pair.x = 20,
+                    .values[0] = 22
+                };
+                if (holder.value.pair.y != 11) return 1;
+                if (holder.values[1] != 13) return 2;
+                if (holder.sibling != 14) return 3;
+                return holder.value.pair.x + holder.values[0];
+            }
+            """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AggregateExpressionUnionBraceElisionParsesEnumOnce(bool fieldBacked)
+    {
+        Compile("""
+            enum { N = 20 };
+            union Value { int value; };
+            int main(void) {
+                union Value values[1] = { sizeof(enum { N = N + 1 }) };
+                if (values[0].value != sizeof(int)) return 1;
+                return N;
+            }
+            """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(21);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AggregateExpressionUnionBraceElisionPreservesVlaSize(bool fieldBacked)
+    {
+        Compile("""
+            union Value { int size; };
+            struct Holder { union Value value; };
+            int main(void) {
+                int count = 42;
+                typedef char Array[count];
+                struct Holder holder = { sizeof(Array) };
+                return holder.value.size;
+            }
+            """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AggregateExpressionNestedBraceElisionParsesEnumOnce(bool fieldBacked)
+    {
+        Compile("""
+            enum { N = 20, M = 20 };
+            union Inner { int value; };
+            struct Pair { union Inner first; int second; };
+            union Outer { struct Pair pair; };
+            union Array { int values[2]; };
+            int main(void) {
+                union Outer outer[1] = { sizeof(enum { N = N + 1 }), N };
+                union Array array[1] = { sizeof(enum { M = M + 1 }), M };
+                if (N != 21 || M != 21) return 1;
+                if (outer[0].pair.first.value != sizeof(int)) return 2;
+                if (array[0].values[0] != sizeof(int)) return 3;
+                return outer[0].pair.second + array[0].values[1];
+            }
+            """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AggregateExpressionNestedUnionInitializersRespectBraceElision(bool fieldBacked)
+    {
+        Compile("""
+            union Inner { int value; };
+            struct Pair { union Inner first; int second; };
+            union Outer { struct Pair pair; };
+            int main(void) {
+                union Inner inner = { 20 };
+                union Outer values[1] = { inner, 22 };
+                return values[0].pair.first.value + values[0].pair.second;
+            }
+            """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AggregateExpressionInitializersPreserveSideEffects(bool fieldBacked)
+    {
+        Compile("""
+            struct Value { int value; };
+            struct Holder { struct Value value; int extra; };
+            int calls;
+            struct Value make(void) {
+                struct Value value = { 20 };
+                calls++;
+                return value;
+            }
+            int main(void) {
+                struct Holder holder = { .value = make(), .extra = 22 };
+                return calls == 1 ? holder.value.value + holder.extra : 1;
+            }
+            """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
+        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+    }
+
+    [Fact]
+    public void AggregateExpressionGlobalInitializersRequireConstants()
+    {
+        CompileExpectingError("""
+            struct Value { int value; };
+            struct Value make(void);
+            struct Value value = make();
+            """).AssertErrorContains("compile-time constant");
+    }
+
     [Fact]
     public void FieldBackedNestedAggregateBehavior()
     {
