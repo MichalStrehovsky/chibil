@@ -1425,6 +1425,15 @@ public class Parser
         dst.Expr = src.Expr; dst.Children = src.Children; dst.Mem = src.Mem;
     }
 
+    private static void ResetInitializer(Initializer init)
+    {
+        init.Expr = null;
+        init.Mem = null;
+        if (init.Children != null)
+            foreach (Initializer child in init.Children)
+                ResetInitializer(child);
+    }
+
     private Token SkipExcessElement(Token tok)
     {
         if (Util.Equal(tok, "{")) { tok = SkipExcessElement(tok.Next); return Util.Skip(tok, "}"); }
@@ -1503,6 +1512,7 @@ public class Parser
         if (Util.Equal(tok, ".") && init.Ty.Kind == TypeKind.Union)
         {
             Member mem = StructDesignator(ref tok, tok, init.Ty);
+            init.Expr = null;
             init.Mem = mem;
             Designation(ref rest, tok, init.Children[mem.Idx]);
             return;
@@ -1514,20 +1524,36 @@ public class Parser
         Initializer2(ref rest, tok, init);
     }
 
-    private void Initializer2(ref Token rest, Token tok, Initializer init)
+    private void Initializer2(ref Token rest, Token tok, Initializer init, Node expr = null, Token exprEnd = null)
     {
+        ResetInitializer(init);
         if (init.Ty.Kind == TypeKind.Array && tok.Kind == TokenKind.Str) { StringInitializer(ref rest, tok, init); return; }
-        if (init.Ty.Kind == TypeKind.Array) { if (Util.Equal(tok, "{")) ArrayInitializer1(ref rest, tok, init); else ArrayInitializer2(ref rest, tok, init, 0); return; }
-        if (init.Ty.Kind == TypeKind.Struct)
+        if (init.Ty.Kind == TypeKind.Array) { if (Util.Equal(tok, "{")) ArrayInitializer1(ref rest, tok, init); else ArrayInitializer2(ref rest, tok, init, 0, expr, exprEnd); return; }
+        if (init.Ty.Kind is TypeKind.Struct or TypeKind.Union)
         {
-            if (Util.Equal(tok, "{")) { StructInitializer1(ref rest, tok, init); return; }
-            Node expr = Assign(ref rest, tok); _types.AddType(expr);
-            if (expr.Ty.Kind == TypeKind.Struct) { init.Expr = expr; return; }
-            StructInitializer2(ref rest, tok, init, init.Ty.Members, false); return;
+            if (Util.Equal(tok, "{"))
+            {
+                if (init.Ty.Kind == TypeKind.Struct) StructInitializer1(ref rest, tok, init);
+                else UnionInitializer(ref rest, tok, init);
+                return;
+            }
+            // Pass the parsed expression through brace elision without repeating
+            // declarations or creating new VLA temporaries while probing its type.
+            expr ??= Assign(ref exprEnd, tok);
+            _types.AddType(expr);
+            if (TypeSystem.IsCompatible(init.Ty, expr.Ty)) { init.Expr = expr; rest = exprEnd; return; }
+            if (init.Ty.Kind == TypeKind.Struct)
+                StructInitializer2(ref rest, tok, init, init.Ty.Members, false, expr, exprEnd);
+            else
+            {
+                init.Mem = init.Ty.Members;
+                Initializer2(ref rest, tok, init.Children[init.Mem.Idx], expr, exprEnd);
+            }
+            return;
         }
-        if (init.Ty.Kind == TypeKind.Union) { UnionInitializer(ref rest, tok, init); return; }
         if (Util.Equal(tok, "{")) { Initializer2(ref tok, tok.Next, init); rest = Util.Skip(tok, "}"); return; }
-        init.Expr = Assign(ref rest, tok);
+        if (expr == null) init.Expr = Assign(ref rest, tok);
+        else { init.Expr = expr; rest = exprEnd; }
     }
 
     private void StringInitializer(ref Token rest, Token tok, Initializer init)
@@ -1563,7 +1589,7 @@ public class Parser
         }
     }
 
-    private void ArrayInitializer2(ref Token rest, Token tok, Initializer init, int i)
+    private void ArrayInitializer2(ref Token rest, Token tok, Initializer init, int i, Node expr = null, Token exprEnd = null)
     {
         if (init.IsFlexible) { int len = CountArrayInitElements(tok, init.Ty); CopyInitializer(init, NewInitializer(TypeSystem.ArrayOf(init.Ty.Base, len), false)); }
         for (; i < init.Ty.ArrayLen && !IsEnd(tok); i++)
@@ -1571,7 +1597,8 @@ public class Parser
             Token start = tok;
             if (i > 0) tok = Util.Skip(tok, ",");
             if (Util.Equal(tok, "[") || Util.Equal(tok, ".")) { rest = start; return; }
-            Initializer2(ref tok, tok, init.Children[i]);
+            Initializer2(ref tok, tok, init.Children[i], expr, exprEnd);
+            expr = null;
         }
         rest = tok;
     }
@@ -1613,14 +1640,15 @@ public class Parser
         }
     }
 
-    private void StructInitializer2(ref Token rest, Token tok, Initializer init, Member mem, bool postDesignator)
+    private void StructInitializer2(ref Token rest, Token tok, Initializer init, Member mem, bool postDesignator, Node expr = null, Token exprEnd = null)
     {
         bool first = true;
         for (; mem != null && !IsEnd(tok); mem = mem.Next)
         {
             Token start = tok; if (!first || postDesignator) tok = Util.Skip(tok, ","); first = false;
             if (Util.Equal(tok, "[") || Util.Equal(tok, ".")) { rest = start; return; }
-            Initializer2(ref tok, tok, init.Children[mem.Idx]);
+            Initializer2(ref tok, tok, init.Children[mem.Idx], expr, exprEnd);
+            expr = null;
         }
         rest = tok;
     }
@@ -1678,7 +1706,7 @@ public class Parser
     {
         if (ty.Kind == TypeKind.Array) { Node node = NewNode(NodeKind.NullExpr, tok); for (int i = 0; i < ty.ArrayLen; i++) { var d2 = new InitDesg { Next = desg, Idx = i }; node = NewBinary(NodeKind.Comma, node, CreateLvarInit(init.Children[i], ty.Base, d2, tok), tok); } return node; }
         if (ty.Kind == TypeKind.Struct && init.Expr == null) { Node node = NewNode(NodeKind.NullExpr, tok); for (Member mem = ty.Members; mem != null; mem = mem.Next) { var d2 = new InitDesg { Next = desg, Member = mem }; node = NewBinary(NodeKind.Comma, node, CreateLvarInit(init.Children[mem.Idx], mem.Ty, d2, tok), tok); } return node; }
-        if (ty.Kind == TypeKind.Union) { Member mem = init.Mem ?? ty.Members; var d2 = new InitDesg { Next = desg, Member = mem }; return CreateLvarInit(init.Children[mem.Idx], mem.Ty, d2, tok); }
+        if (ty.Kind == TypeKind.Union && init.Expr == null) { Member mem = init.Mem ?? ty.Members; var d2 = new InitDesg { Next = desg, Member = mem }; return CreateLvarInit(init.Children[mem.Idx], mem.Ty, d2, tok); }
         if (init.Expr == null) return NewNode(NodeKind.NullExpr, tok);
         return NewBinary(NodeKind.Assign, InitDesgExpr(desg, tok), init.Expr, tok);
     }
@@ -1731,6 +1759,11 @@ public class Parser
 
     private Relocation WriteGvarData(Relocation cur, Initializer init, CType ty, byte[] buf, int offset, bool constOnly = false)
     {
+        if (ty.Kind is TypeKind.Struct or TypeKind.Union && init.Expr != null)
+        {
+            if (!constOnly) Util.ErrorTok(init.Expr.Tok, "not a compile-time constant");
+            return null;
+        }
         if (ty.Kind == TypeKind.Array) { for (int i = 0; i < ty.ArrayLen; i++) { cur = WriteGvarData(cur, init.Children[i], ty.Base, buf, offset + ty.Base.Size * i, constOnly); if (cur == null) return null; } return cur; }
         if (ty.Kind == TypeKind.Struct) { for (Member mem = ty.Members; mem != null; mem = mem.Next) { if (mem.IsBitfield) { Node expr = init.Children[mem.Idx].Expr; if (expr == null) break; EvalResult bfr = _consteval.TryEvalInitInt(expr, out long bfval); if (!bfr.IsSuccess) { if (!constOnly) Util.ErrorTok(expr.Tok, bfr.Message); return null; } ulong oldval = ReadBuf(buf, offset + mem.Offset, mem.Ty.Size); ulong newval = (ulong)bfval; ulong mask = mem.BitWidth >= 64 ? ~0UL : (1UL << mem.BitWidth) - 1; ulong combined = oldval | ((newval & mask) << mem.BitOffset); Util.WriteBuf(buf, offset + mem.Offset, (long)combined, mem.Ty.Size); } else { cur = WriteGvarData(cur, init.Children[mem.Idx], mem.Ty, buf, offset + mem.Offset, constOnly); if (cur == null) return null; } } return cur; }
         if (ty.Kind == TypeKind.Union) { if (init.Mem == null) return cur; return WriteGvarData(cur, init.Children[init.Mem.Idx], init.Mem.Ty, buf, offset, constOnly); }
