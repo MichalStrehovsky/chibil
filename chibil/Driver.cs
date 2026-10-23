@@ -14,11 +14,12 @@ public class Driver
 
     private readonly CompilerOptions Options = new();
     private Preprocessor _preprocessor;
+    private readonly List<(string Value, bool Undefine)> MacroActions = new();
     private FileType _optX;
     private readonly List<string> OptInclude = new();
     private bool _optE, _optM, _optMD, _optMMD, _optMP, _optS, _optC, _optCc1, _optHashHashHash;
     private bool _optStatic, _optShared;
-    private string _linker = "link";
+    private string _linker;
     private string _optMF, _optMT, _optO;
     private readonly List<string> LdExtraArgs = new();
     private readonly List<string> StdIncludePaths = new();
@@ -28,16 +29,23 @@ public class Driver
 
     public void Run(string[] args)
     {
+        ParseArgs(args);
         var types = new TypeSystem(Options.DataModel);
         var tokenizer = new Tokenizer(Options, types);
         _preprocessor = new Preprocessor(tokenizer, Options, types);
         _preprocessor.InitMacros();
-        ParseArgs(args);
+        foreach (var action in MacroActions)
+        {
+            if (action.Undefine)
+                _preprocessor.UndefMacro(action.Value);
+            else
+                Define(action.Value);
+        }
 
         if (_optCc1)
         {
             AddDefaultIncludePaths(args.Length > 0 ? args[0] : "chibil");
-            Cc1(tokenizer, _preprocessor);
+            Cc1(tokenizer, _preprocessor, types);
             return;
         }
 
@@ -115,21 +123,40 @@ public class Driver
             { Console.Error.WriteLine("chibil [ -o <path> ] <file>"); Environment.Exit(1); }
 
         var idirafter = new List<string>();
+        TargetProfile target = TargetProfile.Default;
+        string linker = null;
+        bool? targetNetCore = null, fixedAddressStatics = null, fieldBackedAggregates = null;
+        bool? ucoEntryPoints = null, emulatedVarargs = null;
 
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
             if (arg == "-###") { _optHashHashHash = true; continue; }
             if (arg == "-cc1") { _optCc1 = true; continue; }
-            if (arg == "--help") { Console.Error.WriteLine("chibil [ -fnetcore | -fnetframework (default) ] [ -o <path> ] <file>"); Environment.Exit(0); }
+            if (arg == "--help")
+            {
+                Console.Error.WriteLine("chibil [ --target <cpu-runtime-os[-abi]> ] [ -o <path> ] <file>");
+                Console.Error.WriteLine($"Targets: {TargetProfile.SupportedTargets}");
+                Console.Error.WriteLine("Default: x86_64-netfx-windows (msvc ABI); dotnet defaults to chibil ABI.");
+                Console.Error.WriteLine("The last --target wins. Explicit -f* switches override presets regardless of position.");
+                Environment.Exit(0);
+            }
+            if (arg == "--target")
+            {
+                if (++i >= args.Length)
+                    Util.Error("missing target for --target; expected cpu-runtime-os[-abi]");
+                target = TargetProfile.Parse(args[i]);
+                continue;
+            }
+            if (arg.StartsWith("--target=")) { target = TargetProfile.Parse(arg[9..]); continue; }
             if (arg == "-o") { _optO = args[++i]; continue; }
             if (arg.StartsWith("-o") && arg.Length > 2) { _optO = arg[2..]; continue; }
             if (arg == "-S") { _optS = true; continue; }
             if (arg == "-O0") { Options.Optimize = false; continue; }
             if (arg.StartsWith("-fuse-ld="))
             {
-                _linker = arg[9..];
-                if (_linker.Length == 0)
+                linker = arg[9..];
+                if (linker.Length == 0)
                     Util.Error("missing linker name for -fuse-ld=");
                 continue;
             }
@@ -140,23 +167,23 @@ public class Driver
             if (arg == "-fno-function-sections") { Options.OptFunctionSections = false; continue; }
             if (arg == "-fdata-sections") { Options.OptDataSections = true; continue; }
             if (arg == "-fno-data-sections") { Options.OptDataSections = false; continue; }
-            if (arg == "-ffixed-address-statics") { Options.OptFixedAddressStatics = true; continue; }
-            if (arg == "-fno-fixed-address-statics") { Options.OptFixedAddressStatics = false; continue; }
-            if (arg == "-fmanaged-aggregate-fields") { Options.UseFieldBackedManagedAggregates = true; continue; }
-            if (arg == "-fno-managed-aggregate-fields") { Options.UseFieldBackedManagedAggregates = false; continue; }
-            if (arg == "-fnetcore") { Options.TargetNetCore = true; continue; }
-            if (arg == "-fnetframework") { Options.TargetNetCore = false; continue; }
-            if (arg == "-fuco-entrypoints") { Options.UcoEntryPoints = true; continue; }
-            if (arg == "-fno-uco-entrypoints") { Options.UcoEntryPoints = false; continue; }
-            if (arg == "-femulated-varargs") { Options.EmulatedVarargs = true; continue; }
-            if (arg == "-fno-emulated-varargs") { Options.EmulatedVarargs = false; continue; }
+            if (arg == "-ffixed-address-statics") { fixedAddressStatics = true; continue; }
+            if (arg == "-fno-fixed-address-statics") { fixedAddressStatics = false; continue; }
+            if (arg == "-fmanaged-aggregate-fields") { fieldBackedAggregates = true; continue; }
+            if (arg == "-fno-managed-aggregate-fields") { fieldBackedAggregates = false; continue; }
+            if (arg == "-fnetcore") { targetNetCore = true; continue; }
+            if (arg == "-fnetframework") { targetNetCore = false; continue; }
+            if (arg == "-fuco-entrypoints") { ucoEntryPoints = true; continue; }
+            if (arg == "-fno-uco-entrypoints") { ucoEntryPoints = false; continue; }
+            if (arg == "-femulated-varargs") { emulatedVarargs = true; continue; }
+            if (arg == "-fno-emulated-varargs") { emulatedVarargs = false; continue; }
             if (arg == "-c") { _optC = true; continue; }
             if (arg == "-E") { _optE = true; continue; }
             if (arg.StartsWith("-I")) { Options.IncludePaths.Add(arg[2..]); continue; }
-            if (arg == "-D") { Define(args[++i]); continue; }
-            if (arg.StartsWith("-D")) { Define(arg[2..]); continue; }
-            if (arg == "-U") { _preprocessor.UndefMacro(args[++i]); continue; }
-            if (arg.StartsWith("-U") && arg.Length > 2) { _preprocessor.UndefMacro(arg[2..]); continue; }
+            if (arg == "-D") { MacroActions.Add((args[++i], false)); continue; }
+            if (arg.StartsWith("-D")) { MacroActions.Add((arg[2..], false)); continue; }
+            if (arg == "-U") { MacroActions.Add((args[++i], true)); continue; }
+            if (arg.StartsWith("-U") && arg.Length > 2) { MacroActions.Add((arg[2..], true)); continue; }
             if (arg == "-include") { OptInclude.Add(args[++i]); continue; }
             if (arg == "-x") { _optX = ParseOptX(args[++i]); continue; }
             if (arg.StartsWith("-x")) { _optX = ParseOptX(arg[2..]); continue; }
@@ -198,6 +225,16 @@ public class Driver
         foreach (string dir in idirafter)
             Options.IncludePaths.Add(dir);
 
+        target.ApplyDefaults(Options);
+        Options.TargetNetCore = targetNetCore ?? Options.TargetNetCore;
+        Options.OptFixedAddressStatics = fixedAddressStatics ?? Options.OptFixedAddressStatics;
+        Options.UseFieldBackedManagedAggregates = fieldBackedAggregates ?? Options.UseFieldBackedManagedAggregates;
+        Options.UcoEntryPoints = ucoEntryPoints ?? Options.UcoEntryPoints;
+        Options.EmulatedVarargs = emulatedVarargs ?? Options.EmulatedVarargs;
+        _linker = linker ?? target.DefaultLinker;
+
+        if (target.OS == TargetOS.Linux && !Options.TargetNetCore)
+            Util.Error("Linux targets require modern .NET; -fnetframework is not supported");
         if (Options.UcoEntryPoints && !Options.TargetNetCore)
             Util.Error("-fuco-entrypoints requires -fnetcore");
         if (InputPaths.Count == 0 && !_optCc1)
@@ -247,10 +284,7 @@ public class Driver
         // AppContext.BaseDirectory always gives the app's directory,
         // regardless of how it's invoked (AOT, dotnet exec, apphost, etc.)
         string dir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
-        Options.IncludePaths.Add($"{dir}/include");
-        Options.IncludePaths.Add("/usr/local/include");
-        Options.IncludePaths.Add("/usr/include/x86_64-linux-gnu");
-        Options.IncludePaths.Add("/usr/include");
+        Options.IncludePaths.Add(Path.Combine(dir, "include"));
         foreach (string p in Options.IncludePaths) StdIncludePaths.Add(p);
     }
 
@@ -426,7 +460,7 @@ public class Driver
         return tok1;
     }
 
-    private void Cc1(Tokenizer tokenizer, Preprocessor preprocessor)
+    private void Cc1(Tokenizer tokenizer, Preprocessor preprocessor, TypeSystem types)
     {
         Token tok = null;
 
@@ -438,7 +472,6 @@ public class Driver
         string tuHash = BitConverter.ToString(pathHash, 0, 4).Replace("-", "").ToLowerInvariant();
 
         // Create the parser early so the preprocessor can use const_expr for #if
-        var types = new TypeSystem(Options.DataModel);
         var nameMangler = new MsvcNameMangler(types, tuHash);
         var parser = new Parser(tokenizer, Options, types, nameMangler);
         preprocessor.SetParser(parser);

@@ -16,22 +16,112 @@ compiler driver:
 dotnet build .\chilink\Chilink.csproj
 $env:PATH = "$PWD\chilink\bin\Debug\net10.0;$env:PATH"
 
-dotnet run --project .\chibil\Chibil.csproj -- -ffixed-address-statics -c hello.c -o hello.obj
+dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-netfx-windows-chibil -c hello.c -o hello.obj
 chilink /out:hello.exe /entry:main /subsystem:console hello.obj
 
-dotnet run --project .\chibil\Chibil.csproj -- -ffixed-address-statics -fuse-ld=chilink hello.c -o hello.exe "-Wl,/entry:main"
+dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-netfx-windows-chibil hello.c -o hello.exe "-Wl,/entry:main"
+dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-dotnet-windows hello.c -o hello.dll "-Wl,/entry:main"
 ```
 
 chibil launches the executable named by `-fuse-ld=<name>` (resolved through PATH
 when no path is supplied); it does not discover or install the linker.
-By default, chibil uses link.exe. Every linker receives
+With no target selected, chibil uses link.exe. `chibil` targets select chilink;
+see [target presets](#target-presets) below. Every linker receives
 the same `/DEBUG`, `/subsystem:console`, `/out:` and `mscoree.lib` arguments.
 Consequently, compiler-driven chilink links default to `/opt:noref`; pass
 `-Wl,/OPT:REF` to enable dead stripping explicitly.
 
 The linker itself does not require Visual Studio or `mscoree.lib`. Executing
-these Framework-targeting images requires a compatible runtime. MSVC input
+Framework-targeting images requires a compatible runtime. Modern .NET images
+require a separately supplied runtimeconfig. The target does not select an
+entry point or provide a CRT automatically. MSVC input
 generation and MSVC-only tests still need Visual Studio.
+
+## Target presets
+
+Chibil accepts `--target=cpu-runtime-os[-abi]` or
+`--target cpu-runtime-os[-abi]`. The runtime is `dotnet` or `netfx`;
+the ABI is `chibil` (chibil/chilink's private managed ABI) or `msvc`
+(MSVC `/clr` compatibility). An omitted ABI means `chibil` for `dotnet`
+and `msvc` for `netfx`.
+
+| Target | Explicit alias | Linker | C data model |
+| --- | --- | --- | --- |
+| `x86_64-netfx-windows` (default) | `x86_64-netfx-windows-msvc` | `link` | LLP64 |
+| `x86_64-dotnet-windows` | `x86_64-dotnet-windows-chibil` | `chilink` | LLP64 |
+| `x86_64-dotnet-windows-msvc` | None | `link` | LLP64 |
+| `x86_64-netfx-windows-chibil` | None | `chilink` | LLP64 |
+| `x86_64-dotnet-linux` | `x86_64-dotnet-linux-chibil` | `chilink` | Managed LP64 |
+
+Only these lowercase spellings are supported; no new CPUs are enabled.
+The default is fixed, independent of the host OS.
+Both `chibil` runtimes enable `-ffixed-address-statics` and
+`-fmanaged-aggregate-fields`. Modern .NET `chibil` also enables
+`-fuco-entrypoints` and `-femulated-varargs`. MSVC presets leave all four
+features disabled and only select the requested runtime binding.
+Emulated varargs use a private argument-buffer ABI, not native varargs;
+variadic function pointers still require `__clrcall`.
+
+The last `--target` wins, but every supplied target must be valid.
+Explicit low-level switches override preset defaults regardless of position;
+the last explicit switch for a setting wins. These include
+`-fnetcore`/`-fnetframework`, `-fuse-ld=`, and the positive/negative forms of
+the four features above. Overrides do not recompute other preset settings:
+modern `chibil` plus `-fnetframework` also requires `-fno-uco-entrypoints`.
+Linux requires an effective modern .NET runtime.
+Expert overrides may produce incompatible combinations; changing the linker
+does not change the selected ABI or C layout.
+Without `--target`, existing switches retain their behavior:
+`-fnetcore` alone does not select `chibil`, and `-fuse-ld=chilink` alone does
+not enable its emission features.
+
+For a parameterless `int main(void)`, with chibil and the selected linker on PATH:
+
+```powershell
+chibil --target=x86_64-netfx-windows hello.c -o hello.exe "-Wl,/entry:main"
+chibil --target=x86_64-dotnet-windows hello.c -o hello.dll "-Wl,/entry:main"
+chibil --target=x86_64-dotnet-linux hello.c -o hello-linux.dll "-Wl,/entry:main"
+```
+
+Linker discovery/installation, entry point selection, CRT objects for an
+argc/argv `main`, and modern .NET `runtimeconfig.json` files remain manual.
+All targets still emit x64 managed COFF objects and PE assemblies, not ELF.
+Framework `chibil` retains the native-address limitations described below;
+its presets do not provide UCO support.
+
+Windows uses LLP64: `long` is 4 bytes, pointers are 8, and wide characters
+use 2-byte `unsigned short`. Linux uses managed LP64: `long` and pointers
+are 8 bytes, and wide characters use 4-byte `int`.
+**`long double` is an 8-byte double on every target.** Linux selection does
+not promise native SysV ABI, libc, system-header, native aggregate/callback,
+or native `long double` compatibility. Managed-only Linux programs can be
+cross-compiled and linked on Windows without changing chilink's CLI.
+
+### Predefined macros and headers
+
+Definitions follow the selected target, not the build host.
+Windows defines `_WIN32`, `_WIN64`, `__WIN32`, `__WIN32__`, `__WIN64`,
+`__WIN64__`, `__WINNT`, `__WINNT__`, and `_M_AMD64`/`_M_X64` (both 100).
+Linux defines `__linux`, `__linux__`, `__unix`, and `__unix__`.
+All targets retain the x86_64/amd64 aliases and `__chibil__`.
+Size/type macros, including `__WCHAR_TYPE__`, match the selected layout;
+`_LP64`/`__LP64__` are defined only for Linux.
+Explicit `-D`/`-U` options are applied after builtins, in command-line order.
+
+The Windows names are based on
+[GCC's MinGW platform definitions](https://github.com/gcc-mirror/gcc/blob/master/gcc/config/mingw/mingw32.h)
+and [mingw-w64's architecture aliases](https://github.com/mingw-w64/mingw-w64/blob/master/mingw-w64-headers/crt/_mingw_mac.h),
+not a wholesale copy of their compiler or CRT identities.
+Chibil does not define MinGW/GCC/MSVC version identities, CRT identities,
+or Windows API version defaults. It no longer predefines bare
+`linux`/`unix`, and does not define bare `WIN32`/`WIN64`/`WINNT`.
+`__ELF__` is absent even on Linux because the output is COFF/PE;
+`__gnu_linux__` is absent because a Linux target does not select glibc.
+`__STDC_HOSTED__=1` is retained for compatibility, not as a promise of a supplied libc.
+
+Only the bundled include directory is searched automatically. The old implicit
+host `/usr` include paths are removed for all targets; supply external headers
+explicitly with `-I`/`-idirafter`. There is no SDK or sysroot discovery.
 
 ## Command line
 
@@ -256,7 +346,8 @@ The attribute keeps GC-allocated value-type statics from moving after C code
 takes their addresses. Only its namespace and name are checked, not its assembly
 identity; annotations on coalesced definitions are retained. Compile chibil
 inputs with `-ffixed-address-statics` to emit the attribute on user-defined
-globals. The switch is opt-in, and `-fno-fixed-address-statics` disables it.
+globals. `chibil` target presets enable it; otherwise the switch is opt-in.
+An explicit `-fno-fixed-address-statics` disables it even with a preset.
 Selecting `-fuse-ld=chilink` does not enable it automatically. Read-only fields
 that retain their RVA storage do not require the attribute, even when their
 addresses are taken.
@@ -305,10 +396,13 @@ Unsupported relocation kinds and targets fail explicitly.
 ### UCO-assisted native function pointers
 
 Compile matching function definitions and address-taking inputs with
-`-fnetcore -fuco-entrypoints`. The feature is opt-in and requires the modern .NET
-target; neither `-fnetcore` nor `-fuse-ld=chilink` enables it automatically.
+`-fnetcore -fuco-entrypoints`, or select a modern .NET `chibil` target such as
+`--target=x86_64-dotnet-windows`. The feature requires modern .NET and is
+otherwise opt-in; neither `-fnetcore` nor `-fuse-ld=chilink` alone enables it.
 `-fno-uco-entrypoints` disables it, and the final runtime/feature options win.
-Use `-ffixed-address-statics` independently when converted globals require it.
+Modern .NET `chibil` presets also enable fixed-address statics, field-backed
+aggregates, and emulated varargs. Without a preset, use
+`-ffixed-address-statics` independently when converted globals require it.
 
 The compiler emits an ordinary managed implementation and, for each live
 native-convention definition, a static IL forwarding method with
@@ -356,7 +450,7 @@ native code or native exports, and link.exe
 compatibility for assisted objects is not promised.
 
 ```powershell
-dotnet run --project .\chibil\Chibil.csproj -- -fnetcore -fuco-entrypoints -ffixed-address-statics -fuse-ld=chilink program.c -o program.dll "-Wl,/entry:main"
+dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-dotnet-windows program.c -o program.dll "-Wl,/entry:main"
 ```
 
 As with link.exe, an unresolved managed extern can still be an error when the

@@ -418,7 +418,8 @@ public class DataModel(int longSize, int ldoubleSize, int ldoubleAlign, int poin
     public int PointerSize => pointerSize;
     public int WcharSize => wcharSize;
 
-    public static readonly DataModel LP64  = new(longSize: 8, ldoubleSize: 16, ldoubleAlign: 16, pointerSize: 8, wcharSize: 4);
+    // Managed long double uses the CLR's double precision and storage.
+    public static readonly DataModel LP64  = new(longSize: 8, ldoubleSize: 8,  ldoubleAlign: 8,  pointerSize: 8, wcharSize: 4);
     public static readonly DataModel LLP64 = new(longSize: 4, ldoubleSize: 8,  ldoubleAlign: 8,  pointerSize: 8, wcharSize: 2);
 }
 
@@ -428,6 +429,7 @@ public class DataModel(int longSize, int ldoubleSize, int ldoubleAlign, int poin
 
 public class CompilerOptions
 {
+    public TargetProfile Target = TargetProfile.Default;
     public List<string> IncludePaths = new();
     public bool OptFpic;
     public bool OptFcommon = true;
