@@ -12,3 +12,5 @@ doom.c and pal.c support two harness ifdefs:
 - `VALIDATE_CHECKSUM` is used together with `REPRODUCIBLE_HARNESS`; instead of writing BMP files, it hashes the changed frame pixels and exits non-zero if the cumulative checksum does not match the known-good value.
 
 To build with chibil, run the build.cmd batch script from a VS 2025 x64 native tools command prompt. See the batch file for samples.
+
+The sample targets modern .NET and links with chilink. To run, change to the `PureDOOM` directory, set `HOME` to the directory where you want `.doomrc`, and run `dotnet ..\bin\doom.dll`.

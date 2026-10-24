@@ -17,10 +17,11 @@ REM
 REM  This script builds:
 REM    obj\pal.obj      - Platform Abstraction Layer (compiled with chibil)
 REM    obj\doom.obj     - DOOM engine (compiled with chibil)
-REM    bin\doom.exe     - DOOM executable (linked with link.exe)
+REM    bin\doom.dll     - DOOM executable (linked with chilink)
 REM ============================================================================
 
 set CHIBIL_DIR=%~dp0..\..\chibil
+set CHILINK_DIR=%~dp0..\..\chilink
 set BUILD_MODE=%~1
 if "%BUILD_MODE%"=="" set BUILD_MODE=window
 
@@ -65,14 +66,14 @@ if errorlevel 1 (
 )
 
 REM --------------------------------------------------------------------------
-REM  Step 3: Link doom.exe
+REM  Step 3: Link doom.dll
 REM --------------------------------------------------------------------------
-echo [3/3] Linking doom.exe...
-link /OPT:ref,icf /nologo /DEBUG /entry:main /subsystem:console obj\doom.obj obj\pal.obj ^
-     kernel32.lib user32.lib gdi32.lib mscoree.lib ^
-     /out:bin\doom.exe
+echo [3/3] Linking doom.dll...
+dotnet run -c Release --project "%CHILINK_DIR%" -- --gc-sections -e main ^
+     -L "%WindowsSdkDir%Lib\%WindowsSDKLibVersion%um\x64" ^
+     obj\doom.obj obj\pal.obj -lkernel32 -luser32 -lgdi32 -o bin\doom.dll
 if errorlevel 1 (
-    echo ERROR: Failed to link doom.exe
+    echo ERROR: Failed to link doom.dll
     exit /b 1
 )
 
@@ -95,13 +96,11 @@ if errorlevel 1 (
 
 echo(
 echo Build successful
-echo   bin\doom.exe  - DOOM executable (MSIL, compiled with chibil)
+echo   bin\doom.dll  - DOOM executable (MSIL, compiled with chibil)
 echo   bin\doom.runtimeconfig.json - runtime configuration for modern .NET
 if /I "%BUILD_MODE%"=="bmp" echo   mode          - BMP harness (headless, saves frames)
 if /I "%BUILD_MODE%"=="checksum" echo   mode          - checksum validator (headless)
 if /I "%BUILD_MODE%"=="window" echo   mode          - windowed (interactive)
 echo To run: cd into PureDOOM directory, set HOME environment
 echo variable to where you want .doomrc, then:
-echo   ..\bin\doom.exe
-echo Or, to run with modern .NET:
-echo   dotnet exec ..\bin\doom.exe
+echo   dotnet ..\bin\doom.dll

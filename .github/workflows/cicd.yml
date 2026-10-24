@@ -60,21 +60,21 @@ jobs:
         run: |
           call .github\workflows\vcvars.cmd x64
           dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:OptimizedTests=true
-      - name: xUnit tests (.NET Core)
+      - name: xUnit tests (.NET Framework)
         shell: cmd
         run: |
           call .github\workflows\vcvars.cmd x64
-          dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:NetCoreTests=true
-      - name: xUnit tests (.NET Core, field-backed aggregates)
+          dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:NetCoreTests=false
+      - name: xUnit tests (.NET Framework, field-backed aggregates)
         shell: cmd
         run: |
           call .github\workflows\vcvars.cmd x64
-          dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:NetCoreTests=true -p:FieldBackedAggregateTests=true
-      - name: xUnit tests (.NET Core, optimized)
+          dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:NetCoreTests=false -p:FieldBackedAggregateTests=true
+      - name: xUnit tests (.NET Framework, optimized)
         shell: cmd
         run: |
           call .github\workflows\vcvars.cmd x64
-          dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:NetCoreTests=true -p:OptimizedTests=true
+          dotnet test tests\Chibil.Tests\Chibil.Tests.csproj -p:NetCoreTests=false -p:OptimizedTests=true
       - name: Build PureDOOM
         shell: cmd
         run: |
@@ -92,4 +92,4 @@ jobs:
         run: |
           cd samples\doom\PureDOOM
           set HOME=%CD%
-          ..\bin\doom.exe
+          dotnet ..\bin\doom.dll

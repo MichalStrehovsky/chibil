@@ -139,7 +139,7 @@ public class Driver
             {
                 Console.Error.WriteLine("chibil [ --target <cpu-runtime-os[-abi]> ] [ -o <path> ] <file>");
                 Console.Error.WriteLine($"Targets: {TargetProfile.SupportedTargets}");
-                Console.Error.WriteLine("Default: x86_64-dotnet-linux on Linux, x86_64-netfx-windows otherwise.");
+                Console.Error.WriteLine("Default: x86_64-dotnet-linux on Linux, x86_64-dotnet-windows otherwise.");
                 Console.Error.WriteLine("dotnet defaults to chibil ABI; netfx defaults to msvc ABI.");
                 Console.Error.WriteLine("The last --target wins. Explicit -f* switches override presets regardless of position.");
                 Environment.Exit(0);

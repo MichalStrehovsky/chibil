@@ -19,7 +19,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <NetCoreTests Condition="'$(NetCoreTests)' == '' and '$(OS)' != 'Windows_NT'">true</NetCoreTests>
+    <NetCoreTests Condition="'$(NetCoreTests)' == ''">true</NetCoreTests>
     <FixtureTargetFramework>net481</FixtureTargetFramework>
   </PropertyGroup>
   <PropertyGroup Condition="'$(NetCoreTests)' == 'true'">
