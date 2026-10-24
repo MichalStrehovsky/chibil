@@ -389,6 +389,7 @@ public sealed class ChilinkCommandLineTests : ChibiTestBase
             ? ["-L", builder._tempDir, "-l", "native"] : ["-L" + builder._tempDir, "-lnative"];
 
         var result = await RunTool(builder, "Chibil", [
+            "--target=x86_64-netfx-windows",
             msvc ? "-fuse-ld=LINK.EXE" : "--target=x86_64-netfx-windows-chibil",
             source, "-o", output, .. library, msvc ? "-Wl,/entry:main" : "-Wl,-e,main", "-###",
         ]);

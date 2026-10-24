@@ -444,6 +444,8 @@ public sealed class ChilinkTests : ChibiTestBase
         start.Environment["PATH"] = linkerDirectory + Path.PathSeparator + start.Environment["PATH"];
         start.Environment["TEMP"] = workspace._tempDir;
         start.Environment["TMP"] = workspace._tempDir;
+        if (!CompilationBuilder.DefaultNetCore)
+            start.ArgumentList.Add("--target=x86_64-netfx-windows");
         string selection = targetPreset
             ? "--target=x86_64-netfx-windows-chibil"
             : "-fuse-ld=" + (linkerPath ? Path.Combine(linkerDirectory, "chilink") : "chilink");

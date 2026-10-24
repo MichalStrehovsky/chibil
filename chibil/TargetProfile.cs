@@ -14,7 +14,7 @@ public sealed record TargetProfile(TargetCpu Cpu, TargetRuntime Runtime, TargetO
     public static readonly TargetProfile Default =
         OperatingSystem.IsLinux()
             ? new(TargetCpu.X86_64, TargetRuntime.DotNet, TargetOS.Linux, TargetAbi.Chibil)
-            : new(TargetCpu.X86_64, TargetRuntime.NetFramework, TargetOS.Windows, TargetAbi.Msvc);
+            : new(TargetCpu.X86_64, TargetRuntime.DotNet, TargetOS.Windows, TargetAbi.Chibil);
 
     public string DefaultLinker => Abi == TargetAbi.Chibil ? "chilink" : "link";
 
