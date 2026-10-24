@@ -37,7 +37,7 @@ public class SwitchJumpTableTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -66,7 +66,7 @@ public class SwitchJumpTableTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -95,7 +95,7 @@ public class SwitchJumpTableTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -126,7 +126,7 @@ public class SwitchJumpTableTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -155,7 +155,7 @@ public class SwitchJumpTableTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -184,7 +184,7 @@ public class SwitchJumpTableTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -215,7 +215,7 @@ public class SwitchJumpTableTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -242,7 +242,7 @@ public class SwitchJumpTableTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -272,7 +272,7 @@ public class SwitchJumpTableTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 }

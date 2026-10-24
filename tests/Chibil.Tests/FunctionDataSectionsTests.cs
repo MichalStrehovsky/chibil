@@ -11,7 +11,7 @@ namespace Chibil.Tests;
 ///   * String pooling is observable through literal addresses — identical literals
 ///     share an address within a TU and (being content-keyed COMDATs) fold across
 ///     TUs at link time.
-///   * Per-function / per-data COMDATs let /OPT:REF dead-strip unreferenced members.
+///   * Per-function / per-data COMDATs let --gc-sections dead-strip unreferenced members.
 ///     That is observed at runtime via the <c>ReflectionProbe</c> fixture, which
 ///     reflects over the linked module and counts the surviving <c>frag_*</c>
 ///     globals — zero once the unused ones are stripped, otherwise still present.
@@ -59,7 +59,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // helper(0)=s_helper(0)+5 = 100+5; +msg[0]('h'=104) -209 +s_init(9) +0 +0
         // = 105 + 104 - 209 + 9 = 9.
         Compile(MultiFuncMultiData, flags)
-            .Link(["/entry:main", "/subsystem:console"])
+            .Link()
             .RunAndCheck(9);
     }
 
@@ -80,7 +80,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
             """;
 
         Compile(src, ["-fdata-sections"])
-            .Link(["/entry:main", "/subsystem:console"])
+            .Link()
             .RunAndCheck(0);
     }
 
@@ -98,7 +98,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
                 return 42;
             }
             """, ["-fdata-sections"])
-            .Link(["/entry:main"])
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -115,7 +115,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
             """;
 
         Compile(src)
-            .Link(["/entry:main", "/subsystem:console"])
+            .Link()
             .RunAndCheck(0);
     }
 
@@ -126,7 +126,7 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // two TUs' copies into one — the addresses compare equal (main returns 0).
         Compile(CrossTuMain, ["-fdata-sections"])
             .Compile(CrossTuOther, ["-fdata-sections"])
-            .Link(["/entry:main", "/subsystem:console"])
+            .Link()
             .RunAndCheck(0);
     }
 
@@ -137,11 +137,11 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
         // TU keeps its own copy and the addresses differ (main returns 1).
         Compile(CrossTuMain)
             .Compile(CrossTuOther)
-            .Link(["/entry:main", "/subsystem:console"])
+            .Link()
             .RunAndCheck(1);
     }
 
-    // ── /OPT:REF dead-stripping, observed via reflection over the linked module ──
+    // ── --gc-sections dead-stripping, observed via reflection over the linked module ──
 
     private const string UnusedFunctions = """
         extern int probe_methods(void);
@@ -160,11 +160,11 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
     [Fact]
     public void FunctionSections_LetOptRefDeadStripUnusedFunctions()
     {
-        // Each function is its own COMDAT, so /OPT:REF removes the two unreferenced
+        // Each function is its own COMDAT, so --gc-sections removes the two unreferenced
         // frag_* functions: the probe finds none of them in the linked module.
         Compile(UnusedFunctions, ["-ffunction-sections"])
             .AddAsm2ObjAssembly("ReflectionProbe.dll")
-            .Link(["/entry:main", "/subsystem:console", "/OPT:REF"])
+            .Link(gcSections: true)
             .RunAndCheck(0);
     }
 
@@ -172,21 +172,21 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
     public void Default_KeepsUnusedFunctionsUnderOptRef()
     {
         // Without -ffunction-sections every function shares one .text COMDAT, so
-        // /OPT:REF cannot strip them — the probe still finds both frag_* functions.
+        // --gc-sections cannot strip them — the probe still finds both frag_* functions.
         Compile(UnusedFunctions)
             .AddAsm2ObjAssembly("ReflectionProbe.dll")
-            .Link(["/entry:main", "/subsystem:console", "/OPT:REF"])
+            .Link(gcSections: true)
             .RunAndCheck(2);
     }
 
     [Fact]
     public void DataSections_LetOptRefDeadStripUnusedGlobals()
     {
-        // Each initialized global is its own COMDAT, so /OPT:REF removes the two
+        // Each initialized global is its own COMDAT, so --gc-sections removes the two
         // unreferenced frag_data globals: the probe finds none of them.
         Compile(UnusedGlobals, ["-fdata-sections"])
             .AddAsm2ObjAssembly("ReflectionProbe.dll")
-            .Link(["/entry:main", "/subsystem:console", "/OPT:REF"])
+            .Link(gcSections: true)
             .RunAndCheck(0);
     }
 
@@ -194,10 +194,10 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
     public void Default_KeepsUnusedGlobalsUnderOptRef()
     {
         // Without -fdata-sections the globals share one merged .data section, so
-        // /OPT:REF cannot strip them — the probe still finds both frag_data globals.
+        // --gc-sections cannot strip them — the probe still finds both frag_data globals.
         Compile(UnusedGlobals)
             .AddAsm2ObjAssembly("ReflectionProbe.dll")
-            .Link(["/entry:main", "/subsystem:console", "/OPT:REF"])
+            .Link(gcSections: true)
             .RunAndCheck(2);
     }
 }

@@ -5,7 +5,6 @@ namespace Chibil.Tests;
 public sealed class EmulatedVarargsTests : ChibiTestBase
 {
     private static readonly string[] Enabled = ["-femulated-varargs"];
-    private static readonly string[] Main = ["/entry:main"];
 
     [Theory]
     [InlineData("target(1)")]
@@ -27,7 +26,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
             int target();
             int main() { return target(41); }
             int target(int value) { return value + 1; }
-            """).Link(Main).RunAndCheck(42);
+            """).Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -67,7 +66,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 return address != 0;
             }
             int main(void) { return 42; }
-            """, enabled ? Enabled : null).Link(Main).RunAndCheck(42);
+            """, enabled ? Enabled : null).Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -79,7 +78,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
         Compile($$"""
             int {{convention}} target(int, ...);
             int main(void) { target; (void)target; return 42; }
-            """, enabled ? Enabled : null).Link(Main).RunAndCheck(42);
+            """, enabled ? Enabled : null).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -110,7 +109,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 int values[1] = { 7 };
                 return (read)(39, a, b, c, values, 1234567890123LL);
             }
-            """, Enabled).Link(Main).RunAndCheck(42);
+            """, Enabled).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -137,7 +136,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                     if (sum(3, 10, sum(2, 3, 4), 4) != 21) return 1;
                 return 1 + sum(2, empty(20), sum(1, 21));
             }
-            """, Enabled).Link(Main).RunAndCheck(42);
+            """, Enabled).Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -166,7 +165,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 if (holder.pointer != values || values[0] != 20) return 2;
                 return result;
             }
-            """, Enabled).Link(Main).RunAndCheck(42);
+            """, Enabled).Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -197,7 +196,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
             """;
         Compile(reverse ? definition : consumer, Enabled)
             .Compile(reverse ? consumer : definition, Enabled)
-            .Link(Main).RunAndCheck(42);
+            .Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -238,7 +237,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 struct Pair result = read(0, make(4, 5), packed, flexible, number, 17);
                 return result.left + result.right;
             }
-            """, Enabled).Link(Main).RunAndCheck(42);
+            """, Enabled).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -259,7 +258,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 struct Outer a = { { 20 } }, b = { { 22 } };
                 return read(0, a, b);
             }
-            """, Enabled).Link(Main).RunAndCheck(42);
+            """, Enabled).Link().RunAndCheck(42);
     }
 
     [Fact(Skip = "BUG: Passing a zero-sized struct as a variadic argument causes an access violation.")]
@@ -276,7 +275,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 return calls == 1 ? 42 : 1;
             }
             int main(void) { struct Empty value = {}; return read(0, (calls++, value)); }
-            """, Enabled).Link(Main).RunAndCheck(42);
+            """, Enabled).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -304,7 +303,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 struct SignedBits other = { -2 };
                 return read(0, bits.value, other.other);
             }
-            """, Enabled).Link(Main).RunAndCheck(42);
+            """, Enabled).Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -353,7 +352,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 return sizeof(&target) == sizeof(void *) && !pointer
                     ? _Generic(0, int: 42, default: (long long)target) : 1;
             }
-            """).Link(Main).RunAndCheck(42);
+            """).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -364,7 +363,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
         Compile("""
             int target(int named, ...) { return named; }
             int main(void) { return target(42); }
-            """, ["-fno-emulated-varargs", "-femulated-varargs"]).Link(Main).RunAndCheck(42);
+            """, ["-fno-emulated-varargs", "-femulated-varargs"]).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -376,7 +375,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
             """, Enabled)
             .NativeLibrary("int target(int value, ...) { return value; }", "target");
         Assert.Contains("unresolved managed global 'target'", Assert.Throws<InvalidOperationException>(
-            () => builder.Link(Main)).Message);
+            () => builder.Link()).Message);
     }
 
     [Theory]
@@ -415,7 +414,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                     return pointer(7, 7);
                 }
                 """, options)
-            .Link(["/entry:main", "/OPT:REF"]).RunAndCheck(42);
+            .Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -435,7 +434,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 return callback(value + flag + named);
             }
             int main(void) { return read(20, answer, (_Bool)1, increment); }
-            """, Enabled).LinkOnNetCoreOrMsvcLinkOnFramework(Main).RunAndCheck(42);
+            """, Enabled).LinkOnNetCoreOrMsvcLinkOnFramework().RunAndCheck(42);
     }
 
     [Fact]
@@ -463,7 +462,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 struct Pair result = pointer(20, 22);
                 return recurse(3, 13) == 16 ? result.left + result.right : 1;
             }
-            """, Enabled).Link(Main).RunAndCheck(42);
+            """, Enabled).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -484,7 +483,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 struct Value value = { 20 };
                 return read(0, 1, value, 22);
             }
-            """, [.. Enabled, "-fno-managed-aggregate-fields"]).Link(Main).RunAndCheck(42);
+            """, [.. Enabled, "-fno-managed-aggregate-fields"]).Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -506,7 +505,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
             void *first = (void *)(0 && (long long)target);
             void *second = (void *)(1 || (long long)target);
             int main(void) { return !first && second == (void *)1 ? 42 : 1; }
-            """).Link(Main).RunAndCheck(42);
+            """).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -522,6 +521,6 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
             int invoke(Variable *function, int value) { return function(1, value); }
             int (*pointer)(Variable *, int) = invoke;
             int main(void) { return pointer(sum, 41); }
-            """, Enabled).LinkOnNetCoreOrMsvcLinkOnFramework(Main).RunAndCheck(42);
+            """, Enabled).LinkOnNetCoreOrMsvcLinkOnFramework().RunAndCheck(42);
     }
 }

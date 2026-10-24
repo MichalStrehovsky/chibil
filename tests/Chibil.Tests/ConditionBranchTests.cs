@@ -12,7 +12,6 @@ namespace Chibil.Tests;
 /// </summary>
 public sealed class ConditionBranchTests : ChibiTestBase
 {
-    private static readonly string[] ConsoleMain = ["/entry:main", "/subsystem:console"];
 
     [Fact]
     public void ReducedCasesFromRequest()
@@ -28,7 +27,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -68,7 +67,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -92,7 +91,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -129,7 +128,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -156,7 +155,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -182,7 +181,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -213,7 +212,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -231,7 +230,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -247,7 +246,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -268,7 +267,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -284,7 +283,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -310,7 +309,7 @@ public sealed class ConditionBranchTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 }

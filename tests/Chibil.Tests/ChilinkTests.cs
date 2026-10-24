@@ -5,13 +5,11 @@ namespace Chibil.Tests;
 
 public sealed class ChilinkTests : ChibiTestBase
 {
-    private static readonly string[] ConsoleMain = ["/entry:main", "/subsystem:console"];
-
     [Fact]
     public void ExplicitEntryPointProducesRunnableImage()
     {
         Compile("int main(void) { return 42; }")
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -27,7 +25,7 @@ public sealed class ChilinkTests : ChibiTestBase
         const string helper = "int add(int left, int right) { return left + right; }";
         Compile(reverse ? helper : main)
             .Compile(reverse ? main : helper)
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -40,7 +38,7 @@ public sealed class ChilinkTests : ChibiTestBase
             }
             int main(void) { return factorial(5); }
             """)
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(120);
     }
 
@@ -54,7 +52,7 @@ public sealed class ChilinkTests : ChibiTestBase
             }
             int main(void) { return read("A\0*\0"); }
             """)
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(107);
     }
 
@@ -74,7 +72,7 @@ public sealed class ChilinkTests : ChibiTestBase
                 return prefix + aligned;
             }
             """, ["-fdata-sections"])
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -86,7 +84,7 @@ public sealed class ChilinkTests : ChibiTestBase
             int read(const int *p) { return *p; }
             int main(void) { return read(&answer); }
             """, ["-fdata-sections"])
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -111,7 +109,7 @@ public sealed class ChilinkTests : ChibiTestBase
             """;
         Compile(reverse ? other : main, ["-fdata-sections"])
             .Compile(reverse ? main : other, ["-fdata-sections"])
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -128,7 +126,7 @@ public sealed class ChilinkTests : ChibiTestBase
                 return aligned;
             }
             """, ["-fdata-sections"])
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -148,21 +146,20 @@ public sealed class ChilinkTests : ChibiTestBase
                     text[1] == 'i' && text[2] == 0 ? 42 : 2;
             }
             """)
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
     [Theory]
-    [InlineData(true, "/OPT:REF", false)]
-    [InlineData(true, "/OPT:NOREF", true)]
-    [InlineData(false, "/OPT:REF", true)]
-    [InlineData(true, "", false)]
-    [InlineData(true, "/debug", true)]
-    [InlineData(true, "/debug /OPT:REF", false)]
-    [InlineData(true, "/OPT:REF /debug", false)]
-    [InlineData(true, "/debug /OPT:NOREF", true)]
-    [InlineData(true, "/OPT:NOREF /debug", true)]
-    [InlineData(true, "/debug /OPT:NOICF", true)]
+    [InlineData(true, "--gc-sections", false)]
+    [InlineData(true, "--no-gc-sections", true)]
+    [InlineData(false, "--gc-sections", true)]
+    [InlineData(true, "", true)]
+    [InlineData(true, "-s", true)]
+    [InlineData(true, "-s --gc-sections", false)]
+    [InlineData(true, "--gc-sections -s", false)]
+    [InlineData(true, "-s --no-gc-sections", true)]
+    [InlineData(true, "--no-gc-sections -s", true)]
     public void DeadStrippingRespectsFunctionSectionGranularity(
         bool functionSections, string options, bool keepsUnused)
     {
@@ -174,11 +171,8 @@ public sealed class ChilinkTests : ChibiTestBase
             """, functionSections ? ["-ffunction-sections"] : null)
             .AddAsm2ObjAssembly("ReflectionProbe.dll");
         builder
-            .Link(["/entry:main", .. options.Split(' ', StringSplitOptions.RemoveEmptyEntries)])
+            .Chilink(options.Split(' ', StringSplitOptions.RemoveEmptyEntries))
             .RunAndCheck(keepsUnused ? 43 : 42);
-
-        if (options.Contains("/debug", StringComparison.OrdinalIgnoreCase))
-            Assert.True(File.Exists(Path.Combine(builder._tempDir, "output.pdb")));
     }
 
     [Fact]
@@ -191,7 +185,7 @@ public sealed class ChilinkTests : ChibiTestBase
             """, ["-ffunction-sections"]);
 
         var error = Assert.Throws<InvalidOperationException>(() =>
-            builder.Link(["/entry:main", "/OPT:REF"]));
+            builder.Link(gcSections: true));
         Assert.IsType<Chilink.LinkException>(error.InnerException);
         Assert.Contains("missing", error.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -199,7 +193,7 @@ public sealed class ChilinkTests : ChibiTestBase
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void DllImpliesNoEntryAndOnlyExplicitManagedRootIsRetained(bool include)
+    public void SharedLibraryHasNoEntryAndOnlyExplicitManagedRootIsRetained(bool include)
     {
         using var builder = new CompilationBuilder();
         var library = Path.Combine(builder._tempDir, "library.dll");
@@ -207,9 +201,9 @@ public sealed class ChilinkTests : ChibiTestBase
             int helper(void) { return 42; }
             int unused(void) { return 99; }
             """, ["-ffunction-sections"]);
-        builder.Link(include
-            ? ["/dll", "/out:" + library, "/OPT:REF", "/include:?helper@@$$J0YAHXZ"]
-            : ["/dll", "/out:" + library, "/OPT:REF"]);
+        builder.Chilink(include
+            ? ["--gc-sections", "--undefined=?helper@@$$J0YAHXZ"]
+            : ["--gc-sections"], shared: true, outputPath: library);
 
         Compile($$"""
             int managed_dll_helper(char *path);
@@ -218,7 +212,7 @@ public sealed class ChilinkTests : ChibiTestBase
             }
             """)
             .AddAsm2ObjAssembly("ChilinkAssembly.dll")
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(include ? 42 : 0);
     }
 
@@ -236,7 +230,7 @@ public sealed class ChilinkTests : ChibiTestBase
                 return update(&value);
             }
             """, ["-fmanaged-aggregate-fields", "-ffunction-sections"])
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -254,7 +248,7 @@ public sealed class ChilinkTests : ChibiTestBase
                 return value.tag + value.value;
             }
             """, ["-fmanaged-aggregate-fields"])
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -270,7 +264,7 @@ public sealed class ChilinkTests : ChibiTestBase
                 return number.bytes[0];
             }
             """, ["-fmanaged-aggregate-fields"])
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -286,7 +280,7 @@ public sealed class ChilinkTests : ChibiTestBase
             }
             """)
             .AddAsm2ObjAssembly("ChilinkAssembly.dll")
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck("chilink user string".Length + 'c');
     }
 
@@ -298,7 +292,7 @@ public sealed class ChilinkTests : ChibiTestBase
             int main(void) { return managed_static(); }
             """)
             .AddAsm2ObjAssembly("ChilinkAssembly.dll")
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(41);
     }
 
@@ -310,7 +304,7 @@ public sealed class ChilinkTests : ChibiTestBase
             int main(void) { return managed_generic(); }
             """)
             .AddAsm2ObjAssembly("ChilinkAssembly.dll")
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -322,7 +316,7 @@ public sealed class ChilinkTests : ChibiTestBase
             int main(void) { return managed_eh(1) + managed_eh(-1); }
             """)
             .AddAsm2ObjAssembly("ChilinkAssembly.dll")
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(74);
     }
 
@@ -337,7 +331,7 @@ public sealed class ChilinkTests : ChibiTestBase
             }
             """)
             .AddCrt()
-            .Link(["/subsystem:console"])
+            .Link(entryPoint: "mainCRTStartup")
             .RunAndCheck(42);
     }
 
@@ -345,7 +339,7 @@ public sealed class ChilinkTests : ChibiTestBase
     public void MsvcManagedInputRunsWithoutNativeLibraries()
     {
         MsvcCompile("int main(void) { return 42; }")
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -362,7 +356,7 @@ public sealed class ChilinkTests : ChibiTestBase
         var builder = msvcDefines
             ? MsvcCompile(helper).Compile(main)
             : Compile(helper).MsvcCompile(main);
-        builder.Link(ConsoleMain).RunAndCheck(42);
+        builder.Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -371,7 +365,7 @@ public sealed class ChilinkTests : ChibiTestBase
         using var builder = new CompilationBuilder();
         var library = Path.Combine(builder._tempDir, "library.dll");
         builder.AddAsm2ObjAssembly("ChilinkAssembly.dll")
-            .Link(["/dll", "/out:" + library, "/OPT:REF"]);
+            .Link(shared: true, outputPath: library, gcSections: true);
 
         Compile($$"""
             int managed_dll_public_root(char *path);
@@ -380,7 +374,7 @@ public sealed class ChilinkTests : ChibiTestBase
             }
             """)
             .AddAsm2ObjAssembly("ChilinkAssembly.dll")
-            .Link(ConsoleMain)
+            .Link()
             .RunAndCheck(42);
     }
 
@@ -391,7 +385,7 @@ public sealed class ChilinkTests : ChibiTestBase
             int target(int value) { return value + 1; }
             int main(void) { int (*function)(int) = target; return function(41); }
             """, ["-O0", "-fno-uco-entrypoints"]);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.IsType<Chilink.LinkException>(error.InnerException);
     }
 
@@ -399,16 +393,15 @@ public sealed class ChilinkTests : ChibiTestBase
     public void InvalidEntryPointFails()
     {
         var builder = Compile("int main(int argc, char **argv) { return argc; }");
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.IsType<Chilink.LinkException>(error.InnerException);
         Assert.Contains("entry", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
     [InlineData(null, "no input")]
-    [InlineData("/debug:bogus", "debug")]
-    [InlineData("/machine:arm64", "x64")]
-    [InlineData("/entry:", "entry")]
+    [InlineData("--debug=bogus", "debug")]
+    [InlineData("--entry=", "entry")]
     public void DriverRejectsMissingInputAndUnsupportedOrIncompleteOptions(
         string option, string diagnostic)
     {
@@ -417,19 +410,20 @@ public sealed class ChilinkTests : ChibiTestBase
         Assert.Contains(diagnostic, error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Theory]
-    [InlineData("/?")]
-    [InlineData("-?")]
-    public void DriverHelpAliasesDoNotRequireInputs(string option)
+    [Fact]
+    public void DriverHelpDoesNotRequireInputs()
     {
-        new Chilink.Driver().Run([option]);
+        new Chilink.Driver().Run(["--help"]);
     }
 
     [Theory]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    [InlineData(true, false)]
-    public async Task CompilerDriverLaunchesChilinkFromChildPathWithSpacedPaths(bool fixedAddresses, bool explicitOutput)
+    [InlineData(false, true, false, false)]
+    [InlineData(true, true, false, false)]
+    [InlineData(true, false, false, false)]
+    [InlineData(true, true, true, false)]
+    [InlineData(true, true, false, true)]
+    public async Task CompilerDriverLaunchesChilinkFromChildPathWithSpacedPaths(
+        bool fixedAddresses, bool explicitOutput, bool linkerPath, bool targetPreset)
     {
         using var workspace = new CompilationBuilder();
         string compiler = Path.Combine(
@@ -453,8 +447,18 @@ public sealed class ChilinkTests : ChibiTestBase
         start.Environment["PATH"] = linkerDirectory + Path.PathSeparator + start.Environment["PATH"];
         start.Environment["TEMP"] = workspace._tempDir;
         start.Environment["TMP"] = workspace._tempDir;
-        foreach (var argument in new[] { "-fuse-ld=chilink", source, "-Wl,/entry:main", "-###" })
+        string selection = targetPreset
+            ? "--target=x86_64-netfx-windows-chibil"
+            : "-fuse-ld=" + (linkerPath ? Path.Combine(linkerDirectory, "chilink.exe") : "chilink");
+        foreach (var argument in new[] { selection, source, "-###" })
             start.ArgumentList.Add(argument);
+        if (linkerPath)
+        {
+            start.ArgumentList.Add("-Xlinker");
+            start.ArgumentList.Add("--entry=main");
+        }
+        else
+            start.ArgumentList.Add("-Wl,-e,main");
         if (explicitOutput)
         {
             start.ArgumentList.Add("-o");
@@ -491,23 +495,22 @@ public sealed class ChilinkTests : ChibiTestBase
         }
         Assert.True(process.ExitCode == 0, $"Compiler exited with {process.ExitCode}.\n{diagnostics}");
         Assert.Contains("chilink", diagnostics, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("mscoree.lib", diagnostics, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("mscoree.lib", diagnostics, StringComparison.OrdinalIgnoreCase);
 
         new LinkResult(output).RunAndCheck(42);
     }
 
     [Fact]
-    public void DriverRejectsDllWithExplicitEntryPoint()
+    public void DriverRejectsSharedLibraryWithExplicitEntryPoint()
     {
         var builder = Compile("int main(void) { return 42; }");
-        var error = Assert.Throws<InvalidOperationException>(() =>
-            builder.Link(["/dll", "/entry:main"]));
-        Assert.IsType<Chilink.LinkException>(error.InnerException);
+        var error = Assert.Throws<Chilink.LinkException>(() =>
+            new Chilink.Driver().Run(["-shared", "-emain", .. builder._objFiles]));
         Assert.Contains("entry", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void DriverResponseFilePreservesQuotedPathsAndMixedCaseOptions()
+    public void DriverResponseFilePreservesQuotedPaths()
     {
         var builder = Compile("int main(void) { return 42; }");
         var directory = Path.Combine(builder._tempDir, "directory with spaces");
@@ -517,8 +520,8 @@ public sealed class ChilinkTests : ChibiTestBase
         var response = Path.Combine(directory, "arguments with spaces.rsp");
         File.Copy(builder._objFiles.Single(), input);
         File.WriteAllText(response, $"""
-            -NoLoGo /MaChInE:x64 /EnTrY:main
-            /OuT:"{output}"
+            --entry=main
+            --output="{output}"
             "{input}"
             """);
 
@@ -539,39 +542,5 @@ public sealed class ChilinkTests : ChibiTestBase
         var error = Assert.Throws<Chilink.LinkException>(() =>
             new Chilink.Driver().Run(["@" + first]));
         Assert.Contains("cycle", error.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Theory]
-    [InlineData(false, false)]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    public void DriverDefaultLibrarySuppressionIsOrderIndependent(
-        bool namedSuppression, bool suppressionFirst)
-    {
-        var builder = Compile("int main(void) { return 42; }");
-        var output = Path.Combine(builder._tempDir, CompilationBuilder.ExecutableName);
-        const string library = "/defaultlib:chilink-nonexistent.lib";
-        string suppression = namedSuppression
-            ? "/nodefaultlib:CHILINK-NONEXISTENT.LIB" : "/nodefaultlib";
-
-        new Chilink.Driver().Run([
-            "/out:" + output, "/entry:main",
-            suppressionFirst ? suppression : library,
-            builder._objFiles.Single(),
-            suppressionFirst ? library : suppression,
-        ]);
-
-        new LinkResult(output).RunAndCheck(42);
-    }
-
-    [Fact]
-    public void DriverRejectsUnsuppressedDefaultLibrary()
-    {
-        var builder = Compile("int main(void) { return 42; }");
-        var error = Assert.Throws<InvalidOperationException>(() =>
-            builder.Link(["/entry:main", "/defaultlib:chilink-nonexistent.lib"]));
-        Assert.IsType<Chilink.LinkException>(error.InnerException);
-        Assert.Contains("chilink-nonexistent.lib", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -166,9 +166,9 @@ public sealed class CompilationBuilder : IDisposable
     /// <c>mscoree.lib</c> is included automatically (required for CLR/IJW objects).
     /// </summary>
     /// <param name="extraArgs">
-    /// Additional linker flags (e.g. "/entry:main", "/subsystem:console").
+    /// Additional link.exe flags.
     /// </param>
-    public LinkResult MsvcLink(string[] extraArgs = null)
+    public LinkResult MsvcLink(string[] extraArgs = null, string entryPoint = "main")
     {
         if (_objFiles.Count == 0)
             throw new InvalidOperationException("No object files to link. Call Compile() first.");
@@ -182,6 +182,9 @@ public sealed class CompilationBuilder : IDisposable
             RedirectStandardError = true,
         };
         psi.ArgumentList.Add($"/out:{exePath}");
+        psi.ArgumentList.Add("/subsystem:console");
+        if (entryPoint != null)
+            psi.ArgumentList.Add("/entry:" + entryPoint);
         psi.ArgumentList.Add("mscoree.lib");
         if (extraArgs != null)
             foreach (var arg in extraArgs)
@@ -206,16 +209,26 @@ public sealed class CompilationBuilder : IDisposable
     /// <summary>
     /// Link all accumulated object and library files using chilink.
     /// </summary>
-    public LinkResult Link(string[] extraArgs = null)
+    public LinkResult Link(string entryPoint = "main", bool shared = false, string outputPath = null,
+        bool gcSections = false)
+        => Chilink(gcSections ? ["--gc-sections"] : null,
+            entryPoint: entryPoint, shared: shared, outputPath: outputPath);
+
+    /// <summary>
+    /// Link using chilink with additional native linker arguments.
+    /// </summary>
+    public LinkResult Chilink(string[] extraArgs = null, string entryPoint = "main",
+        bool shared = false, string outputPath = null)
     {
         if (_objFiles.Count == 0)
             throw new InvalidOperationException("No object files to link. Call Compile() first.");
 
-        bool isDll = extraArgs?.Any(arg =>
-            arg.Equals("/dll", StringComparison.OrdinalIgnoreCase) ||
-            arg.Equals("-dll", StringComparison.OrdinalIgnoreCase)) == true;
-        var imagePath = Path.Combine(_tempDir, isDll || _netCore ? "output.dll" : "output.exe");
-        var args = new List<string> { $"/out:{imagePath}" };
+        var imagePath = outputPath ?? Path.Combine(_tempDir, shared || _netCore ? "output.dll" : "output.exe");
+        var args = new List<string> { "-o", imagePath };
+        if (shared)
+            args.Add("-shared");
+        else if (entryPoint != null)
+            args.AddRange(["-e", entryPoint]);
         if (extraArgs != null)
             args.AddRange(extraArgs);
         args.AddRange(_objFiles);
@@ -232,8 +245,8 @@ public sealed class CompilationBuilder : IDisposable
         return new LinkResult(imagePath, _netCore);
     }
 
-    public LinkResult LinkOnNetCoreOrMsvcLinkOnFramework(string[] extraArgs = null)
-        => _netCore ? Link(extraArgs) : MsvcLink(extraArgs);
+    public LinkResult LinkOnNetCoreOrMsvcLinkOnFramework(string entryPoint = "main")
+        => _netCore ? Link(entryPoint) : MsvcLink(entryPoint: entryPoint);
 
     public CompilationBuilder NativeLibrary(string source, string exports,
         string dllName = "native.dll", string libraryName = "native.lib")

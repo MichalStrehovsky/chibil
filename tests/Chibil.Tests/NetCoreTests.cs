@@ -21,7 +21,7 @@ public class NetCoreTests
                 return identity_char(value.c) + identity_long(value.n) + read(&n);
             }
             """, netCore ? ["-fnetframework", "-fnetcore"] : ["-fnetcore", "-fnetframework"])
-            .Link(["/entry:main"]).RunAndCheck(42);
+            .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -41,6 +41,6 @@ public class NetCoreTests
                 if (__builtin_atomic_exchange(&value, 42) != 2) return 13;
                 return value;
             }
-            """).Link(["/entry:main"]).RunAndCheck(42);
+            """).Link().RunAndCheck(42);
     }
 }

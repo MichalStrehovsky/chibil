@@ -10,18 +10,18 @@ public sealed class LinkException : Exception
 
 internal sealed class LinkOptions
 {
-    public readonly List<string> Inputs = new();
+    public readonly List<LinkInput> Inputs = new();
     public readonly List<string> LibraryPaths = new();
-    public readonly string LibraryEnvironment = Environment.GetEnvironmentVariable("LIB");
     public readonly List<string> Includes = new();
-    public readonly List<string> DefaultLibraries = new();
-    public readonly HashSet<string> IgnoredLibraries = new(StringComparer.OrdinalIgnoreCase);
-    public string Output, Entry, Pdb;
-    public bool Dll, NoEntry, Debug, EmbeddedPdb, NoDefaultLib;
-    public bool? RefOptimization;
-    public bool OptRef => RefOptimization ?? !Debug;
+    public string Output = "a.exe";
+    public string Entry, Pdb;
+    public bool Dll, StripDebug, GcSections;
+    public bool Debug => !StripDebug || Pdb != null;
+    public bool EmbeddedPdb => !StripDebug && Pdb == null;
     public Subsystem Subsystem = Subsystem.WindowsCui;
 }
+
+internal readonly record struct LinkInput(string Name, bool SearchLibrary = false);
 
 internal sealed record LinkResult(byte[] Image, byte[] Pdb, IReadOnlyCollection<string> Warnings);
 
@@ -32,17 +32,8 @@ public sealed class Driver
         try
         {
             var options = new LinkOptions();
-            foreach (string arg in Expand(args, new HashSet<string>(StringComparer.OrdinalIgnoreCase)))
-            {
-                if (arg.Length > 1 && arg[0] is '/' or '-' &&
-                    (arg[1..].Equals("?", StringComparison.OrdinalIgnoreCase) ||
-                     arg[1..].Equals("help", StringComparison.OrdinalIgnoreCase)))
-                {
-                    Console.WriteLine("chilink [/out:file] [/entry:symbol | /dll] [/debug[:embedded]] [/pdb:file] [/opt:ref|noref] [/libpath:dir] objects/libraries...");
-                    return;
-                }
-                Parse(options, arg);
-            }
+            if (!Parse(options, Expand(args, new HashSet<string>(StringComparer.OrdinalIgnoreCase)).ToArray()))
+                return;
             if (options.Inputs.Count == 0)
                 throw new LinkException("no input object or library files");
             LinkResult result = new Linker(options).Link();
@@ -73,92 +64,118 @@ public sealed class Driver
         catch (BadImageFormatException ex) { throw new LinkException($"invalid object, archive or metadata: {ex.Message}"); }
     }
 
-    internal static void Parse(LinkOptions options, string arg, bool directive = false)
+    private static bool Parse(LinkOptions options, string[] args)
     {
-        if (string.IsNullOrWhiteSpace(arg))
-            return;
-        if (arg[0] != '/' && arg[0] != '-')
+        bool positional = false;
+        for (int i = 0; i < args.Length; i++)
         {
-            if (directive)
-                throw new LinkException($"unsupported linker directive: {arg}");
-            if (arg.Equals("mscoree.lib", StringComparison.OrdinalIgnoreCase))
-                return;
-            if (!Path.GetExtension(arg).Equals(".obj", StringComparison.OrdinalIgnoreCase) &&
-                !Path.GetExtension(arg).Equals(".o", StringComparison.OrdinalIgnoreCase) &&
-                !Path.GetExtension(arg).Equals(".lib", StringComparison.OrdinalIgnoreCase))
-                throw new LinkException($"unsupported input '{arg}'; expected a managed COFF object or library");
-            options.Inputs.Add(arg);
-            return;
-        }
+            string arg = args[i];
+            if (!positional && arg == "--")
+            {
+                positional = true;
+                continue;
+            }
+            if (positional || !arg.StartsWith('-') || arg == "-")
+            {
+                string extension = Path.GetExtension(arg);
+                if (!new[] { ".obj", ".o", ".lib", ".a" }.Contains(extension, StringComparer.OrdinalIgnoreCase))
+                    throw new LinkException($"unsupported input '{arg}'; expected a managed COFF object or library");
+                options.Inputs.Add(new(arg));
+                continue;
+            }
 
-        int colon = arg.IndexOf(':');
-        string name = (colon < 0 ? arg[1..] : arg[1..colon]).ToLowerInvariant();
-        string value = colon < 0 ? null : arg[(colon + 1)..];
-        string RequiredValue() => !string.IsNullOrEmpty(value) ? value :
-            throw new LinkException($"missing value for /{name}");
-        void NoValue()
-        {
-            if (value != null)
-                throw new LinkException($"/{name} does not accept a value");
-        }
-        switch (name)
-        {
-            case "nologo": NoValue(); break;
-            case "debug":
-                if (value != null && !RequiredValue().Equals("embedded", StringComparison.OrdinalIgnoreCase))
-                    throw new LinkException($"unsupported /debug option '{value}'");
-                options.Debug = true;
-                options.EmbeddedPdb = value != null;
-                break;
-            case "out":
-                if (directive) throw new LinkException("/out is not supported in object directives");
-                options.Output = RequiredValue();
-                break;
-            case "pdb":
-                if (directive) throw new LinkException("/pdb is not supported in object directives");
-                options.Pdb = RequiredValue();
-                break;
-            case "entry": options.Entry = RequiredValue(); break;
-            case "dll": NoValue(); options.Dll = true; break;
-            case "noentry": NoValue(); options.NoEntry = true; break;
-            case "include": options.Includes.Add(RequiredValue()); break;
-            case "libpath":
-                if (directive) throw new LinkException("/libpath is not supported in object directives");
-                options.LibraryPaths.Add(RequiredValue());
-                break;
-            case "machine":
-                if (!RequiredValue().Equals("x64", StringComparison.OrdinalIgnoreCase))
-                    throw new LinkException("only /machine:x64 is supported");
-                break;
-            case "subsystem":
-                options.Subsystem = RequiredValue().ToLowerInvariant() switch
-                {
-                    "console" => Subsystem.WindowsCui,
-                    "windows" => Subsystem.WindowsGui,
-                    _ => throw new LinkException($"unsupported subsystem '{value}'")
-                };
-                break;
-            case "opt":
-                foreach (string opt in RequiredValue().Split(','))
-                {
-                    switch (opt.ToLowerInvariant())
+            string name, value = null;
+            if (arg.StartsWith("--"))
+            {
+                int equals = arg.IndexOf('=');
+                name = equals < 0 ? arg[2..] : arg[2..equals];
+                if (name.Length == 1)
+                    throw new LinkException($"unsupported linker option '{arg}'");
+                if (equals >= 0)
+                    value = arg[(equals + 1)..];
+            }
+            else if (arg == "-shared")
+                name = "shared";
+            else if (arg is "-s" or "-S")
+                name = "strip-debug";
+            else if (arg.Length >= 2 && "oeLlu".Contains(arg[1]))
+            {
+                name = arg[1].ToString();
+                if (arg.Length > 2)
+                    value = arg[2..];
+            }
+            else
+                throw new LinkException($"unsupported linker option '{arg}'");
+
+            string RequiredValue(bool allowEmpty = false)
+            {
+                if (value == null && i + 1 < args.Length)
+                    value = args[++i];
+                return value != null && (allowEmpty || value.Length != 0) ? value :
+                    throw new LinkException($"missing value for {arg}");
+            }
+            void NoValue()
+            {
+                if (value != null)
+                    throw new LinkException($"{arg} does not accept a value");
+            }
+            switch (name)
+            {
+                case "help":
+                    NoValue();
+                    Console.WriteLine("""
+                        chilink [options] objects/libraries...
+                        Portable PDB information is embedded by default unless stripped.
+                          -o FILE, --output=FILE       Output path (default: a.exe)
+                          -e SYMBOL, --entry=SYMBOL    Managed entry (default: mainCRTStartup)
+                          -shared                     Produce a managed library without an entry
+                          -L DIR, --library-path=DIR  Library search directory
+                          -l NAME, --library=NAME     Search for a library (-l:FILE for an exact name)
+                          -u SYMBOL, --undefined=SYMBOL  Retain a managed symbol
+                          --[no-]gc-sections          Remove unused COMDATs (default: disabled)
+                          --subsystem=console|windows Set the PE subsystem (default: console)
+                          -s, -S, --strip-all, --strip-debug  Omit embedded debug information
+                          --pdb=FILE                  Emit an external PDB (empty FILE uses default name)
+                          @FILE                       Read a response file
+                          --                          End options
+                        """);
+                    return false;
+                case "o":
+                case "output": options.Output = RequiredValue(); break;
+                case "e":
+                case "entry": options.Entry = RequiredValue(); break;
+                case "shared": NoValue(); options.Dll = true; break;
+                case "L":
+                case "library-path": options.LibraryPaths.Add(RequiredValue()); break;
+                case "l":
+                case "library":
+                    string library = RequiredValue();
+                    if (library == ":")
+                        throw new LinkException($"missing library filename for {arg}");
+                    options.Inputs.Add(new(library, SearchLibrary: true));
+                    break;
+                case "u":
+                case "undefined": options.Includes.Add(RequiredValue()); break;
+                case "gc-sections": NoValue(); options.GcSections = true; break;
+                case "no-gc-sections": NoValue(); options.GcSections = false; break;
+                case "subsystem":
+                    options.Subsystem = RequiredValue() switch
                     {
-                        case "ref": options.RefOptimization = true; break;
-                        case "noref": options.RefOptimization = false; break;
-                        case "noicf": break;
-                        default: throw new LinkException($"unsupported /opt option '{opt}'");
-                    }
-                }
-                break;
-            case "nodefaultlib":
-                if (value == null) options.NoDefaultLib = true;
-                else options.IgnoredLibraries.Add(RequiredValue());
-                break;
-            case "defaultlib":
-                options.DefaultLibraries.Add(RequiredValue());
-                break;
-            default: throw new LinkException($"unsupported linker option '{arg}'");
+                        "console" => Subsystem.WindowsCui,
+                        "windows" => Subsystem.WindowsGui,
+                        _ => throw new LinkException($"unsupported subsystem '{value}'")
+                    };
+                    break;
+                case "strip-all":
+                case "strip-debug":
+                    NoValue();
+                    options.StripDebug = true;
+                    break;
+                case "pdb": options.Pdb = RequiredValue(allowEmpty: true); break;
+                default: throw new LinkException($"unsupported linker option '{arg}'");
+            }
         }
+        return true;
     }
 
     private static IEnumerable<string> Expand(IEnumerable<string> args, HashSet<string> active)
@@ -181,7 +198,7 @@ public sealed class Driver
         }
     }
 
-    internal static IEnumerable<string> SplitArguments(string text)
+    private static IEnumerable<string> SplitArguments(string text)
     {
         var word = new StringBuilder();
         bool quoted = false, started = false;

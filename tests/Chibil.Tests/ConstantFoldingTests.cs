@@ -13,7 +13,6 @@ namespace Chibil.Tests;
 /// </summary>
 public sealed class ConstantFoldingTests : ChibiTestBase
 {
-    private static readonly string[] ConsoleMain = ["/entry:main", "/subsystem:console"];
 
     [Fact]
     public void IntegerConstantExpressionsFold()
@@ -39,7 +38,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -55,7 +54,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -72,7 +71,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -89,7 +88,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -106,7 +105,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -142,7 +141,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -160,7 +159,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -178,7 +177,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -194,7 +193,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -210,7 +209,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -233,7 +232,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return (int)(sizeof(a) / sizeof(a[0]));   // 3
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 3);
     }
 
@@ -254,7 +253,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -271,7 +270,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -294,7 +293,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -359,7 +358,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -439,7 +438,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return ((~(unsigned char)0) >> 1) == -1 ? 42 : 1;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 
@@ -458,7 +457,7 @@ public sealed class ConstantFoldingTests : ChibiTestBase
                 return shift_it(0) == -1 ? 42 : 1;
             }
             """)
-        .Link(ConsoleMain)
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 }

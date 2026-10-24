@@ -7,8 +7,6 @@ namespace Chibil.Tests;
 
 public sealed class ChilinkGlobalTests : ChibiTestBase
 {
-    private static readonly string[] ConsoleMain = ["/entry:main", "/subsystem:console"];
-
     [Theory]
     [InlineData("int value;")]
     [InlineData("int value = 0;")]
@@ -19,7 +17,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     {
         var builder = Compile(source + " void *address(void) { return &value; } int main(void) { return address() != 0; }",
             ["-fdata-sections", "-fno-fixed-address-statics"]);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains("FixedAddressValueTypeAttribute", error.Message);
         Assert.Contains("value", error.Message);
         Assert.False(File.Exists(Path.Combine(builder._tempDir, CompilationBuilder.ExecutableName)));
@@ -34,7 +32,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     {
         Compile(source + " int main(void) { value = 42; return value; }",
             ["-fdata-sections", "-fno-fixed-address-statics"])
-            .Link(ConsoleMain).RunAndCheck(42);
+            .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -52,7 +50,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
         Compile(reverse ? data : main, reverse ? null : ["-fno-fixed-address-statics"])
             .Compile(reverse ? main : data, reverse ? ["-fno-fixed-address-statics"] : null)
             .AddAsm2ObjAssembly("ChilinkAssembly.dll")
-            .Link(ConsoleMain).RunAndCheck(42);
+            .Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -63,7 +61,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             int *pointer = &value;
             int main(void) { return *pointer; }
             """).Compile("int value = 42;", ["-fno-fixed-address-statics"]);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains("FixedAddressValueTypeAttribute", error.Message);
         Assert.Contains("'value'", error.Message);
     }
@@ -76,13 +74,13 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             const int *pointer = &value;
             int main(void) { return *pointer; }
             """, ["-fdata-sections", "-fno-fixed-address-statics"])
-            .Link(ConsoleMain).RunAndCheck(42);
+            .Link().RunAndCheck(42);
     }
 
     [Theory]
-    [InlineData("/OPT:REF", false)]
-    [InlineData("/OPT:NOREF", true)]
-    public void DiscardedAddressTakingDoesNotRequireFixedAddresses(string option, bool retained)
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DiscardedAddressTakingDoesNotRequireFixedAddresses(bool retained)
     {
         var builder = Compile("""
             int value = 42;
@@ -90,10 +88,10 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             int main(void) { return value; }
             """, ["-ffunction-sections", "-fdata-sections", "-fno-fixed-address-statics"]);
         if (!retained)
-            builder.Link(["/entry:main", option]).RunAndCheck(42);
+            builder.Link(gcSections: !retained).RunAndCheck(42);
         else
         {
-            var error = Assert.Throws<InvalidOperationException>(() => builder.Link(["/entry:main", option]));
+            var error = Assert.Throws<InvalidOperationException>(() => builder.Link(gcSections: !retained));
             Assert.Contains("FixedAddressValueTypeAttribute", error.Message);
             Assert.Contains("'value'", error.Message);
         }
@@ -107,7 +105,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             int unused = 1;
             int main(void) { const int *pointer = &value; return *pointer; }
             """, ["-fdata-sections", "-fno-fixed-address-statics"])
-            .Link(["/entry:main", "/OPT:REF", "/include:value"]).RunAndCheck(42);
+            .Chilink(["--gc-sections", "--undefined=value"]).RunAndCheck(42);
     }
 
     [Theory]
@@ -120,7 +118,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
         Compile($$"""
             {{declaration}}
             int main(void) { missing; (void)missing; return 42; }
-            """).Link(ConsoleMain).RunAndCheck(42);
+            """).Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -132,7 +130,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             extern {{qualifier}} int missing;
             int main(void) { missing; (void)missing; return 42; }
             """);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains("missing", error.Message);
     }
 
@@ -155,12 +153,12 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 ? ["-fno-fixed-address-statics", "-ffixed-address-statics"]
                 : ["-ffixed-address-statics", "-fno-fixed-address-statics", "-fno-uco-entrypoints"]);
         if (enabled)
-            builder.Link(ConsoleMain).RunAndCheck(42);
+            builder.Link().RunAndCheck(42);
         else
         {
-            var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+            var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
             Assert.Contains("FixedAddressValueTypeAttribute", error.Message);
-            builder.MsvcLink(ConsoleMain).RunAndCheck(42);
+            builder.MsvcLink().RunAndCheck(42);
         }
     }
 
@@ -175,7 +173,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 reverse ? ["-fno-fixed-address-statics"] : null)
             .Compile(reverse ? annotated : unannotated,
                 reverse ? null : ["-fno-fixed-address-statics"])
-            .Link(ConsoleMain).RunAndCheck(42);
+            .Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -193,7 +191,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             bytes[offset] = (byte)'X';
         }
         File.WriteAllBytes(builder._objFiles[0], bytes);
-        builder.Link(ConsoleMain).RunAndCheck(42);
+        builder.Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -212,7 +210,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 common = 10; zero = 11; local = 12; array[3] = 9;
                 return common + zero + (int)local + array[3];
             }
-            """, dataSections ? ["-fdata-sections"] : null).Link(ConsoleMain).RunAndCheck(42);
+            """, dataSections ? ["-fdata-sections"] : null).Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -242,7 +240,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 values[0] = packed.value;
                 return values[0];
             }
-            """, dataSections ? ["-fdata-sections"] : null).Link(ConsoleMain).RunAndCheck(42);
+            """, dataSections ? ["-fdata-sections"] : null).Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -285,7 +283,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             padded.Slice(9, 3).Fill(0x5a);
         }
         File.WriteAllBytes(builder._objFiles[0], bytes);
-        builder.Link(ConsoleMain).RunAndCheck(42);
+        builder.Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -318,7 +316,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
         string[] flags = dataSections ? ["-fdata-sections"] : null;
         Compile(reverse ? other : main, flags)
             .Compile(reverse ? main : other, flags)
-            .Link(ConsoleMain).RunAndCheck(42);
+            .Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -330,7 +328,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             const int readonly_value = 42;
             const int *other = &readonly_value;
             int main(void) { ++*pointer; return *pointer == *other ? 42 : 1; }
-            """, ["-fdata-sections"]).Link(ConsoleMain).RunAndCheck(42);
+            """, ["-fdata-sections"]).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -354,7 +352,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 if (end - values != 2) return 2;
                 return first.next->value + second.next->value;
             }
-            """).AddAsm2ObjAssembly("ChilinkAssembly.dll").Link(ConsoleMain).RunAndCheck(42);
+            """).AddAsm2ObjAssembly("ChilinkAssembly.dll").Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -375,7 +373,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             """;
         string other = (strong ? "int value = 40;" : "int value;") + "int read(void) { return value; }";
         Compile(reverse ? other : main).Compile(reverse ? main : other)
-            .Link(ConsoleMain).RunAndCheck(strong ? 42 : 2);
+            .Link().RunAndCheck(strong ? 42 : 2);
     }
 
     [Theory]
@@ -394,13 +392,13 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             """;
         const string other = "static int value = 22; int *other(void) { return &value; }";
         Compile(reverse ? other : main, ["-fdata-sections"])
-            .Compile(reverse ? main : other, ["-fdata-sections"]).Link(ConsoleMain).RunAndCheck(42);
+            .Compile(reverse ? main : other, ["-fdata-sections"]).Link().RunAndCheck(42);
     }
 
     [Theory]
-    [InlineData("/OPT:REF", false)]
-    [InlineData("/OPT:NOREF", true)]
-    [InlineData("/OPT:REF /include:pointer", true)]
+    [InlineData("--gc-sections", false)]
+    [InlineData("--no-gc-sections", true)]
+    [InlineData("--gc-sections --undefined=pointer", true)]
     public void DiscardedGlobalInitializersDoNotConflictWithExistingModuleInitializer(string options, bool retained)
     {
         var builder = Compile("""
@@ -409,14 +407,14 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             int initialized_module(void);
             int main(void) { return initialized_module(); }
             """, ["-fdata-sections"]).AddAsm2ObjAssembly("ChilinkInitializerAssembly.dll");
-        string[] args = ["/entry:main", .. options.Split(' ')];
+        string[] args = [.. options.Split(' ')];
         if (retained)
         {
-            var error = Assert.Throws<InvalidOperationException>(() => builder.Link(args));
+            var error = Assert.Throws<InvalidOperationException>(() => builder.Chilink(args));
             Assert.Contains("module initializer", error.Message, StringComparison.OrdinalIgnoreCase);
         }
         else
-            builder.Link(args).RunAndCheck(42);
+            builder.Chilink(args).RunAndCheck(42);
     }
 
     [Fact]
@@ -428,7 +426,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             int main(void) { return *pointer; }
             """, ["-fdata-sections"])
             .Compile("int target = 42;", ["-fdata-sections"])
-            .Link(["/entry:main", "/OPT:REF"]).RunAndCheck(42);
+            .Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -440,7 +438,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             extern int *pointer;
             int main(void) { if (zero || pointer != &target) return 1; return ++*pointer; }
             """;
-        Compile(data).MsvcCompile(main).Link(ConsoleMain).RunAndCheck(42);
+        Compile(data).MsvcCompile(main).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -448,7 +446,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     {
         var builder = MsvcCompile("int value = 42;")
             .Compile("extern int value; int main(void) { int *pointer = &value; return *pointer; }");
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains("FixedAddressValueTypeAttribute", error.Message);
         Assert.Contains("value", error.Message);
     }
@@ -458,7 +456,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     {
         MsvcCompile("int value = 42;")
             .Compile("extern int value; int main(void) { return value; }")
-            .Link(ConsoleMain).RunAndCheck(42);
+            .Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -469,7 +467,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             int value = 1;
             int main(int argc, char **argv) { return value + managed_static(); }
             """).AddCrt().AddAsm2ObjAssembly("ChilinkAssembly.dll")
-            .Link(["/subsystem:console"]).RunAndCheck(42);
+            .Link(entryPoint: "mainCRTStartup").RunAndCheck(42);
     }
 
     [Theory]
@@ -483,10 +481,10 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             int main(void) { return value + initialized_module(); }
             """).AddAsm2ObjAssembly("ChilinkInitializerAssembly.dll");
         if (!initialized)
-            builder.Link(ConsoleMain).RunAndCheck(42);
+            builder.Link().RunAndCheck(42);
         else
         {
-            var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+            var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
             Assert.Contains("module initializer", error.Message, StringComparison.OrdinalIgnoreCase);
         }
     }
@@ -499,20 +497,20 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             int value = 40;
             int *pointer = &value;
             int read(void) { return ++*pointer; }
-            """).Link(["/dll", "/include:?read@@$$J0YAHXZ",
-                "/out:" + Path.Combine(runner._tempDir, "globals.dll")]);
+            """).Chilink(["--undefined=?read@@$$J0YAHXZ"], shared: true,
+                outputPath: Path.Combine(runner._tempDir, "globals.dll"));
         runner.Compile("int load_global_dll(void); int main(void) { return load_global_dll(); }")
-            .AddAsm2ObjAssembly("ChilinkAssembly.dll").Link(ConsoleMain).RunAndCheck(42);
+            .AddAsm2ObjAssembly("ChilinkAssembly.dll").Link().RunAndCheck(42);
     }
 
     [Fact]
     public void InitializedDllWithNoInputMethodsInitializesBeforeFieldAccess()
     {
         using var runner = new CompilationBuilder();
-        Compile("int value = 42;").Link(["/dll",
-            "/out:" + Path.Combine(runner._tempDir, "globals.dll")]);
+        Compile("int value = 42;").Link(shared: true,
+            outputPath: Path.Combine(runner._tempDir, "globals.dll"));
         runner.Compile("int load_global_dll_value(void); int main(void) { return load_global_dll_value(); }")
-            .AddAsm2ObjAssembly("ChilinkAssembly.dll").Link(ConsoleMain).RunAndCheck(42);
+            .AddAsm2ObjAssembly("ChilinkAssembly.dll").Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -537,7 +535,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(fieldList), 1);
         }
         File.WriteAllBytes(builder._objFiles[0], bytes);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains("named types", error.Message);
     }
 
@@ -545,7 +543,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     public void IncompatibleCommonDefinitionsAreRejected()
     {
         var builder = Compile("int value; int main(void) { return value; }").Compile("long long value;");
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains("incompatible storage", error.Message);
     }
 
@@ -572,7 +570,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(data.PointerToRelocations), (uint)data.SizeOfRawData - 1);
         }
         File.WriteAllBytes(builder._objFiles[0], bytes);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains(wrongKind ? "unsupported relocation" : "exceeds its storage", error.Message);
     }
 
@@ -593,7 +591,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(fixup.PointerToRelocations + 4), (uint)value.Index);
         }
         File.WriteAllBytes(builder._objFiles[0], bytes);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains("vtfixup", error.Message);
     }
 
@@ -613,7 +611,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 return first + *start;
             }
             """, dataSections ? ["-fdata-sections"] : null)
-            .Link(ConsoleMain).RunAndCheck(42);
+            .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -633,7 +631,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 return pointer(41);
             }
             """, dataSections ? ["-fdata-sections", "-ffunction-sections"] : null)
-            .Link(["/entry:main", "/OPT:REF"]).RunAndCheck(42);
+            .Link(gcSections: true).RunAndCheck(42);
     }
 
     [Theory]
@@ -656,7 +654,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
         string[] flags = dataSections ? ["-fdata-sections", "-ffunction-sections"] : null;
         Compile(reverse ? definition : main, flags)
             .Compile(reverse ? main : definition, flags)
-            .Link(["/entry:main", "/OPT:REF"]).RunAndCheck(42);
+            .Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -673,7 +671,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 int (__clrcall *other_pointer)(int) = target;
                 int other(void) { return other_pointer(19); }
                 """, ["-fdata-sections", "-ffunction-sections"])
-            .Link(["/entry:main", "/OPT:REF"]).RunAndCheck(42);
+            .Link(gcSections: true).RunAndCheck(42);
     }
 
     [Theory]
@@ -694,7 +692,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 return array[0](holder.tag) + holder.callback(*holder.data);
             }
             """, dataSections ? ["-fdata-sections", "-ffunction-sections"] : null);
-        builder.Link(["/entry:main", "/OPT:REF"]).RunAndCheck(42);
+        builder.Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -708,7 +706,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 return pointer(41);
             }
             """, ["-fdata-sections", "-ffunction-sections"]);
-        builder.Link(["/entry:main", "/OPT:REF"]).RunAndCheck(42);
+        builder.Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -719,7 +717,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             int (__clrcall *pointer)(int) = target;
             int main(void) { return 42; }
             """, ["-fdata-sections", "-ffunction-sections", "-fno-fixed-address-statics"])
-            .Link(["/entry:main", "/OPT:REF"]).RunAndCheck(42);
+            .Link(gcSections: true).RunAndCheck(42);
     }
 
     [Theory]
@@ -763,7 +761,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
                 return target;
             }
             """);
-        builder.Link(ConsoleMain).RunAndCheck(42);
+        builder.Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -849,7 +847,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             }
         }
         File.WriteAllBytes(builder._objFiles[0], bytes);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains(diagnostic, error.Message);
     }
 
@@ -871,7 +869,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
             BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(fixup.PointerToRawData + 8), 0);
         }
         File.WriteAllBytes(builder._objFiles[0], bytes);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains("overlapping managed vtfixup slots", error.Message);
     }
 
@@ -883,7 +881,7 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
     {
         var builder = Compile(main, ["-fno-uco-entrypoints"])
             .Compile(other, ["-fno-uco-entrypoints"]);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(ConsoleMain));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.IsType<Chilink.LinkException>(error.InnerException);
         Assert.Contains(diagnostic, error.Message, StringComparison.OrdinalIgnoreCase);
     }

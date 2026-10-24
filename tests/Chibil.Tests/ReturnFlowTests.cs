@@ -20,7 +20,7 @@ public sealed class ReturnFlowTests : ChibiTestBase
                 return 42;
             }
             """)
-        .Link(["/entry:main"])
+        .Link()
         .RunAndCheck(42);
     }
 
@@ -35,7 +35,7 @@ public sealed class ReturnFlowTests : ChibiTestBase
                 return f();
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -46,7 +46,7 @@ public sealed class ReturnFlowTests : ChibiTestBase
             int main(void) {
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -66,7 +66,7 @@ public sealed class ReturnFlowTests : ChibiTestBase
                 return f(1);
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 
@@ -84,7 +84,7 @@ public sealed class ReturnFlowTests : ChibiTestBase
                 return f();
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 1);
     }
 
@@ -102,7 +102,7 @@ public sealed class ReturnFlowTests : ChibiTestBase
                 return f();
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 1);
     }
 
@@ -120,7 +120,7 @@ public sealed class ReturnFlowTests : ChibiTestBase
                 return 0;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 0);
     }
 }

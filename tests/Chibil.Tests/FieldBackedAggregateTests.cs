@@ -29,7 +29,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return calls == 1 ? copy.value : 2;
             }
             """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+        .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -46,7 +46,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return holder.value.value;
             }
             """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+        .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -69,7 +69,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return array[0].value;
             }
             """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+        .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -93,7 +93,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return holder.value.pair.x + holder.value.pair.y;
             }
             """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+        .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -121,7 +121,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return holder.pair.x + holder.values[0] + holder.sibling;
             }
             """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+        .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -147,7 +147,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return holder.value.pair.x + holder.values[0];
             }
             """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+        .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -164,7 +164,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return N;
             }
             """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(21);
+        .Link().RunAndCheck(21);
     }
 
     [Theory]
@@ -182,7 +182,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return holder.value.size;
             }
             """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+        .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -205,7 +205,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return outer[0].pair.second + array[0].values[1];
             }
             """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+        .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -223,7 +223,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return values[0].pair.first.value + values[0].pair.second;
             }
             """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+        .Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -245,7 +245,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return calls == 1 ? holder.value.value + holder.extra : 1;
             }
             """, [fieldBacked ? "-fmanaged-aggregate-fields" : "-fno-managed-aggregate-fields"])
-        .Link(["/entry:main", "/subsystem:console"]).RunAndCheck(42);
+        .Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -293,7 +293,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return p->prefix + p->anon.x + p->anon.inner.y + p->suffix;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 20);
     }
 
@@ -322,7 +322,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 }
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 12);
     }
 
@@ -371,7 +371,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                     device.status.error + device.status.reserved;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 15);
     }
 
@@ -401,7 +401,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return flags.enabled + flags.signedByte + flags.unsignedByte;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 200);
     }
 
@@ -427,7 +427,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return (int)((char *)&container.values - (char *)&container);
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .MsvcLink()
         .RunAndCheck(alignment);
     }
 
@@ -454,7 +454,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return *(int *)container.pointers[0] + *(int *)container.pointers[1];
             }
             """, option == null ? null : [option])
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .MsvcLink()
         .RunAndCheck(12);
     }
 
@@ -492,7 +492,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                        (int)container.grids[1].cells[1][1];
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .MsvcLink()
         .RunAndCheck(18);
     }
 
@@ -525,7 +525,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return (int)container.items[0].values[1] + (int)container.items[1].values[1];
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .MsvcLink()
         .RunAndCheck(12);
     }
 
@@ -561,7 +561,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return sum;
             }
             """)
-        .MsvcLink(["/entry:main", "/subsystem:console"])
+        .MsvcLink()
         .RunAndCheck(78);
     }
 
@@ -596,7 +596,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return values[0].c + values[1].c;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 3);
     }
 
@@ -626,7 +626,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return packet.length + packet.values[0] + packet.values[1] + packet.values[2];
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 18);
     }
 
@@ -654,7 +654,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return packet.length + packet.values[0] + packet.values[1] + packet.values[2];
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 18);
     }
 
@@ -688,7 +688,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return 7;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 7);
     }
 
@@ -727,7 +727,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
             .AssertErrorContains("aligned struct members");
 #else
         Compile(source)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 3);
 #endif
     }
@@ -771,7 +771,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
             .AssertErrorContains("aligned aggregate types");
 #else
         Compile(source)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 6);
 #endif
     }
@@ -809,7 +809,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return o.prefix + o.anon.x + o.anon.y + o.suffix;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 10);
     }
 
@@ -835,7 +835,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return first(packet) + packet.values[0] + packet.values[2];
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 13);
     }
 
@@ -862,7 +862,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return copy.a + copy.b + packet.values[1];
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 20);
     }
 
@@ -893,7 +893,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return copy.length + copy.values[0] + copy.values[1] + copy.values[2];
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 18);
     }
 
@@ -926,7 +926,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return copy[0].x + copy[1].x;
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 14);
     }
 
@@ -954,7 +954,7 @@ public class FieldBackedAggregateTests : ChibiTestBase
                 return read_value(identity(&value));
             }
             """)
-        .Link(["/entry:main", "/subsystem:console"])
+        .Link()
         .RunAndCheck(exitCode: 42);
     }
 }
