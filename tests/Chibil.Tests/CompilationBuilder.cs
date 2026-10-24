@@ -86,12 +86,16 @@ public sealed class CompilationBuilder : IDisposable
 
         File.WriteAllText(sourceFile, source);
 
-        var args = new List<string> { "-ffixed-address-statics" };
+        var args = new List<string> {
+            "-ffixed-address-statics", "-fno-managed-aggregate-fields", "-fno-emulated-varargs",
+        };
         if (_netCore)
         {
             args.Add("-fnetcore");
             args.Add("-fuco-entrypoints");
         }
+        else
+            args.Add("--target=x86_64-netfx-windows");
 #if FIELD_BACKED_AGGREGATES
         args.Add("-fmanaged-aggregate-fields");
 #endif
@@ -119,6 +123,8 @@ public sealed class CompilationBuilder : IDisposable
     /// </param>
     public CompilationBuilder MsvcCompile(string source, string[] extraArgs = null)
     {
+        if (!OperatingSystem.IsWindows())
+            throw Xunit.Sdk.SkipException.ForSkip("MSVC compilation requires Windows.");
         if (_netCore)
             throw Xunit.Sdk.SkipException.ForSkip("MSVC's /BC C frontend cannot compile with /clr:netcore.");
 
@@ -170,6 +176,8 @@ public sealed class CompilationBuilder : IDisposable
     /// </param>
     public LinkResult MsvcLink(string[] extraArgs = null, string entryPoint = "main")
     {
+        if (!OperatingSystem.IsWindows())
+            throw Xunit.Sdk.SkipException.ForSkip("MSVC linking requires Windows.");
         if (_objFiles.Count == 0)
             throw new InvalidOperationException("No object files to link. Call Compile() first.");
 
@@ -251,6 +259,8 @@ public sealed class CompilationBuilder : IDisposable
     public CompilationBuilder NativeLibrary(string source, string exports,
         string dllName = "native.dll", string libraryName = "native.lib")
     {
+        if (!OperatingSystem.IsWindows())
+            throw Xunit.Sdk.SkipException.ForSkip("Building native libraries with MSVC requires Windows.");
         string name = $"native{_fileCounter++}";
         string sourcePath = Path.Combine(_tempDir, name + ".c");
         string definitionPath = Path.Combine(_tempDir, name + ".def");
@@ -313,6 +323,9 @@ public sealed class LinkResult
     /// </summary>
     public void RunAndCheck(int exitCode)
     {
+        if (!_netCore && !OperatingSystem.IsWindows())
+            throw Xunit.Sdk.SkipException.ForSkip(".NET Framework execution requires Windows.");
+
         if (_netCore)
             File.WriteAllText(Path.ChangeExtension(_exePath, ".runtimeconfig.json"), """
                 {
@@ -342,8 +355,10 @@ public sealed class LinkResult
         var stderr = stderrTask.Result;
         var stdout = stdoutTask.Result;
 
-        Assert.True(proc.ExitCode == exitCode,
-            $"Expected exit code {exitCode} but got {proc.ExitCode}.\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        // Unix process exit status only preserves the low eight bits.
+        int expectedExitCode = OperatingSystem.IsWindows() ? exitCode : exitCode & 0xff;
+        Assert.True(proc.ExitCode == expectedExitCode,
+            $"Expected exit code {expectedExitCode} but got {proc.ExitCode}.\nstdout:\n{stdout}\nstderr:\n{stderr}");
     }
 }
 

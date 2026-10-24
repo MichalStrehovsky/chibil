@@ -5,6 +5,30 @@ on:
     branches: [ master ]
 
 jobs:
+  test_linux:
+    strategy:
+      matrix:
+        include:
+          - configuration: default
+            args: ''
+          - configuration: field-backed aggregates
+            args: '-p:FieldBackedAggregateTests=true'
+          - configuration: optimized
+            args: '-p:OptimizedTests=true'
+    runs-on: ubuntu-latest
+    name: Test Linux (${{ matrix.configuration }})
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: xUnit tests
+        run: dotnet test tests/Chibil.Tests/Chibil.Tests.csproj ${{ matrix.args }}
+
   build_and_test:
     strategy:
       matrix:

@@ -12,7 +12,9 @@ public sealed record TargetProfile(TargetCpu Cpu, TargetRuntime Runtime, TargetO
         "x86_64-dotnet-windows-msvc, x86_64-netfx-windows-chibil, x86_64-dotnet-linux[-chibil]";
 
     public static readonly TargetProfile Default =
-        new(TargetCpu.X86_64, TargetRuntime.NetFramework, TargetOS.Windows, TargetAbi.Msvc);
+        OperatingSystem.IsLinux()
+            ? new(TargetCpu.X86_64, TargetRuntime.DotNet, TargetOS.Linux, TargetAbi.Chibil)
+            : new(TargetCpu.X86_64, TargetRuntime.NetFramework, TargetOS.Windows, TargetAbi.Msvc);
 
     public string DefaultLinker => Abi == TargetAbi.Chibil ? "chilink" : "link";
 
@@ -23,7 +25,8 @@ public sealed record TargetProfile(TargetCpu Cpu, TargetRuntime Runtime, TargetO
 
         return value switch
         {
-            "x86_64-netfx-windows" or "x86_64-netfx-windows-msvc" => Default,
+            "x86_64-netfx-windows" or "x86_64-netfx-windows-msvc" =>
+                new(TargetCpu.X86_64, TargetRuntime.NetFramework, TargetOS.Windows, TargetAbi.Msvc),
             "x86_64-dotnet-windows" or "x86_64-dotnet-windows-chibil" =>
                 new(TargetCpu.X86_64, TargetRuntime.DotNet, TargetOS.Windows, TargetAbi.Chibil),
             "x86_64-dotnet-windows-msvc" =>
