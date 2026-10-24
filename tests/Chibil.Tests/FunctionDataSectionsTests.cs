@@ -84,6 +84,24 @@ public sealed class FunctionDataSectionsTests : ChibiTestBase
             .RunAndCheck(0);
     }
 
+    [Theory]
+    [InlineData("L\"x\"")]
+    [InlineData("U\"x\"")]
+    public void DataSections_PreservesWideAndUtf32LiteralTypes(string firstLiteral)
+    {
+        Compile($$"""
+            int main(void) {
+                (void){{firstLiteral}};
+                if (!_Generic(*L"x", __WCHAR_TYPE__: 1, default: 0)) return 1;
+                if (!_Generic(*U"x", unsigned int: 1, default: 0)) return 2;
+                if (L"x"[0] != 'x' || U"x"[0] != 'x') return 3;
+                return 42;
+            }
+            """, ["-fdata-sections"])
+            .Link(["/entry:main"])
+            .RunAndCheck(42);
+    }
+
     [Fact]
     public void Default_DoesNotPoolIdenticalLiteralsWithinTranslationUnit()
     {

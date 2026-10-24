@@ -1029,11 +1029,10 @@ public class Preprocessor
     public void InitMacros()
     {
         var dm = _options.DataModel;
-        bool isLP64 = dm.LongSize == 8;
+        bool isLP64 = dm.LongSize == 8 && dm.PointerSize == 8;
 
         if (isLP64) { DefineMacro("_LP64", "1"); DefineMacro("__LP64__", "1"); }
         DefineMacro("__C99_MACRO_WITH_VA_ARGS", "1");
-        DefineMacro("__ELF__", "1");
         DefineMacro("__SIZEOF_DOUBLE__", "8");
         DefineMacro("__SIZEOF_FLOAT__", "4");
         DefineMacro("__SIZEOF_INT__", "4");
@@ -1047,6 +1046,7 @@ public class Preprocessor
         DefineMacro("__SIZEOF_WCHAR_T__", $"{dm.WcharSize}");
         DefineMacro("__SIZE_TYPE__", isLP64 ? "unsigned long" : "unsigned long long");
         DefineMacro("__PTRDIFF_TYPE__", isLP64 ? "long" : "long long");
+        DefineMacro("__WCHAR_TYPE__", dm.WcharSize == 2 ? "unsigned short" : "int");
         DefineMacro("__STDC_HOSTED__", "1");
         DefineMacro("__STDC_NO_COMPLEX__", "1");
         DefineMacro("__STDC_UTF_16__", "1");
@@ -1059,21 +1059,34 @@ public class Preprocessor
         DefineMacro("__amd64__", "1");
         DefineMacro("__chibil__", "1");
         DefineMacro("__const__", "const");
-        DefineMacro("__gnu_linux__", "1");
         DefineMacro("__inline__", "inline");
         DefineMacro("__inline", "inline");
         DefineMacro("__forceinline", "inline");
-        DefineMacro("__linux", "1");
-        DefineMacro("__linux__", "1");
         DefineMacro("__signed__", "signed");
         DefineMacro("__typeof__", "typeof");
-        DefineMacro("__unix", "1");
-        DefineMacro("__unix__", "1");
         DefineMacro("__volatile__", "volatile");
         DefineMacro("__x86_64", "1");
         DefineMacro("__x86_64__", "1");
-        DefineMacro("linux", "1");
-        DefineMacro("unix", "1");
+        if (_options.Target.OS == TargetOS.Windows)
+        {
+            DefineMacro("_WIN32", "1");
+            DefineMacro("_WIN64", "1");
+            DefineMacro("__WIN32", "1");
+            DefineMacro("__WIN32__", "1");
+            DefineMacro("__WIN64", "1");
+            DefineMacro("__WIN64__", "1");
+            DefineMacro("__WINNT", "1");
+            DefineMacro("__WINNT__", "1");
+            DefineMacro("_M_AMD64", "100");
+            DefineMacro("_M_X64", "100");
+        }
+        else if (_options.Target.OS == TargetOS.Linux)
+        {
+            DefineMacro("__linux", "1");
+            DefineMacro("__linux__", "1");
+            DefineMacro("__unix", "1");
+            DefineMacro("__unix__", "1");
+        }
 
         AddBuiltin("__FILE__", FileMacro);
         AddBuiltin("__LINE__", LineMacro);
