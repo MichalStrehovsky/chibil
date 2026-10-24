@@ -5,7 +5,6 @@ namespace Chibil.Tests;
 
 public sealed class UcoEntryPointTests
 {
-    private static readonly string[] Main = ["/entry:main", "/OPT:REF"];
 
     private static string[] Options(bool sections = false) => sections
         ? ["-fuco-entrypoints", "-ffunction-sections", "-fdata-sections"]
@@ -33,7 +32,7 @@ public sealed class UcoEntryPointTests
                     return 1;
                 return pointer(10, 2) + array[1](5, 7) + holder.callback(6, 6) + local(3, 3);
             }
-            """, Options(sections)).Link(Main).RunAndCheck(42);
+            """, Options(sections)).Link(gcSections: true).RunAndCheck(42);
     }
 
     [Theory]
@@ -51,7 +50,7 @@ public sealed class UcoEntryPointTests
                 return pointer(20) + local(20);
             }
             """, [.. Options(true), "-fno-fixed-address-statics"])
-            .Link(Main).RunAndCheck(42);
+            .Link(gcSections: true).RunAndCheck(42);
     }
 
     [Theory]
@@ -76,7 +75,7 @@ public sealed class UcoEntryPointTests
         builder.Compile(reverse ? definition : consumer, Options(sections))
             .Compile(reverse ? consumer : definition, Options(sections))
             .Compile(observer, Options(sections))
-            .Link(Main).RunAndCheck(42);
+            .Link(gcSections: true).RunAndCheck(42);
     }
 
     [Theory]
@@ -101,7 +100,7 @@ public sealed class UcoEntryPointTests
                 void *other_address(void) { return pointer; }
                 int other(void) { return pointer(19); }
                 """, Options(sections))
-            .Link(Main).RunAndCheck(42);
+            .Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -126,7 +125,7 @@ public sealed class UcoEntryPointTests
                 if (!flags.first || flags.second || !*p || values[1]) return 3;
                 return 42;
             }
-            """, Options()).Link(Main).RunAndCheck(42);
+            """, Options()).Link(gcSections: true).RunAndCheck(42);
     }
 
     [Theory]
@@ -149,7 +148,7 @@ public sealed class UcoEntryPointTests
                 struct Value result = pointer(input);
                 return input.value == 41 ? result.value : 1;
             }
-            """, Options()).Link(Main).RunAndCheck(42);
+            """, Options()).Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -170,7 +169,7 @@ public sealed class UcoEntryPointTests
                 local(reader(value));
                 return other(value);
             }
-            """, Options()).Link(Main).RunAndCheck(42);
+            """, Options()).Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -184,7 +183,7 @@ public sealed class UcoEntryPointTests
             }
             int direct(int value) { return value == 0 ? 1 : direct(value - 1) + 1; }
             int main(void) { return recurse(20) + direct(20); }
-            """, Options(true)).Link(Main).RunAndCheck(42);
+            """, Options(true)).Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -197,7 +196,7 @@ public sealed class UcoEntryPointTests
             char (*first)(char) = character;
             long (__stdcall *second)(long) = number;
             int main(void) { return first(20) + second(22); }
-            """, Options()).Link(Main).RunAndCheck(42);
+            """, Options()).Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -209,7 +208,7 @@ public sealed class UcoEntryPointTests
             int (*unused)(void) = target;
             int main(void) { return 42; }
             """, [.. Options(true), "-fno-fixed-address-statics"])
-            .Link(Main).RunAndCheck(42);
+            .Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -221,7 +220,7 @@ public sealed class UcoEntryPointTests
             int (*pointer)(void) = target;
             int main(void) { return pointer(); }
             """, ["-fno-uco-entrypoints"]);
-        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(Main));
+        var error = Assert.Throws<InvalidOperationException>(() => builder.Link(gcSections: true));
         Assert.Contains("native/IJW", error.Message);
     }
 
@@ -244,7 +243,7 @@ public sealed class UcoEntryPointTests
         using var builder = new CompilationBuilder(true);
         builder.Compile("int main(void) { return 42; }",
             ["-fuco-entrypoints", "-fno-uco-entrypoints", "-fnetframework",
-             "-fuco-entrypoints", "-fnetcore"]).Link(Main).RunAndCheck(42);
+             "-fuco-entrypoints", "-fnetcore"]).Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -253,7 +252,7 @@ public sealed class UcoEntryPointTests
         using var builder = new CompilationBuilder(false);
         builder.Compile("int main(void) { return 42; }",
             ["-fnetcore", "-fuco-entrypoints", "-fno-uco-entrypoints", "-fnetframework"])
-            .Link(Main).RunAndCheck(42);
+            .Link(gcSections: true).RunAndCheck(42);
     }
 
     [Fact]
@@ -261,7 +260,7 @@ public sealed class UcoEntryPointTests
     {
         using var builder = new CompilationBuilder(true);
         builder.Compile("int main(void) { return 42; }", Options(true))
-            .Link(["/entry:main", "/OPT:REF", "/include:__uco@main"]).RunAndCheck(42);
+            .Chilink(["--gc-sections", "--undefined=__uco@main"]).RunAndCheck(42);
     }
 
     [Theory]

@@ -29,10 +29,13 @@ internal sealed partial class Linker
         try
         {
             var resolvedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (string path in _options.Inputs)
+            foreach (LinkInput input in _options.Inputs)
             {
-                bool library = Path.GetExtension(path).Equals(".lib", StringComparison.OrdinalIgnoreCase);
-                string resolved = library ? ResolveLibraryPath(path) : Path.GetFullPath(path);
+                string resolved = input.SearchLibrary ? ResolveLibraryPath(input.Name) : Path.GetFullPath(input.Name);
+                string extension = Path.GetExtension(resolved);
+                bool library = input.SearchLibrary ||
+                    extension.Equals(".lib", StringComparison.OrdinalIgnoreCase) ||
+                    extension.Equals(".a", StringComparison.OrdinalIgnoreCase);
                 resolvedPaths.Add(resolved);
                 if (library)
                 {
@@ -45,15 +48,13 @@ internal sealed partial class Linker
             while (true)
             {
                 if (_options.Dll && _options.Entry != null)
-                    throw new LinkException("/entry is not supported for a managed DLL");
-                if (_options.NoEntry && !_options.Dll)
-                    throw new LinkException("/noentry requires /dll");
-                _options.Output ??= Path.ChangeExtension(Path.GetFileName(_options.Inputs[0]), _options.Dll ? ".dll" : ".exe");
+                    throw new LinkException("--entry is not supported for a shared managed library");
                 if (resolvedPaths.Contains(Path.GetFullPath(_options.Output)))
                     throw new LinkException("output file must not overwrite an input");
                 if (_options.Debug && !_options.EmbeddedPdb)
                 {
-                    _options.Pdb = Path.GetFullPath(_options.Pdb ?? Path.ChangeExtension(_options.Output, ".pdb"));
+                    _options.Pdb = Path.GetFullPath(string.IsNullOrEmpty(_options.Pdb)
+                        ? Path.ChangeExtension(_options.Output, ".pdb") : _options.Pdb);
                     if (_options.Pdb.Equals(Path.GetFullPath(_options.Output), StringComparison.OrdinalIgnoreCase) ||
                         resolvedPaths.Contains(_options.Pdb) ||
                         _libraries.Any(l => l.Path.Equals(_options.Pdb, StringComparison.OrdinalIgnoreCase)))
@@ -64,7 +65,7 @@ internal sealed partial class Linker
                     var roots = _options.Includes.Concat(_options.Dll ? [] : new[] { _options.Entry ?? "mainCRTStartup" });
                     if (roots.Any(root => SelectLibrarySymbol(root, null)))
                         continue;
-                    throw new LinkException("no managed object selected from input libraries; specify an exact COFF /entry or /include symbol");
+                    throw new LinkException("no managed object selected from input libraries; specify an exact COFF --entry or --undefined symbol");
                 }
                 ResetAnalysis();
                 if (ExpandLibraries())
@@ -88,7 +89,7 @@ internal sealed partial class Linker
                         if (pair.Value.IsCommon)
                             Mark(pair.Key);
                     foreach (InputSection section in _inputs.SelectMany(i => i.Sections))
-                        if (!section.Ignored && (!section.IsComdat || !_options.OptRef) &&
+                        if (!section.Ignored && (!section.IsComdat || !_options.GcSections) &&
                             section.Header.SizeOfRawData > 0)
                             MarkSection(section);
                     DrainPending();
@@ -101,9 +102,6 @@ internal sealed partial class Linker
                         Mark(_nativeResolver);
                         DrainPending();
                     }
-                    foreach (string library in _options.DefaultLibraries)
-                        if (!_options.NoDefaultLib && !_options.IgnoredLibraries.Contains(library))
-                            throw new LinkException($"default-library resolution is not supported: /defaultlib:{library}; use /nodefaultlib or compile with /Zl");
                     ValidateFieldAddresses();
                     return Emit(entry);
                 }
@@ -247,7 +245,7 @@ internal sealed partial class Linker
     {
         if (_symbols.TryGetValue(name, out Definition definition))
             return _merger.Resolve(definition.Token);
-        // /entry:main names the managed method even though the bare COFF symbol
+        // --entry=main names the managed method even though the bare COFF symbol
         // in /clr objects points at its unused native thunk.
         var candidates = _definitions.Keys.Where(t =>
         {

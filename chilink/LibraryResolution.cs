@@ -1,6 +1,5 @@
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
-using System.Text;
 
 namespace Chilink;
 
@@ -11,28 +10,23 @@ internal sealed partial class Linker
     private readonly List<InputLibrary> _libraries = new();
     private readonly Dictionary<string, NativeImport> _nativeImports = new(StringComparer.Ordinal);
 
-    private string ResolveLibraryPath(string path)
+    private string ResolveLibraryPath(string name)
     {
-        if (Path.GetFileName(path) != path)
-            return Path.GetFullPath(path);
-        foreach (string directory in new[] { Directory.GetCurrentDirectory() }
-            .Concat(_options.LibraryPaths)
-            .Concat((_options.LibraryEnvironment ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries)))
+        string[] filenames = name.StartsWith(':') ? [name[1..]] :
+            [$"lib{name}.dll.a", $"{name}.dll.a", $"lib{name}.a", $"{name}.lib", $"lib{name}.lib"];
+        foreach (string directory in _options.LibraryPaths)
         {
-            string candidate = Path.GetFullPath(Path.Combine(directory.Trim().Trim('"'), path));
-            if (File.Exists(candidate))
-                return candidate;
+            foreach (string filename in filenames)
+            {
+                string candidate = Path.GetFullPath(Path.Combine(directory, filename));
+                if (File.Exists(candidate))
+                    return candidate;
+            }
         }
-        throw new LinkException($"cannot find library '{path}' in the working directory, /LIBPATH, or LIB");
+        throw new LinkException($"cannot find library '{name}' in the -L search directories");
     }
 
-    private void AddInput(InputFile input)
-    {
-        _inputs.Add(input);
-        foreach (InputSection section in input.Sections.Where(s => s.Name == ".drectve"))
-            foreach (string arg in Driver.SplitArguments(Encoding.UTF8.GetString(section.GetData()).TrimStart('\uFEFF')))
-                Driver.Parse(_options, arg, directive: true);
-    }
+    private void AddInput(InputFile input) => _inputs.Add(input);
 
     private void ResetAnalysis()
     {

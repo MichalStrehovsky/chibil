@@ -17,19 +17,25 @@ dotnet build .\chilink\Chilink.csproj
 $env:PATH = "$PWD\chilink\bin\Debug\net10.0;$env:PATH"
 
 dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-netfx-windows-chibil -c hello.c -o hello.obj
-chilink /out:hello.exe /entry:main /subsystem:console hello.obj
+chilink -o hello.exe -e main hello.obj
 
-dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-netfx-windows-chibil hello.c -o hello.exe "-Wl,/entry:main"
-dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-dotnet-windows hello.c -o hello.dll "-Wl,/entry:main"
+dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-netfx-windows-chibil hello.c -o hello.exe "-Wl,-e,main"
+dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-dotnet-windows hello.c -o hello.dll "-Wl,--entry=main"
 ```
 
 chibil launches the executable named by `-fuse-ld=<name>` (resolved through PATH
 when no path is supplied); it does not discover or install the linker.
 With no target selected, chibil uses link.exe. `chibil` targets select chilink;
-see [target presets](#target-presets) below. Every linker receives
-the same `/DEBUG`, `/subsystem:console`, `/out:` and `mscoree.lib` arguments.
-Consequently, compiler-driven chilink links default to `/opt:noref`; pass
-`-Wl,/OPT:REF` to enable dead stripping explicitly.
+see [target presets](#target-presets) below. Executables named `link` or
+`link.exe` (including full paths, case-insensitively) receive MSVC-style arguments;
+other linker names and custom wrappers receive ld-style arguments.
+Chilink receives `-o OUTPUT`, without `mscoree.lib` or a debug-enabling switch.
+Portable PDB information is embedded by default. Link.exe retains
+`/DEBUG`, `/subsystem:console`, `/out:` and `mscoree.lib`.
+Compiler-owned `-shared`, `-L` and `-l` settings are rendered for the selected
+linker, but `-Wl,` and `-Xlinker` arguments are forwarded without translation:
+use that linker's native syntax. Pass `-Wl,--gc-sections` to chilink to enable
+dead stripping; debug output does not change the GC policy.
 
 The linker itself does not require Visual Studio or `mscoree.lib`. Executing
 Framework-targeting images requires a compatible runtime. Modern .NET images
@@ -79,8 +85,8 @@ For a parameterless `int main(void)`, with chibil and the selected linker on PAT
 
 ```powershell
 chibil --target=x86_64-netfx-windows hello.c -o hello.exe "-Wl,/entry:main"
-chibil --target=x86_64-dotnet-windows hello.c -o hello.dll "-Wl,/entry:main"
-chibil --target=x86_64-dotnet-linux hello.c -o hello-linux.dll "-Wl,/entry:main"
+chibil --target=x86_64-dotnet-windows hello.c -o hello.dll "-Wl,-e,main"
+chibil --target=x86_64-dotnet-linux hello.c -o hello-linux.dll "-Wl,-e,main"
 ```
 
 Linker discovery/installation, entry point selection, CRT objects for an
@@ -127,44 +133,56 @@ explicitly with `-I`/`-idirafter`. There is no SDK or sysroot discovery.
 
 | Option | Meaning |
 | --- | --- |
-| `/out:file` | Output path; otherwise use the first object's base name. |
-| `/entry:symbol` | Managed entrypoint, by exact COFF name or unambiguous global method name. |
-| `/dll` | Produce a managed DLL; implies `/noentry`. |
-| `/noentry` | Accepted with `/dll`. Native DLL startup is not supported. |
-| `/subsystem:console` or `/subsystem:windows` | Set the PE subsystem. |
-| `/machine:x64` | Validate the supported target machine. |
-| `/debug` | Emit a sidecar Portable PDB and matching PE debug-directory entries; default to `/opt:noref`. |
-| `/debug:embedded` | Embed the Portable PDB in the output PE instead of writing a sidecar; default to `/opt:noref`. |
-| `/pdb:file` | Override the sidecar PDB path (default: the output path with a `.pdb` extension). Ignored without `/debug`, like link.exe, and in embedded mode. |
-| `/opt:ref` or `/opt:noref` | Remove unreferenced COMDATs, or retain them; REF is the default without `/debug`. |
-| `/opt:noicf` | Disable identical-code folding (the only supported ICF policy). |
-| `/include:symbol` | Retain a managed symbol and its dependencies. |
-| `/libpath:directory` | Search this directory for bare library names, before `LIB`. Repeat for additional directories. |
-| `/nodefaultlib[:name]` | Suppress input default-library directives. |
-| `/defaultlib:name` | Accepted only when suppressed by `/nodefaultlib`; default-library resolution is not implemented. |
-| `/nologo`, `/?`, `/help` | Banner compatibility and usage. |
+| `-o file`, `--output=file` | Output path; default `a.exe`, including shared output unless explicitly named. |
+| `-e symbol`, `--entry=symbol` | Managed entrypoint, by exact COFF name or unambiguous global method name; default `mainCRTStartup`. Numeric native addresses are not supported. |
+| `-shared`, `--shared` | Produce a managed library without an entry. Native DLL startup is not supported. |
+| `--subsystem=console`, `--subsystem=windows` | Set the PE subsystem; default console. |
+| `-s`, `--strip-all`, `-S`, `--strip-debug` | Omit embedded PDB information; an explicitly requested external PDB is still generated. |
+| `--pdb=file` | Generate an external Portable PDB instead of embedding it. An empty filename (`--pdb=`) uses the output path with a `.pdb` extension. |
+| `--gc-sections`, `--no-gc-sections` | Remove unreferenced COMDATs, or retain them; disabled by default. |
+| `-u symbol`, `--undefined=symbol` | Retain a managed symbol and its dependencies. |
+| `-L directory`, `--library-path=directory` | Add a library search directory; repeat for additional directories. |
+| `-l name`, `--library=name` | Search for a supported archive by name; `-l:filename` selects an exact filename. |
+| `--help` | Print usage without requiring inputs. |
+| `--` | End option parsing. |
 | `@file` | Read arguments from a response file, including quoted paths. |
 
-Input objects may use `.obj` or `.o` extensions; archives use `.lib`.
-Switch names are case-insensitive
-and accept `/` or `-` prefixes; symbol names are case-sensitive.
+Short options taking values accept separate or joined arguments (`-e main`,
+`-emain`). Long options taking values accept a separate argument or `=`
+(`--entry main`, `--entry=main`). Option names are case-sensitive, with no
+abbreviations or link.exe-style compatibility aliases. Absolute Unix paths
+beginning with `/` are inputs. Input objects use `.obj` or `.o`; archives use
+`.lib` or `.a`, but still require the supported COFF archive format.
 
-The bare positional argument `mscoree.lib` is ignored without being opened,
-including in response files and regardless of case. This accommodates chibil's
-automatic linker argument; pure IL needs no native CLR bootstrap library.
-Path-qualified `mscoree.lib` inputs are not special, and `/defaultlib:mscoree.lib`
-still requires explicit suppression. Other libraries are real inputs: missing
-or malformed archives are errors even when they would supply no retained code.
-`/defaultlib` options and object directives still require explicit suppression.
-Other unsupported switches, directives and required input features are errors.
+The last `--gc-sections` or `--no-gc-sections` wins, independently of debug output.
+Portable PDB information is embedded by default, without an enabling switch.
+Stripping suppresses embedded debug information, but does not cancel an explicit
+`--pdb` request, regardless of argument order. The last `--pdb` chooses the
+external filename. `--debug` and `--debug=embedded` are not supported.
+The PDB format remains Portable PDB, not GNU ld's native Windows PDB format.
+Response files preserve Windows backslashes and double-quoted paths,
+including spaces, with nested expansion and cycle detection; this is not a
+complete GNU response-file lexer.
 
-An explicit `/opt:ref` or `/opt:noref` overrides the `/debug` default regardless
-of argument order. The last `/debug` or `/debug:embedded` selects sidecar or
-embedded output, respectively.
+Object `.drectve` sections are ignored entirely, including embedded
+default-library, entry and root instructions. Supply required libraries and
+roots explicitly. There are no `/defaultlib` or `/nodefaultlib` CLI replacements.
+All positional libraries, including `mscoree.lib`, must resolve as real files;
+missing or malformed archives are errors even if unused. Other unsupported
+switches and required input features remain errors.
+
+Subsystem is a PE property, not a link.exe CLI requirement.
+[MinGW GCC](https://gcc.gnu.org/onlinedocs/gcc/Cygwin-and-MinGW-Options.html)
+defaults to `-mconsole` and offers `-mwindows`; its
+[GNU linker](https://sourceware.org/binutils/docs/ld/WIN32.html) supports
+`--subsystem`. Chilink likewise defaults to console without requiring an option,
+including for Linux-targeted managed assemblies, which remain PE rather than ELF.
+The standalone `a.exe` default follows GNU's PE linker convention; chibil still
+supplies an explicit runtime-dependent output name.
 
 ### Debug information
 
-`/debug` translates chibil's C13 CodeView into a Portable PDB using
+By default, chilink translates C13 CodeView into an embedded Portable PDB using
 System.Reflection.Metadata. It preserves source paths and available SHA-256
 checksums, source lines, local-variable names and slots, lexical scopes present
 in the object, and parameter names in the assembly's metadata. Objects without
@@ -173,13 +191,20 @@ shared file tables; discarded functions and losing COMDAT definitions do not
 contribute debug information. Debug records never retain code or select library
 members.
 
-With `/debug`, the PE contains a CodeView reference to the resolved sidecar PDB
-path. `/pdb:` also works through response files and accepts quoted paths.
-`/debug:embedded` instead stores the Portable PDB in the PE, uses the output
-basename with a `.pdb` extension for its CodeView reference, and ignores `/pdb:`
-entirely. It does not write or remove a sidecar PDB. Both modes include a separate
+Embedded output uses the output basename with a `.pdb` extension for its CodeView
+reference, without writing or removing a sidecar PDB.
+`--pdb=FILE` selects external output instead, and the PE contains a CodeView
+reference to the resolved sidecar path. `--pdb` also works through response files
+and accepts quoted paths, with either `--pdb FILE` or `--pdb=FILE`.
+Both modes include a separate
 SHA-256 checksum entry for the uncompressed Portable PDB and use the same PDB
 serialization, source mappings, and metadata identities.
+
+`-s`, `-S`, `--strip-all` and `--strip-debug` all disable embedded PDB generation.
+Without an explicit `--pdb` request, stripped images have no debug-directory
+entries and no PDB is generated. As with MinGW's GNU linker, an explicit external
+PDB request remains effective when stripping, independent of option order.
+Neither stripping nor external PDB selection changes section GC.
 
 Malformed debug information needed by retained methods is an error; unsupported
 source-bearing records produce warnings instead of silently losing information.
@@ -188,21 +213,24 @@ files are not supported.
 
 Use `/Zl /d1clrNoPureCRT` when compiling managed-only MSVC fixtures: `/Zl`
 omits default-library directives, and `/d1clrNoPureCRT` suppresses the native CRT
-initializer dependency. `/nodefaultlib` can also suppress default libraries,
-but does not implement the native initialization code.
+initializer dependency. Ignoring `.drectve` does not implement native initialization.
 
 ### Libraries
 
-For a bare library filename, chilink searches its working directory, each
-`/libpath` directory in argument order, then the semicolon-separated directories
-in `LIB`. A qualified path is used as given, without search-directory fallback.
-`LIB` is read once per invocation. Response files support quoted library paths
-and `/libpath` directories containing spaces.
+Positional paths are opened as given, relative to the working directory when
+not absolute. `-lfoo` searches each explicit `-L` directory in argument order
+for `libfoo.dll.a`, `foo.dll.a`, `libfoo.a`, `foo.lib`, then `libfoo.lib`.
+`-l:filename` searches for only that filename. All `-L` directories are collected
+before resolving requests, so their position relative to `-l` does not matter.
+There is no implicit cwd, `LIB`, `LIBRARY_PATH`, SDK, or system-directory search;
+pass `-L.` to search cwd. Response files support quoted paths and directories
+containing spaces.
 
 Explicit objects are always loaded. Libraries are searched in command-line
 order and supply whole object members on demand; unused members do not become
-managed roots or contribute linker directives. A selected member's dependencies
-search its own library first, then following libraries, then wrap to earlier
+managed roots. Embedded linker directives are ignored in selected members too.
+A selected member's dependencies search its own library first, then following
+libraries, then wrap to earlier
 libraries. Libraries can thus have transitive and cyclic dependencies without
 requiring repeated arguments. A selected member is loaded only once.
 
@@ -210,14 +238,16 @@ Already-loaded definitions take precedence. A common definition does not force
 extraction of a strong archive definition; if that member is selected for
 another symbol, its strong definition replaces compatible common storage.
 The normal COMDAT, duplicate-definition and metadata checks apply to selected
-members. Archive selection and `/opt:ref` stripping are separate: unresolved
+members. Archive selection and `--gc-sections` stripping are separate: unresolved
 managed globals in a selected object can still fail even in dead COMDATs.
 Discarded data-address relocations do not select members.
 
-Archive entry/include roots can use exact COFF symbols. The convenient global
+Archive entry/undefined roots can use exact COFF symbols. The convenient global
 metadata-name fallback works for loaded objects; chilink does not open every
 unused member to discover metadata-name aliases. Microsoft archives must have
-the supported second linker-member symbol index.
+the supported second linker-member symbol index. Accepting `.a` filenames does
+not add support for arbitrary GNU archive indexes, ELF members or direct DLL
+linking. This is an ld-like CLI, not a full GNU ld implementation.
 
 ### Native import libraries
 
@@ -246,7 +276,7 @@ For example, compile a declaration/call of `GetCurrentProcessId` into `process.o
 and supply the Windows SDK import library:
 
 ```powershell
-chilink /entry:main /out:process.exe process.obj kernel32.lib
+chilink -e main -o process.exe process.obj -L .\libs -lkernel32
 ```
 
 For native function addresses, compile with `-fnetcore -fuco-entrypoints`.
@@ -265,7 +295,7 @@ startup and its `__CxxPureMSILEntry` reference, which chibil supplies for C `mai
 ```powershell
 dotnet build .\crt\crt.csproj -f net10.0
 dotnet run --project .\tools\asm2obj\Asm2Obj.csproj -- .\crt\bin\Debug\net10.0\crt.dll --machine x64 -o crt.obj
-chilink /entry:main /out:process.dll process.obj crt.obj kernel32.lib
+chilink -e main -o process.dll process.obj crt.obj -L .\libs -lkernel32
 ```
 
 The resolver is needed only for retained native-address slots; direct calls and
@@ -276,15 +306,16 @@ The existing module-initializer conflict rule also applies to native-address
 initialization.
 
 EXE entrypoints must be static, non-generic methods returning `void` or `int`,
-with no parameters or one `string[]` parameter. Without `/entry`, the console
+with no parameters or one `string[]` parameter. Without `--entry`, the managed
 startup symbol is `mainCRTStartup`; chilink does not synthesize a CRT. The
 repository's asm2obj-converted CRT supplies this startup method.
 
-Unlike link.exe, `/dll` alone implies `/noentry`: chilink never tries to link
-native `_DllMainCRTStartup`. `/dll` cannot be combined with `/entry`.
+`-shared` produces a managed library without an entry: chilink never tries to link
+native `_DllMainCRTStartup`. It cannot be combined with `--entry`.
 Public managed types remain assembly roots in both EXEs and DLLs.
-Unreferenced global C functions in individual COMDATs can disappear from a DLL;
-use `/include:` or `/opt:noref` when they must remain available through reflection.
+With `--gc-sections`, unreferenced global C functions in individual COMDATs can
+disappear from a library; use `--undefined` roots or `--no-gc-sections` when they
+must remain available through reflection.
 
 ## Supported boundary
 
@@ -435,9 +466,9 @@ resolver with the actual native export address. Unresolved UCO-address reference
 still fail, and ordinary ADDR64 relocations to method bodies remain unsupported.
 
 UCO methods remain token-resolvable but are excluded from chilink's COFF-name
-index. `/entry:main` therefore selects the ordinary implementation, not its
-wrapper. `/include:main` can also select that implementation by metadata name;
-to retain the wrapper explicitly, use `/include:__uco@main`. Ordinary
+index. `--entry=main` therefore selects the ordinary implementation, not its
+wrapper. `--undefined=main` can also select that implementation by metadata name;
+to retain the wrapper explicitly, use `--undefined=__uco@main`. Ordinary
 metadata-name lookup and entrypoint validation are unchanged.
 
 The mode encodes `_Bool` as `System.Byte` throughout metadata while preserving
@@ -450,17 +481,24 @@ native code or native exports, and link.exe
 compatibility for assisted objects is not promised.
 
 ```powershell
-dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-dotnet-windows program.c -o program.dll "-Wl,/entry:main"
+dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-dotnet-windows program.c -o program.dll "-Wl,-e,main"
 ```
 
 As with link.exe, an unresolved managed extern can still be an error when the
-function referencing it would otherwise be discarded by `/opt:ref`. Metadata
+function referencing it would otherwise be discarded by `--gc-sections`. Metadata
 binding and section retention are separate operations.
 
 ## Tests
 
 Tests exercise behavior end to end. `CompilationBuilder.Link` uses the chilink
-driver. `MsvcLink` uses link.exe, including `mscoree.lib`, for excluded features.
+driver with semantic settings; `Chilink` accepts additional native chilink
+arguments for linker-specific tests. `MsvcLink` uses link.exe, including
+`mscoree.lib`, and accepts native MSVC arguments for excluded features.
+Executable helpers default to entry `main` and console behavior; CRT tests use
+`entryPoint: "mainCRTStartup"`. Shared output and output paths use named parameters.
+The runtime-selecting helper takes semantic settings, not raw argument strings.
+There is no link.exe-to-ld argument translator or globally forced section GC.
+Use `Link(gcSections: true)` to opt into section GC for a test.
 Tests using `Link` do not also run `MsvcLink`, and there is no automatic fallback.
 `LinkOnNetCoreOrMsvcLinkOnFramework` selects chilink for modern .NET and link.exe
 for Framework, without retrying a failed link. Native function-pointer tests

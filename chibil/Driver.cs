@@ -22,6 +22,7 @@ public class Driver
     private string _linker;
     private string _optMF, _optMT, _optO;
     private readonly List<string> LdExtraArgs = new();
+    private readonly List<string> LibraryPaths = new();
     private readonly List<string> StdIncludePaths = new();
     private string _outputFile;
     private readonly List<string> InputPaths = new();
@@ -59,7 +60,8 @@ public class Driver
             string input = InputPaths[i];
             if (input.StartsWith("-l"))
             {
-                ldArgs.Add(input);
+                string name = input[2..];
+                ldArgs.Add(UseMsvcLinker ? (name.StartsWith(':') ? name[1..] : name + ".lib") : input);
                 continue;
             }
 
@@ -111,7 +113,7 @@ public class Driver
 
     private bool TakeArg(string arg)
     {
-        string[] x = { "-o", "-I", "-idirafter", "-include", "-x", "-MF", "-MT", "-Xlinker" };
+        string[] x = { "-o", "-I", "-idirafter", "-include", "-x", "-MF", "-MT", "-Xlinker", "-L", "-l" };
         return x.Contains(arg);
     }
 
@@ -187,6 +189,7 @@ public class Driver
             if (arg == "-include") { OptInclude.Add(args[++i]); continue; }
             if (arg == "-x") { _optX = ParseOptX(args[++i]); continue; }
             if (arg.StartsWith("-x")) { _optX = ParseOptX(arg[2..]); continue; }
+            if (arg == "-l") { InputPaths.Add("-l" + args[++i]); continue; }
             if (arg.StartsWith("-l") || arg.StartsWith("-Wl,")) { InputPaths.Add(arg); continue; }
             if (arg == "-Xlinker") { LdExtraArgs.Add(args[++i]); continue; }
             if (arg == "-s") { LdExtraArgs.Add("-s"); continue; }
@@ -207,9 +210,9 @@ public class Driver
             if (arg == "-cc1-output") { _outputFile = args[++i]; continue; }
             if (arg == "-idirafter") { idirafter.Add(args[++i]); continue; }
             if (arg == "-static") { _optStatic = true; LdExtraArgs.Add("-static"); continue; }
-            if (arg == "-shared") { _optShared = true; LdExtraArgs.Add("-shared"); continue; }
-            if (arg == "-L") { LdExtraArgs.Add("-L"); LdExtraArgs.Add(args[++i]); continue; }
-            if (arg.StartsWith("-L")) { LdExtraArgs.Add("-L"); LdExtraArgs.Add(arg[2..]); continue; }
+            if (arg == "-shared") { _optShared = true; continue; }
+            if (arg == "-L") { LibraryPaths.Add(args[++i]); continue; }
+            if (arg.StartsWith("-L")) { LibraryPaths.Add(arg[2..]); continue; }
             if (arg == "-hashmap-test") { Console.WriteLine("OK"); Environment.Exit(0); }
             // Ignored options
             if (arg.StartsWith("-O") || arg.StartsWith("-W") || arg.StartsWith("-g") || arg.StartsWith("-std=") ||
@@ -394,11 +397,28 @@ public class Driver
         RunSubprocess(new[] { "as", "-c", input, "-o", output });
     }
 
+    private bool UseMsvcLinker =>
+        Path.GetFileNameWithoutExtension(_linker).Equals("link", StringComparison.OrdinalIgnoreCase);
+
     private void RunLinker(List<string> inputs, string output)
     {
-        var arr = new List<string> { _linker, "/DEBUG", "/subsystem:console" };
-        arr.Add($"/out:{output}");
-        arr.Add("mscoree.lib");
+        var arr = new List<string> { _linker };
+        if (UseMsvcLinker)
+        {
+            arr.AddRange(["/DEBUG", "/subsystem:console", $"/out:{output}", "mscoree.lib"]);
+            if (_optShared)
+                arr.Add("/dll");
+            foreach (string directory in LibraryPaths)
+                arr.Add("/libpath:" + directory);
+        }
+        else
+        {
+            arr.AddRange(["-o", output]);
+            if (_optShared)
+                arr.Add("-shared");
+            foreach (string directory in LibraryPaths)
+                arr.AddRange(["-L", directory]);
+        }
         arr.AddRange(LdExtraArgs);
         arr.AddRange(inputs);
         try
