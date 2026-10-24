@@ -25,7 +25,7 @@ dotnet run --project .\chibil\Chibil.csproj -- --target=x86_64-dotnet-windows he
 
 chibil launches the executable named by `-fuse-ld=<name>` (resolved through PATH
 when no path is supplied); it does not discover or install the linker.
-With no target selected, chibil uses link.exe. `chibil` targets select chilink;
+With no target selected, chibil uses link.exe on Windows and chilink on Linux. `chibil` targets select chilink;
 see [target presets](#target-presets) below. Executables named `link` or
 `link.exe` (including full paths, case-insensitively) receive MSVC-style arguments;
 other linker names and custom wrappers receive ld-style arguments.
@@ -43,6 +43,27 @@ require a separately supplied runtimeconfig. The target does not select an
 entry point or provide a CRT automatically. MSVC input
 generation and MSVC-only tests still need Visual Studio.
 
+On Linux, with both tools on PATH, a parameterless `int main(void)` can be built
+using the host defaults:
+
+```sh
+dotnet build chilink/Chilink.csproj
+dotnet build chibil/Chibil.csproj
+export PATH="$PWD/chilink/bin/Debug/net10.0:$PWD/chibil/bin/Debug/net10.0:$PATH"
+Chibil hello.c -o hello.dll -Wl,-e,main
+```
+
+Supply `hello.runtimeconfig.json` before running `dotnet hello.dll`, for example:
+
+```json
+{
+  "runtimeOptions": {
+    "tfm": "net10.0",
+    "framework": { "name": "Microsoft.NETCore.App", "version": "10.0.0" }
+  }
+}
+```
+
 ## Target presets
 
 Chibil accepts `--target=cpu-runtime-os[-abi]` or
@@ -53,14 +74,14 @@ and `msvc` for `netfx`.
 
 | Target | Explicit alias | Linker | C data model |
 | --- | --- | --- | --- |
-| `x86_64-netfx-windows` (default) | `x86_64-netfx-windows-msvc` | `link` | LLP64 |
+| `x86_64-netfx-windows` (Windows default) | `x86_64-netfx-windows-msvc` | `link` | LLP64 |
 | `x86_64-dotnet-windows` | `x86_64-dotnet-windows-chibil` | `chilink` | LLP64 |
 | `x86_64-dotnet-windows-msvc` | None | `link` | LLP64 |
 | `x86_64-netfx-windows-chibil` | None | `chilink` | LLP64 |
-| `x86_64-dotnet-linux` | `x86_64-dotnet-linux-chibil` | `chilink` | Managed LP64 |
+| `x86_64-dotnet-linux` (Linux default) | `x86_64-dotnet-linux-chibil` | `chilink` | Managed LP64 |
 
 Only these lowercase spellings are supported; no new CPUs are enabled.
-The default is fixed, independent of the host OS.
+The default follows the host OS; explicit targets are independent of the host.
 Both `chibil` runtimes enable `-ffixed-address-statics` and
 `-fmanaged-aggregate-fields`. Modern .NET `chibil` also enables
 `-fuco-entrypoints` and `-femulated-varargs`. MSVC presets leave all four
@@ -77,7 +98,8 @@ modern `chibil` plus `-fnetframework` also requires `-fno-uco-entrypoints`.
 Linux requires an effective modern .NET runtime.
 Expert overrides may produce incompatible combinations; changing the linker
 does not change the selected ABI or C layout.
-Without `--target`, existing switches retain their behavior:
+Overrides apply to the host's default preset when `--target` is omitted.
+On Windows, existing switches retain their behavior:
 `-fnetcore` alone does not select `chibil`, and `-fuse-ld=chilink` alone does
 not enable its emission features.
 
@@ -163,6 +185,9 @@ The PDB format remains Portable PDB, not GNU ld's native Windows PDB format.
 Response files preserve Windows backslashes and double-quoted paths,
 including spaces, with nested expansion and cycle detection; this is not a
 complete GNU response-file lexer.
+File-path comparisons follow the host: case-insensitive on Windows and
+case-sensitive on Linux, including response-file cycle detection, archive
+deduplication, and output/PDB collision checks.
 
 Object `.drectve` sections are ignored entirely, including embedded
 default-library, entry and root instructions. Supply required libraries and

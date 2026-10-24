@@ -10,6 +10,9 @@ public sealed class LinkException : Exception
 
 internal sealed class LinkOptions
 {
+    internal static readonly StringComparer PathComparer =
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
     public readonly List<LinkInput> Inputs = new();
     public readonly List<string> LibraryPaths = new();
     public readonly List<string> Includes = new();
@@ -32,7 +35,7 @@ public sealed class Driver
         try
         {
             var options = new LinkOptions();
-            if (!Parse(options, Expand(args, new HashSet<string>(StringComparer.OrdinalIgnoreCase)).ToArray()))
+            if (!Parse(options, Expand(args, new HashSet<string>(LinkOptions.PathComparer)).ToArray()))
                 return;
             if (options.Inputs.Count == 0)
                 throw new LinkException("no input object or library files");

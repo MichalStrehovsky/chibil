@@ -356,7 +356,7 @@ public sealed class ChilinkCommandLineTests : ChibiTestBase
             _ => [mode],
         };
 
-        var result = await RunTool(builder, "Chibil.exe", [
+        var result = await RunTool(builder, "Chibil", [
             CompilationBuilder.DefaultNetCore ? "--target=x86_64-dotnet-windows" :
                 "--target=x86_64-netfx-windows-chibil",
             source, "-o", output, "-Wl,-e,main", "-###", .. options,
@@ -388,7 +388,7 @@ public sealed class ChilinkCommandLineTests : ChibiTestBase
         string[] library = separated
             ? ["-L", builder._tempDir, "-l", "native"] : ["-L" + builder._tempDir, "-lnative"];
 
-        var result = await RunTool(builder, "Chibil.exe", [
+        var result = await RunTool(builder, "Chibil", [
             msvc ? "-fuse-ld=LINK.EXE" : "--target=x86_64-netfx-windows-chibil",
             source, "-o", output, .. library, msvc ? "-Wl,/entry:main" : "-Wl,-e,main", "-###",
         ]);
@@ -405,7 +405,7 @@ public sealed class ChilinkCommandLineTests : ChibiTestBase
         string source = Path.Combine(builder._tempDir, "helper.c");
         string output = Path.Combine(builder._tempDir, "library.dll");
         File.WriteAllText(source, "int helper(void) { return 42; }");
-        var result = await RunTool(builder, "Chibil.exe", [
+        var result = await RunTool(builder, "Chibil", [
             CompilationBuilder.DefaultNetCore ? "--target=x86_64-dotnet-windows" :
                 "--target=x86_64-netfx-windows-chibil",
             source, "-shared", "-o", output, "-Wl,--gc-sections,--undefined=?helper@@$$J0YAHXZ",
@@ -423,7 +423,7 @@ public sealed class ChilinkCommandLineTests : ChibiTestBase
 
     internal static Task<(int ExitCode, string Diagnostics)> RunDriver(
         CompilationBuilder builder, string[] args, string libraryEnvironment = null)
-        => RunTool(builder, "chilink.exe", args, libraryEnvironment);
+        => RunTool(builder, "chilink", args, libraryEnvironment);
 
     private static async Task<(int ExitCode, string Diagnostics)> RunTool(
         CompilationBuilder builder, string tool, string[] args, string libraryEnvironment = null)

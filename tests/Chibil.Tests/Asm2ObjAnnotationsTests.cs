@@ -35,6 +35,7 @@ public class Asm2ObjAnnotationsTests : ChibiTestBase
     [Fact]
     public void EndToEndInteropAllAttributes()
     {
+        // The C# fixture encodes C long as a 32-bit integer.
         Compile("""
             // ── Direction 1: C bodies that the C# fixture calls into via ForwardRef.
 
@@ -63,7 +64,7 @@ public class Asm2ObjAnnotationsTests : ChibiTestBase
             int call_cs_charptr_strlen(const char* s) { return cs_charptr_strlen(s); }
             long call_cs_long_negate(long x) { return cs_long_negate(x); }
             int call_cs_stdcall_triple(int x) { return cs_stdcall_triple(x); }
-            """)
+            """, ["--target=x86_64-netfx-windows"])
         .AddAsm2ObjAssembly("Asm2ObjAssembly.dll")
         .Link(entryPoint: "mainCRTStartup")
         // Expected checksum computed in Cases.mainCRTStartup:

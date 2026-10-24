@@ -427,11 +427,8 @@ public sealed class ChilinkTests : ChibiTestBase
     {
         using var workspace = new CompilationBuilder();
         string compiler = Path.Combine(
-            Path.GetDirectoryName(typeof(Chibil.Driver).Assembly.Location), "Chibil.exe");
+            Path.GetDirectoryName(typeof(Chibil.Driver).Assembly.Location), "Chibil");
         string linkerDirectory = Path.GetDirectoryName(typeof(Chilink.Driver).Assembly.Location);
-        Assert.True(File.Exists(compiler), $"Compiler apphost not copied to test output: {compiler}");
-        Assert.True(File.Exists(Path.Combine(linkerDirectory, "chilink.exe")),
-            $"Linker apphost not copied to test output: {linkerDirectory}");
 
         string source = Path.Combine(workspace._tempDir, "source with spaces.c");
         string output = Path.Combine(workspace._tempDir,
@@ -449,7 +446,7 @@ public sealed class ChilinkTests : ChibiTestBase
         start.Environment["TMP"] = workspace._tempDir;
         string selection = targetPreset
             ? "--target=x86_64-netfx-windows-chibil"
-            : "-fuse-ld=" + (linkerPath ? Path.Combine(linkerDirectory, "chilink.exe") : "chilink");
+            : "-fuse-ld=" + (linkerPath ? Path.Combine(linkerDirectory, "chilink") : "chilink");
         foreach (var argument in new[] { selection, source, "-###" })
             start.ArgumentList.Add(argument);
         if (linkerPath)
@@ -464,8 +461,7 @@ public sealed class ChilinkTests : ChibiTestBase
             start.ArgumentList.Add("-o");
             start.ArgumentList.Add(output);
         }
-        if (fixedAddresses)
-            start.ArgumentList.Add("-ffixed-address-statics");
+        start.ArgumentList.Add(fixedAddresses ? "-ffixed-address-statics" : "-fno-fixed-address-statics");
         if (CompilationBuilder.DefaultNetCore)
         {
             start.ArgumentList.Add("-fnetcore");

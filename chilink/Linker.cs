@@ -28,7 +28,7 @@ internal sealed partial class Linker
     {
         try
         {
-            var resolvedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var resolvedPaths = new HashSet<string>(LinkOptions.PathComparer);
             foreach (LinkInput input in _options.Inputs)
             {
                 string resolved = input.SearchLibrary ? ResolveLibraryPath(input.Name) : Path.GetFullPath(input.Name);
@@ -39,7 +39,7 @@ internal sealed partial class Linker
                 resolvedPaths.Add(resolved);
                 if (library)
                 {
-                    if (!_libraries.Any(l => l.Path.Equals(resolved, StringComparison.OrdinalIgnoreCase)))
+                    if (!_libraries.Any(l => LinkOptions.PathComparer.Equals(l.Path, resolved)))
                         _libraries.Add(new InputLibrary(resolved));
                 }
                 else
@@ -55,9 +55,9 @@ internal sealed partial class Linker
                 {
                     _options.Pdb = Path.GetFullPath(string.IsNullOrEmpty(_options.Pdb)
                         ? Path.ChangeExtension(_options.Output, ".pdb") : _options.Pdb);
-                    if (_options.Pdb.Equals(Path.GetFullPath(_options.Output), StringComparison.OrdinalIgnoreCase) ||
+                    if (LinkOptions.PathComparer.Equals(_options.Pdb, Path.GetFullPath(_options.Output)) ||
                         resolvedPaths.Contains(_options.Pdb) ||
-                        _libraries.Any(l => l.Path.Equals(_options.Pdb, StringComparison.OrdinalIgnoreCase)))
+                        _libraries.Any(l => LinkOptions.PathComparer.Equals(l.Path, _options.Pdb)))
                         throw new LinkException("PDB file must not overwrite the output or an input");
                 }
                 if (_inputs.Count == 0)
