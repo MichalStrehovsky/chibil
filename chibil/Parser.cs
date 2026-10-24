@@ -1203,7 +1203,15 @@ public class Parser
             if (Util.Equal(tok.Next, "(")) Util.ErrorTok(tok, "implicit declaration of a function");
             Util.ErrorTok(tok, "undefined variable");
         }
-        if (tok.Kind == TokenKind.Str) { Obj v = NewStringLiteral(tok.Str, tok.Ty); rest = tok.Next; return NewVarNode(v, tok); }
+        if (tok.Kind == TokenKind.Str)
+        {
+            Obj v = NewStringLiteral(tok.Str, tok.Ty);
+            Node node = NewVarNode(v, tok);
+            // Pool storage without replacing the literal expression's element type.
+            node.Ty = tok.Ty;
+            rest = tok.Next;
+            return node;
+        }
         if (tok.Kind == TokenKind.Num)
         {
             Node node;
