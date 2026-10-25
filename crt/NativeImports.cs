@@ -11,6 +11,10 @@ internal static class NativeImports
     [DecoratedName("__chilink_get_native_export")]
     static IntPtr GetNativeExport(string library, string entryPoint)
         => NativeImportCache.GetExport(library, entryPoint);
+
+    [DecoratedName("__chilink_get_native_data_export")]
+    static IntPtr GetNativeDataExport(string library, string entryPoint)
+        => NativeImportCache.GetDataExport(library, entryPoint);
 }
 
 internal static class NativeImportCache
@@ -21,13 +25,29 @@ internal static class NativeImportCache
     {
         lock (Libraries)
         {
-            if (!Libraries.TryGetValue(library, out IntPtr handle))
-            {
-                handle = NativeLibrary.Load(library, typeof(NativeImportCache).Assembly, null);
-                Libraries.Add(library, handle);
-            }
+            return NativeLibrary.GetExport(LoadLibrary(library), entryPoint);
+        }
+    }
+
+    internal static IntPtr GetDataExport(string library, string entryPoint)
+    {
+        lock (Libraries)
+        {
+            IntPtr handle = LoadLibrary(library);
+            if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), entryPoint, out IntPtr address))
+                return address;
             return NativeLibrary.GetExport(handle, entryPoint);
         }
+    }
+
+    private static IntPtr LoadLibrary(string library)
+    {
+        if (!Libraries.TryGetValue(library, out IntPtr handle))
+        {
+            handle = NativeLibrary.Load(library, typeof(NativeImportCache).Assembly, null);
+            Libraries.Add(library, handle);
+        }
+        return handle;
     }
 }
 #endif

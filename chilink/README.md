@@ -336,10 +336,73 @@ Defined global/weak function exports with default or protected visibility can
 provide imports, including GNU indirect functions. Undefined, local, hidden,
 internal, and non-default-only versioned symbols are excluded. Only unversioned
 or default-version exports are matched by plain name; explicit symbol-version
-imports are not supported. Selected data/TLS or other unsupported export kinds
-are errors; unused such exports are harmless. Signatures and calling conventions
+imports are not supported. Data exports of kind `STT_OBJECT` or `STT_COMMON`
+are supported through the protocol below. Selected TLS or other unsupported
+export kinds are errors; unused such exports are harmless. Signatures and calling conventions
 still come from the managed caller, and no native ABI/layout adapters are added.
 ELF export names are exact and do not acquire COFF `__imp_` aliases.
+
+#### Data-export access protocol
+
+With `-ffixed-address-statics`, chibil accesses every C global through
+`ldsflda <field>` followed by the existing indirect load/store operations
+(`ldind.*`, `stind.*`, `ldobj`/`stobj`, or aggregate copies as appropriate).
+The field MemberRef remains the symbol identity in the COFF object. C global
+accesses do not use `ldsfld`, `stsfld`, or `ldtoken` in this mode. Compiler-generated
+function-address slots and linker-generated initializer code are separate from
+this C-global protocol and may still load/store their slot fields directly.
+MSVC-profile defaults and explicit `-fno-fixed-address-statics` retain their
+existing direct scalar loads/stores.
+
+When a field MemberRef resolves to an ELF data import, chilink requires every
+retained code TOKEN relocation for it to be immediately preceded by `ldsflda`
+(`0x7F`). Any other opcode is a link error, for example:
+
+```text
+foo.obj: field 'x' resolves to native data import in 'libc.so.6'; object accesses it with ldsfld (compile with -ffixed-address-statics)
+```
+
+Chilink creates one static native-int `<Module>` field named
+`__chilink_data@<symbol>` per live data import. It rewrites each such access
+to `ldsfld` (`0x7E`) with the slot's FieldDef token. Both instructions occupy
+one opcode byte and four token bytes, so existing IL offsets, branch targets,
+exception regions, max-stack values, and PDB sequence points are unchanged.
+The resulting native-int address replaces a managed byref; this relies on the
+unverifiable pointer IL already used by chibil. No fake accessor methods are
+introduced. Managed field definitions are not rewritten into native imports.
+Binding a method to a data export, or a field to a function export, is an error.
+
+Retained ADDR64 data relocations such as `int *p = &counter;`,
+`int *q = &arr[1];`, and `FILE **pp = &stdout;` use the same address slot,
+including their pointer addends. A data-only reference need not have a field
+MemberRef. Dead COMDAT accesses/initializers do not require live slots or a
+runtime resolver. An opt-out object that only takes the address can satisfy the
+opcode contract; chilink checks the actual instructions, not a compiler flag.
+
+Supply an asm2obj-converted modern-.NET CRT object explicitly. Its
+`__chilink_get_native_data_export` resolver must be a static managed
+`native int(string, string)` method. Without it, a live data import fails with
+`data import 'x' requires a native export resolver`. The Framework CRT does not
+provide this resolver; COFF `IMPORT_OBJECT_DATA`/const imports and ELF TLS remain
+unsupported.
+
+The generated module `.cctor` resolves all data slots before copying global
+initialization data and applying address relocations, and runs before user
+`<Module>` code accesses them. Slots contain the exported storage address,
+not a copy of its contents: for glibc `stdout`, the address identifies the
+native `FILE *` variable, whose value is loaded indirectly.
+An existing input `<Module>..cctor` still conflicts with synthesized initialization.
+
+Data resolution first loads/caches the provider library, then tries
+`NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), symbol)`,
+falling back to that library's handle. On Linux this global-scope lookup honors
+host COPY relocations, so `stdout`, `stderr`, `environ`, and other copied data
+refer to the storage used by the native executable. Function resolution remains
+library-specific. Missing libraries or exports fail explicitly at runtime.
+Libraries remain cached for the lifetime of the linked assembly's resolver.
+The caller remains responsible for native storage layout and ABI compatibility.
+
+#### Library identity and linker scripts
 
 `DT_SONAME`, when present, supplies the library name for both P/Invoke methods
 and native-address resolution. Without SONAME, `-lfoo` records `libfoo.so` and
@@ -486,6 +549,8 @@ must remain available through reflection.
   `-fnetcore -fuco-entrypoints` mode. The compiler replaces native IJW thunks
   with IL UCO forwarding methods, and their initialized pointer slots use the
   same managed TOKEN-fixup lowering.
+- ELF OBJECT/COMMON data imports through fixed-address-global access rewriting,
+  with native-address slots initialized by the modern-.NET CRT resolver.
 - Function COMDAT selection and section-granularity stripping. A shared section
   retains all its functions; `-ffunction-sections` permits separate removal.
   Chibil scopes static function metadata names to their translation unit using
@@ -495,12 +560,15 @@ must remain available through reflection.
 - Unused compiler-generated native-entrypoint sidecars are omitted. A retained
   dependency on them is not converted into managed code.
 
-Retained IL sections are copied intact and their COFF TOKEN relocations are
-patched with merged metadata tokens. Method bodies are not decoded or re-encoded;
+Retained IL sections are copied and their COFF TOKEN relocations are
+patched with merged metadata tokens. Native-data accesses additionally replace
+`ldsflda` with the same-width `ldsfld` instruction as described above.
+Method bodies are not decoded or re-encoded;
 method RVAs come from the output section location plus the COFF symbol offset.
 The generated module initializer is appended as a new method. It is emitted only
-when retained globals need copied initialization data; BSS/common globals rely on
-CLR zero initialization. Dead COMDAT initializers do not retain their dependencies.
+when retained globals need copied initialization data, pointer relocations, or
+native-data slots; BSS/common globals themselves rely on CLR zero initialization.
+Dead COMDAT initializers do not retain their dependencies.
 
 Converted fields must carry
 `System.Runtime.CompilerServices.FixedAddressValueTypeAttribute` only when their
@@ -521,6 +589,13 @@ Selecting `-fuse-ld=chilink` does not enable it automatically. Read-only fields
 that retain their RVA storage do not require the attribute, even when their
 addresses are taken.
 
+Fixed-address chibil code takes the address even for a scalar global read/write.
+Consequently, a fixed-address consumer of an unannotated MSVC `/clr` global can
+now fail this validation where a direct value-only load previously linked.
+Keep the definition annotated, or use `-fno-fixed-address-statics` for a
+value-only consumer. Explicit address-taking still requires stable storage.
+Annotations on coalesced managed definitions continue to be retained.
+
 When synthesis is required, an existing `<Module>..cctor` in any input is an
 error; combining module initializers is not implemented. Ordinary named-type
 static constructors are unaffected. RVA conversion on named managed types is
@@ -534,7 +609,7 @@ Overlapping/aliased field storage and incompatible common field sizes are errors
 
 Not supported: native/from-unmanaged vtfixup-associated fields and other vtfixup
 flags, legacy native NEP/UNEP dependencies, native method bodies, default-library
-resolution, `/wholearchive`, ordinal/data imports, input P/Invoke/marshalling
+resolution, `/wholearchive`, ordinal and COFF data/const imports, ELF TLS imports, input P/Invoke/marshalling
 metadata, native exports, native Windows PDBs, manifest resources, security
 metadata, properties/events, bigobj,
 and relocation-overflow encodings. An ordinary call to a framework API does not
@@ -649,9 +724,12 @@ the same plain-name export list on both. `NativeRuntimePath` identifies the
 runtime library when a test needs to remove or replace it. Use
 `NativeWindowsLibrary` for Windows-specific export directives or import-archive
 details and `NativeLinuxLibrary` for ELF-specific filenames, SONAME, visibility,
-or symbol versions. Automated tests do not invoke lib.exe. Managed archive
-extraction is checked manually with libraries containing used, unused, transitive and conflicting
-members, including a resolver supplied as an archive member.
+or symbol versions. Automated tests do not invoke lib.exe. The ELF data tests
+build small managed COFF archives to cover member selection and an archived
+resolver. They also host a linked managed application in a native executable
+with a verified `R_X86_64_COPY` relocation to check global-scope data lookup.
+Broader archive extraction is checked manually with libraries containing
+used, unused, transitive and conflicting members.
 The compilation helper enables `-ffixed-address-statics`; tests for unannotated
 inputs override it with `-fno-fixed-address-statics`.
 Modern-.NET test compilation also enables `-fuco-entrypoints` by default.

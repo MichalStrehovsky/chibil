@@ -13,6 +13,14 @@ internal sealed partial class Linker
     private readonly Dictionary<SourceToken, int> _fieldSizes = new();
     private readonly List<DataRelocation> _dataRelocations = new();
     private readonly HashSet<SourceToken> _addressTakenFields = new();
+    private readonly Dictionary<NativeImport, NativeDataSlot> _dataSlots = new();
+
+    private NativeDataSlot GetDataSlot(NativeImport import)
+    {
+        if (!_dataSlots.TryGetValue(import, out var slot))
+            _dataSlots.Add(import, slot = new(import));
+        return slot;
+    }
 
     private int FieldSize(SourceToken token)
     {
@@ -99,7 +107,9 @@ internal sealed partial class Linker
         foreach (SourceToken token in _addressTakenFields)
             if (_fieldStorage.TryGetValue(token, out var storage) && storage.Convert && !_merger.HasFixedAddress(token))
                 throw _inputs[storage.Definition.Token.Input].Error(
-                    $"address-taken RVA field conversion requires FixedAddressValueTypeAttribute: '{storage.Definition.Symbol.Name}'");
+                    $"address-taken RVA field conversion requires FixedAddressValueTypeAttribute: '{storage.Definition.Symbol.Name}'; " +
+                    "fixed-address chibil code takes global addresses even for scalar loads/stores " +
+                    "(annotate the definition or compile a value-only consumer with -fno-fixed-address-statics)");
     }
 
     private void MarkDataRelocation(InputSection section, Definition[] definitions, CoffRelocation relocation)
@@ -120,20 +130,23 @@ internal sealed partial class Linker
         long addend = BinaryPrimitives.ReadInt64LittleEndian(section.GetData().AsSpan((int)relocation.Offset, PointerSize));
         var symbol = section.Input.Symbols[relocation.Symbol];
         SourceToken target;
+        NativeImport import;
         if (managedSlot)
         {
             if (addend != 0)
                 throw section.Input.Error("nonzero TOKEN relocation addends are not supported");
             target = ResolveManagedVtableTarget(section.Input, symbol);
+            import = _merger.GetImport(target)?.Import;
         }
         else
-            target = ResolveDataTarget(section.Input, symbol);
+            (target, import) = ResolveDataTarget(section.Input, symbol);
         if (_dataRelocations.Any(r => r.Field == owner.Token &&
             r.Offset < relocation.Offset - owners[0].Offset + PointerSize && r.Offset + PointerSize > relocation.Offset - owners[0].Offset))
             throw section.Input.Error($"overlapping data relocations in '{section.Name}'");
-        var import = _merger.GetImport(target)?.Import;
         _dataRelocations.Add(new(owner.Token, (int)relocation.Offset - owners[0].Offset, target, addend, import));
-        if (import == null)
+        if (import?.Kind == NativeImportKind.Data)
+            GetDataSlot(import);
+        else if (import == null)
             Mark(target);
     }
 
@@ -156,7 +169,7 @@ internal sealed partial class Linker
         return token;
     }
 
-    private SourceToken ResolveDataTarget(InputFile input, InputSymbol symbol)
+    private (SourceToken Target, NativeImport Import) ResolveDataTarget(InputFile input, InputSymbol symbol)
     {
         Definition target;
         if (symbol.Section?.Ignored == true || symbol.Section?.IsUnsupportedVtableFixup(symbol.Coff.Value) == true)
@@ -167,8 +180,12 @@ internal sealed partial class Linker
             {
                 if (!_symbols.TryGetValue(symbol.Name, out target))
                 {
-                    if (_nativeImports.ContainsKey(symbol.Name))
+                    if (_nativeImports.TryGetValue(symbol.Name, out var import))
+                    {
+                        if (import.Kind == NativeImportKind.Data)
+                            return (default, import);
                         throw input.Error($"native import address '{symbol.Name}' requires an assisted TOKEN slot");
+                    }
                     if (SelectLibrarySymbol(symbol.Name, input.Library))
                         throw new ArchiveExpansionException();
                     bool native = _inputs.Any(i => i.Symbols.Values.Any(s => s.Name == symbol.Name &&
@@ -189,12 +206,14 @@ internal sealed partial class Linker
         }
         else
             throw input.Error($"data relocation to method '{symbol.Name}' requires a managed vtfixup slot");
-        return token;
+        return (token, null);
     }
 
     private DataInitialization PlanInitialization(BlobBuilder data)
     {
-        var result = new DataInitialization { NativeResolver = _nativeResolver };
+        var result = new DataInitialization { NativeResolver = _nativeResolver, NativeDataResolver = _nativeDataResolver };
+        result.Slots.AddRange(_dataSlots.Values.OrderBy(s => s.Import.Library, StringComparer.Ordinal)
+            .ThenBy(s => s.Import.Symbol, StringComparer.Ordinal));
         foreach (var field in _fieldStorage.Values.Where(f => _live.Contains(f.Token) && f.Convert)
             .OrderBy(f => f.Token.Input).ThenBy(f => MetadataTokens.GetRowNumber(f.Token.Handle)))
         {
@@ -220,6 +239,11 @@ internal sealed partial class Linker
 
 internal sealed record DataRelocation(SourceToken Field, int Offset, SourceToken Target, long Addend, NativeImport Import);
 
+internal sealed record NativeDataSlot(NativeImport Import)
+{
+    public FieldDefinitionHandle Field;
+}
+
 internal sealed record DataCopy(SourceToken Field, int Offset)
 {
     public FieldDefinitionHandle DataField;
@@ -230,8 +254,10 @@ internal sealed class DataInitialization
     public readonly HashSet<SourceToken> Converted = new();
     public readonly List<DataCopy> Copies = new();
     public readonly List<DataRelocation> Relocations = new();
-    public bool HasInitializer => Copies.Count != 0 || Relocations.Count != 0;
+    public readonly List<NativeDataSlot> Slots = new();
+    public bool HasInitializer => Copies.Count != 0 || Relocations.Count != 0 || Slots.Count != 0;
     public SourceToken NativeResolver;
+    public SourceToken NativeDataResolver;
     public int CodeOffset;
     public MethodDefinitionHandle Method;
 
@@ -240,18 +266,30 @@ internal sealed class DataInitialization
         var code = new BlobBuilder();
         var encoder = new InstructionEncoder(code);
         EntityHandle Map(SourceToken token) => (EntityHandle)merger.Map(token.Input, token.Handle);
+        void Offset(long offset)
+        {
+            if (offset == 0)
+                return;
+            encoder.LoadConstantI8(offset);
+            encoder.OpCode(ILOpCode.Conv_i);
+            encoder.OpCode(ILOpCode.Add);
+        }
         void Address(EntityHandle handle, long offset, bool unmanaged)
         {
             encoder.OpCode(handle.Kind == HandleKind.MethodDefinition ? ILOpCode.Ldftn : ILOpCode.Ldsflda);
             encoder.Token(handle);
             if (unmanaged)
                 encoder.OpCode(ILOpCode.Conv_u);
-            if (offset != 0)
-            {
-                encoder.LoadConstantI8(offset);
-                encoder.OpCode(ILOpCode.Conv_i);
-                encoder.OpCode(ILOpCode.Add);
-            }
+            Offset(offset);
+        }
+        var slots = Slots.ToDictionary(s => s.Import);
+        foreach (var slot in Slots)
+        {
+            encoder.LoadString(merger.GetUserString(slot.Import.Library));
+            encoder.LoadString(merger.GetUserString(slot.Import.EntryPoint));
+            encoder.Call((MethodDefinitionHandle)Map(NativeDataResolver));
+            encoder.OpCode(ILOpCode.Stsfld);
+            encoder.Token(slot.Field);
         }
         foreach (var copy in Copies)
         {
@@ -266,9 +304,18 @@ internal sealed class DataInitialization
             Address(Map(relocation.Field), relocation.Offset, unmanaged: false);
             if (relocation.Import != null)
             {
-                encoder.LoadString(merger.GetUserString(relocation.Import.Library));
-                encoder.LoadString(merger.GetUserString(relocation.Import.EntryPoint));
-                encoder.Call((MethodDefinitionHandle)Map(NativeResolver));
+                if (relocation.Import.Kind == NativeImportKind.Data)
+                {
+                    encoder.OpCode(ILOpCode.Ldsfld);
+                    encoder.Token(slots[relocation.Import].Field);
+                }
+                else
+                {
+                    encoder.LoadString(merger.GetUserString(relocation.Import.Library));
+                    encoder.LoadString(merger.GetUserString(relocation.Import.EntryPoint));
+                    encoder.Call((MethodDefinitionHandle)Map(NativeResolver));
+                }
+                Offset(relocation.Addend);
             }
             else
                 Address(Map(relocation.Target), relocation.Addend, unmanaged: true);

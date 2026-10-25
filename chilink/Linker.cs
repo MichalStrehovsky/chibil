@@ -20,7 +20,9 @@ internal sealed partial class Linker
     private readonly Queue<SourceToken> _pending = new();
     private MetadataMerger _merger;
     private SourceToken _nativeResolver;
+    private SourceToken _nativeDataResolver;
     private const string NativeResolverSymbol = "__chilink_get_native_export";
+    private const string NativeDataResolverSymbol = "__chilink_get_native_data_export";
 
     public Linker(LinkOptions options) => _options = options;
 
@@ -94,15 +96,8 @@ internal sealed partial class Linker
                             section.Header.SizeOfRawData > 0)
                             MarkSection(section);
                     DrainPending();
-                    if (_dataRelocations.Any(r => r.Import != null))
-                    {
-                        if (!HasSymbol(NativeResolverSymbol) && SelectLibrarySymbol(NativeResolverSymbol, null))
-                            continue;
-                        _nativeResolver = FindSymbol(NativeResolverSymbol);
-                        ValidateNativeResolver(_nativeResolver);
-                        Mark(_nativeResolver);
-                        DrainPending();
-                    }
+                    if (MarkNativeResolvers())
+                        continue;
                     ValidateFieldAddresses();
                     return Emit(entry);
                 }
@@ -162,7 +157,43 @@ internal sealed partial class Linker
         }
     }
 
-    private void ValidateNativeResolver(SourceToken token)
+    private bool MarkNativeResolvers()
+    {
+        while (true)
+        {
+            bool marked = false;
+            if (_nativeResolver.Handle.IsNil &&
+                _dataRelocations.Any(r => r.Import?.Kind == NativeImportKind.Function))
+            {
+                if (!HasSymbol(NativeResolverSymbol) && SelectLibrarySymbol(NativeResolverSymbol, null))
+                    return true;
+                _nativeResolver = FindSymbol(NativeResolverSymbol);
+                ValidateNativeResolver(_nativeResolver, NativeResolverSymbol);
+                Mark(_nativeResolver);
+                marked = true;
+            }
+            if (_nativeDataResolver.Handle.IsNil && _dataSlots.Count != 0)
+            {
+                if (!HasSymbol(NativeDataResolverSymbol))
+                {
+                    if (SelectLibrarySymbol(NativeDataResolverSymbol, null))
+                        return true;
+                    var import = _dataSlots.Keys.First();
+                    throw new LinkException($"data import '{import.Symbol}' requires a native export resolver " +
+                        $"({NativeDataResolverSymbol}, provider '{import.Library}')");
+                }
+                _nativeDataResolver = FindSymbol(NativeDataResolverSymbol);
+                ValidateNativeResolver(_nativeDataResolver, NativeDataResolverSymbol);
+                Mark(_nativeDataResolver);
+                marked = true;
+            }
+            if (!marked)
+                return false;
+            DrainPending();
+        }
+    }
+
+    private void ValidateNativeResolver(SourceToken token, string symbol)
     {
         if (token.Handle.Kind == HandleKind.MethodDefinition)
         {
@@ -173,7 +204,7 @@ internal sealed partial class Linker
                     0, 2, (byte)SignatureTypeCode.IntPtr, (byte)SignatureTypeCode.String, (byte)SignatureTypeCode.String }))
                 return;
         }
-        throw new LinkException($"{NativeResolverSymbol} must be a static managed method returning native int and accepting (string, string)");
+        throw new LinkException($"{symbol} must be a static managed method returning native int and accepting (string, string)");
     }
 
     private void SelectComdats()
@@ -353,6 +384,18 @@ internal sealed partial class Linker
             if (symbol.Token.Kind != HandleKind.UserString)
             {
                 var token = _merger.Resolve(new SourceToken(section.Input.Index, (EntityHandle)symbol.Token));
+                if (_merger.GetDataImport(token) is { } import)
+                {
+                    if (relocation.Offset == 0 || data[relocation.Offset - 1] != (byte)ILOpCode.Ldsflda)
+                    {
+                        string opcode = relocation.Offset == 0 ? "no preceding opcode" :
+                            ((ILOpCode)data[relocation.Offset - 1]).ToString().ToLowerInvariant();
+                        throw section.Input.Error($"field '{import.Symbol}' resolves to native data import in " +
+                            $"'{import.Library}'; object accesses it with {opcode} (compile with -ffixed-address-statics)");
+                    }
+                    GetDataSlot(import);
+                    continue;
+                }
                 if (token.Handle.Kind == HandleKind.FieldDefinition && relocation.Offset > 0 &&
                     data[relocation.Offset - 1] == (byte)ILOpCode.Ldsflda)
                     _addressTakenFields.Add(token);
@@ -433,7 +476,16 @@ internal sealed partial class Linker
             {
                 CoffRelocation relocation = section.Relocations.GetRelocation(i);
                 Handle token = section.Input.Symbols[relocation.Symbol].Token;
-                int mapped = MetadataTokens.GetToken(_merger.Map(section.Input.Index, token));
+                int mapped;
+                var import = token.Kind == HandleKind.MemberReference
+                    ? _merger.GetDataImport(new(section.Input.Index, (EntityHandle)token)) : null;
+                if (import != null)
+                {
+                    bytes[relocation.Offset - 1] = (byte)ILOpCode.Ldsfld;
+                    mapped = MetadataTokens.GetToken(_dataSlots[import].Field);
+                }
+                else
+                    mapped = MetadataTokens.GetToken(_merger.Map(section.Input.Index, token));
                 BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan((int)relocation.Offset, 4), mapped);
             }
             il.WriteBytes(bytes);

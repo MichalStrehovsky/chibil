@@ -133,14 +133,14 @@ internal sealed class ElfSharedLibrary
         import = null;
         if (!_exports.TryGetValue(symbol, out byte type) || !_selected.Add(symbol))
             return false;
-        if (type is not (2 or 10))
+        if (type is not (1 or 2 or 5 or 10))
             throw Error(type switch
             {
-                1 => $"imported data symbol '{symbol}' is not supported",
                 6 => $"imported TLS symbol '{symbol}' is not supported",
                 _ => $"unsupported ELF export kind {type} for '{symbol}'",
             });
-        import = new(symbol, _library, symbol, _path);
+        import = new(type is 1 or 5 ? NativeImportKind.Data : NativeImportKind.Function,
+            symbol, _library, symbol, _path);
         return true;
     }
 

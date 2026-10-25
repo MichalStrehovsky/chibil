@@ -4,7 +4,9 @@ using System.Reflection.Metadata.Ecma335;
 
 namespace Chilink;
 
-internal sealed record NativeImport(string Symbol, string Library, string EntryPoint, string Source,
+internal enum NativeImportKind { Function, Data }
+
+internal sealed record NativeImport(NativeImportKind Kind, string Symbol, string Library, string EntryPoint, string Source,
     string PointerSymbol = null);
 internal sealed record GlobalReference(SourceToken Token, string Name, string Symbol, BlobHandle Signature, bool Method);
 internal sealed record ImportedMethod(GlobalReference Reference, NativeImport Import, MethodImportAttributes Convention);
@@ -12,9 +14,11 @@ internal sealed record ImportedMethod(GlobalReference Reference, NativeImport Im
 internal sealed partial class MetadataMerger
 {
     private readonly Dictionary<SourceToken, ImportedMethod> _imports = new();
+    private readonly Dictionary<SourceToken, NativeImport> _dataImports = new();
     private readonly Dictionary<NativeImport, string> _importSignatures = new();
 
     public ImportedMethod GetImport(SourceToken token) => _imports.GetValueOrDefault(Resolve(token));
+    public NativeImport GetDataImport(SourceToken token) => _dataImports.GetValueOrDefault(Resolve(token));
 
     public IEnumerable<GlobalReference> GetUnresolvedGlobals()
     {
@@ -29,7 +33,7 @@ internal sealed partial class MetadataMerger
                 if (parent != Module && parent != ModuleType)
                     continue;
                 var resolved = Resolve(token);
-                if (_imports.ContainsKey(resolved) ||
+                if (_imports.ContainsKey(resolved) || _dataImports.ContainsKey(resolved) ||
                     (resolved.Handle.Kind != HandleKind.MemberReference && !IsForwardReference(resolved)))
                     continue;
                 if (resolved.Handle.Kind == HandleKind.MemberReference &&
@@ -132,11 +136,7 @@ internal sealed partial class MetadataMerger
     {
         yield return reference.Symbol;
         if (!reference.Method)
-        {
-            if (!reference.Symbol.StartsWith("__imp_", StringComparison.Ordinal))
-                yield return "__imp_" + reference.Symbol;
             yield break;
-        }
         if (NativeConvention(reference) == null)
             yield break;
         // MSVC decorates a C managed entrypoint even though its native export is bare.
@@ -148,6 +148,15 @@ internal sealed partial class MetadataMerger
 
     public void BindImport(GlobalReference reference, NativeImport import)
     {
+        if (reference.Method != (import.Kind == NativeImportKind.Function))
+            throw Failure(reference.Token, $"{(reference.Method ? "method" : "field")} '{reference.Name}' " +
+                $"cannot bind native {(import.Kind == NativeImportKind.Function ? "function" : "data")} import " +
+                $"'{import.Symbol}' in '{import.Library}': function/data kind mismatch");
+        if (import.Kind == NativeImportKind.Data)
+        {
+            _dataImports.TryAdd(Resolve(reference.Token), import);
+            return;
+        }
         MethodImportAttributes convention = NativeConvention(reference)
             ?? throw Failure(reference.Token, $"import '{import.Symbol}' requires a static nongeneric native-convention method");
         if (reference.Token.Handle.Kind == HandleKind.MethodDefinition)

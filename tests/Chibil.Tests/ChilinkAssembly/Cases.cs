@@ -8,6 +8,14 @@ using Asm2Obj;
 internal static class Cases
 {
     [return: CallConvCdecl]
+    internal static unsafe int managed_mutate_native(int* value)
+    {
+        int previous = *value;
+        *value = previous + 1;
+        return previous;
+    }
+
+    [return: CallConvCdecl]
     internal static int load_global_dll()
     {
         var assembly = Assembly.LoadFile(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "globals.dll"));

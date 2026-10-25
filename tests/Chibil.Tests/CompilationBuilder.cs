@@ -374,7 +374,8 @@ public sealed class LinkResult
     /// <summary>
     /// Run the linked executable and assert that it exits with the expected code.
     /// </summary>
-    public void RunAndCheck(int exitCode, string workingDirectory = null)
+    public void RunAndCheck(int exitCode, string workingDirectory = null,
+        string standardInput = null, string expectedOutput = null)
     {
         if (!_netCore && !OperatingSystem.IsWindows())
             throw Xunit.Sdk.SkipException.ForSkip(".NET Framework execution requires Windows.");
@@ -397,6 +398,7 @@ public sealed class LinkResult
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = standardInput != null,
         };
         if (workingDirectory != null)
             psi.WorkingDirectory = workingDirectory;
@@ -406,6 +408,11 @@ public sealed class LinkResult
         using var proc = Process.Start(psi)!;
         var stderrTask = proc.StandardError.ReadToEndAsync();
         var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        if (standardInput != null)
+        {
+            proc.StandardInput.Write(standardInput);
+            proc.StandardInput.Close();
+        }
         proc.WaitForExit();
         var stderr = stderrTask.Result;
         var stdout = stdoutTask.Result;
@@ -414,6 +421,8 @@ public sealed class LinkResult
         int expectedExitCode = OperatingSystem.IsWindows() ? exitCode : exitCode & 0xff;
         Assert.True(proc.ExitCode == expectedExitCode,
             $"Expected exit code {expectedExitCode} but got {proc.ExitCode}.\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        if (expectedOutput != null)
+            Assert.Equal(expectedOutput, stdout);
     }
 }
 
