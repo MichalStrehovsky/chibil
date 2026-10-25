@@ -675,7 +675,7 @@ public class CodeGen
                     LoadLocalOrParam(node.Var);
                     return;
                 }
-                if (!node.Var.IsLocal && !IsAggregateType(node.Ty))
+                if (!node.Var.IsLocal && !IsAggregateType(node.Ty) && !_emit.Options.OptFixedAddressStatics)
                 {
                     _enc.OpCode(ILOpCode.Ldsfld);
                     _enc.Token(_emit.GetFieldToken(node.Var));
@@ -901,7 +901,8 @@ public class CodeGen
             return;
         }
 
-        if (node.Lhs.Kind == NodeKind.Var && !IsAggregateType(node.Ty))
+        if (node.Lhs.Kind == NodeKind.Var && !IsAggregateType(node.Ty) &&
+            (node.Lhs.Var.IsLocal || !_emit.Options.OptFixedAddressStatics))
         {
             GenExpr(node.Rhs);
             if (wantValue)

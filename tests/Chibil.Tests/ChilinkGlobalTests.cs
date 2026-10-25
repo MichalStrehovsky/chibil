@@ -451,12 +451,23 @@ public sealed class ChilinkGlobalTests : ChibiTestBase
         Assert.Contains("value", error.Message);
     }
 
-    [Fact]
-    public void UnannotatedMsvcValueOnlyGlobalsCanBeConverted()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UnannotatedMsvcValueOnlyGlobalsRequireAnOptOutConsumer(bool fixedAddresses)
     {
-        MsvcCompile("int value = 42;")
-            .Compile("extern int value; int main(void) { return value; }")
-            .Link().RunAndCheck(42);
+        var builder = MsvcCompile("int value = 42;")
+            .Compile("extern int value; int main(void) { return value; }",
+                fixedAddresses ? null : ["-fno-fixed-address-statics"]);
+        if (!fixedAddresses)
+            builder.Link().RunAndCheck(42);
+        else
+        {
+            string error = Assert.Throws<InvalidOperationException>(() => builder.Link()).Message;
+            Assert.Contains("FixedAddressValueTypeAttribute", error);
+            Assert.Contains("scalar loads/stores", error);
+            Assert.Contains("-fno-fixed-address-statics", error);
+        }
     }
 
     [Fact]

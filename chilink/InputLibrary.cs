@@ -93,7 +93,7 @@ internal sealed class InputLibrary : IDisposable
                 if (record.NameType == CoffImportNameType.Ordinal)
                     throw new LinkException($"{path}: ordinal import '{symbol}' is not supported");
                 string name = _strings.GetString(record.SymbolName);
-                import = new(name, _strings.GetString(record.DllName),
+                import = new(NativeImportKind.Function, name, _strings.GetString(record.DllName),
                     _strings.GetString(record.ImportName), path, "__imp_" + name);
                 if (import.Library.Length == 0 || import.EntryPoint.Length == 0)
                     throw new LinkException($"{path}: import DLL and entrypoint names must not be empty");

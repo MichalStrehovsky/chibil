@@ -497,7 +497,7 @@ internal sealed partial class MetadataMerger
                 var reference = _inputs[input].GetMemberReference(handle);
                 SourceToken parent = Resolve(new(input, reference.Parent));
                 var resolved = Resolve(token);
-                if (GetImport(resolved) != null)
+                if (GetImport(resolved) != null || GetDataImport(resolved) != null)
                     continue;
                 if (parent != ModuleType && parent != Module)
                     continue;

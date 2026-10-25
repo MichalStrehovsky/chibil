@@ -96,6 +96,7 @@ internal sealed partial class MetadataMerger
             .OrderBy(p => Reader(p).GetParameter((ParameterHandle)p.Handle).SequenceNumber).ToArray());
         var parameters = methods.SelectMany(t => parametersByMethod[t]).ToArray();
         int syntheticMethods = initialization.HasInitializer ? 1 : 0;
+        int syntheticFields = initialization.Copies.Count + initialization.Slots.Count;
         OutputMethods = [.. Enumerable.Repeat<SourceToken?>(null, syntheticMethods), .. methods.Select(t => (SourceToken?)t)];
         var parameterNames = new Dictionary<SourceToken, string>();
         if (selectedMethod != null)
@@ -108,7 +109,7 @@ internal sealed partial class MetadataMerger
                     }
         Predict(types, TableIndex.TypeDef);
         Predict(incompleteTypes, TableIndex.TypeDef, types.Length);
-        Predict(fields, TableIndex.Field, initialization.Copies.Count);
+        Predict(fields, TableIndex.Field, syntheticFields);
         Predict(methods, TableIndex.MethodDef, syntheticMethods);
         Predict(parameters, TableIndex.Param);
         var simpleTables = new[]
@@ -220,7 +221,7 @@ internal sealed partial class MetadataMerger
             methodRow += methodsByType[token].Length;
             if (token == ModuleType)
             {
-                fieldRow += initialization.Copies.Count;
+                fieldRow += syntheticFields;
                 methodRow += syntheticMethods;
             }
         }
@@ -237,6 +238,14 @@ internal sealed partial class MetadataMerger
                 Reader(t).GetString(Reader(t).GetFieldDefinition((FieldDefinitionHandle)t.Handle).Name))
                 .ToHashSet(StringComparer.Ordinal);
             int suffix = 0;
+            foreach (var slot in initialization.Slots)
+            {
+                string name = "__chilink_data@" + slot.Import.Symbol;
+                if (!names.Add(name))
+                    throw new LinkException($"native data slot name conflicts with an existing field: '{name}'");
+                slot.Field = output.AddFieldDefinition(FieldAttributes.Private | FieldAttributes.Static | FieldAttributes.InitOnly,
+                    output.GetOrAddString(name), output.GetOrAddBlob(new byte[] { 0x06, (byte)SignatureTypeCode.IntPtr }));
+            }
             foreach (var copy in initialization.Copies)
             {
                 string name;

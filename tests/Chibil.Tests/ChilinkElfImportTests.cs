@@ -82,15 +82,13 @@ public sealed class ChilinkElfImportTests
         result.RunAndCheck(42);
     }
 
-    [Theory]
-    [InlineData("int data = 42;", "data")]
-    [InlineData("__thread int data = 42;", "TLS")]
-    public void SelectedDataImportsFail(string provider, string diagnostic)
+    [Fact]
+    public void SelectedTlsImportsFail()
     {
         using var builder = new CompilationBuilder(true);
         builder.Compile("extern int data; int main(void) { return data; }")
-            .NativeLinuxLibrary(provider);
-        Assert.Contains(diagnostic, Assert.Throws<InvalidOperationException>(() => builder.Link()).Message);
+            .NativeLinuxLibrary("__thread int data = 42;");
+        Assert.Contains("TLS", Assert.Throws<InvalidOperationException>(() => builder.Link()).Message);
         Assert.False(File.Exists(Path.Combine(builder._tempDir, "output.dll")));
     }
 

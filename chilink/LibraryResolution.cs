@@ -125,7 +125,9 @@ internal sealed partial class Linker
         _fieldSizes.Clear();
         _dataRelocations.Clear();
         _addressTakenFields.Clear();
+        _dataSlots.Clear();
         _nativeResolver = default;
+        _nativeDataResolver = default;
         foreach (InputSection section in _inputs.SelectMany(i => i.Sections))
         {
             section.Winner = section;
