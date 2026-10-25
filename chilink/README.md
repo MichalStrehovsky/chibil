@@ -164,7 +164,7 @@ explicitly with `-I`/`-idirafter`. There is no SDK or sysroot discovery.
 | `--gc-sections`, `--no-gc-sections` | Remove unreferenced COMDATs, or retain them; disabled by default. |
 | `-u symbol`, `--undefined=symbol` | Retain a managed symbol and its dependencies. |
 | `-L directory`, `--library-path=directory` | Add a library search directory; repeat for additional directories. |
-| `-l name`, `--library=name` | Search for a supported archive by name; `-l:filename` selects an exact filename. |
+| `-l name`, `--library=name` | Search for an archive or ELF import provider by name; `-l:filename` selects an exact filename. |
 | `--help` | Print usage without requiring inputs. |
 | `--` | End option parsing. |
 | `@file` | Read arguments from a response file, including quoted paths. |
@@ -243,13 +243,32 @@ initializer dependency. Ignoring `.drectve` does not implement native initializa
 ### Libraries
 
 Positional paths are opened as given, relative to the working directory when
-not absolute. `-lfoo` searches each explicit `-L` directory in argument order
-for `libfoo.dll.a`, `foo.dll.a`, `libfoo.a`, `foo.lib`, then `libfoo.lib`.
+not absolute. On Windows, `-lfoo` searches each explicit `-L` directory in argument
+order for `libfoo.dll.a`, `foo.dll.a`, `libfoo.a`, `foo.lib`, then `libfoo.lib`.
+On Linux, the filename order is `libfoo.so`, `libfoo.a`, `libfoo.dll.a`,
+`foo.dll.a`, `foo.lib`, then `libfoo.lib`. Directory order takes precedence
+over filename order.
 `-l:filename` searches for only that filename. All `-L` directories are collected
 before resolving requests, so their position relative to `-l` does not matter.
-There is no implicit cwd, `LIB`, `LIBRARY_PATH`, SDK, or system-directory search;
-pass `-L.` to search cwd. Response files support quoted paths and directories
-containing spaces.
+On Linux, explicit directories are followed by these built-in x64 directories:
+
+```text
+/usr/local/lib/x86_64-linux-gnu
+/lib/x86_64-linux-gnu
+/usr/lib/x86_64-linux-gnu
+/usr/local/lib64
+/lib64
+/usr/lib64
+/usr/local/lib
+/lib
+/usr/lib
+```
+
+These are conventional defaults, not a query of the installed linker or its
+configuration. Other hosts retain explicit-only discovery. There is no implicit
+cwd, `LIB`, `LIBRARY_PATH`, SDK, or runtime-loader-cache search; pass `-L.` to
+search cwd. Response files support quoted paths and directories containing
+spaces. No sysroot, rpath options, or highest-version `.so.N` probing is provided.
 
 Explicit objects are always loaded. Libraries are searched in command-line
 order and supply whole object members on demand; unused members do not become
@@ -303,6 +322,100 @@ and supply the Windows SDK import library:
 ```powershell
 chilink -e main -o process.exe process.obj -L .\libs -lkernel32
 ```
+
+### ELF shared libraries
+
+An ELF shared library is itself the native import provider; no separate import
+archive is needed. Both `.so` and versioned `.so.N` positional paths are accepted
+by chilink and the compiler driver. Inputs must be little-endian x86-64 ELF64
+shared objects with section tables. Ordinary stripped libraries work, but
+section-header-free libraries, extended section indexes, PIE executables, and
+native ELF object/archive linking are not supported.
+
+Defined global/weak function exports with default or protected visibility can
+provide imports, including GNU indirect functions. Undefined, local, hidden,
+internal, and non-default-only versioned symbols are excluded. Only unversioned
+or default-version exports are matched by plain name; explicit symbol-version
+imports are not supported. Selected data/TLS or other unsupported export kinds
+are errors; unused such exports are harmless. Signatures and calling conventions
+still come from the managed caller, and no native ABI/layout adapters are added.
+ELF export names are exact and do not acquire COFF `__imp_` aliases.
+
+`DT_SONAME`, when present, supplies the library name for both P/Invoke methods
+and native-address resolution. Without SONAME, `-lfoo` records `libfoo.so` and
+`-l:filename` records the searched filename. A positional input instead retains
+its supplied path, including relative directories or an absolute path, matching
+GNU ld's fallback. Repeated references to the same resolved input use the first
+input's identity. Filesystem symlinks do not replace that identity with their
+target filename.
+
+The limited GNU linker-script subset used by glibc's `libc.so` and `libm.so`
+is supported, so `-lc -lm` can select their actual shared libraries. Supported
+commands are `INPUT(...)`, `GROUP(...)`, and `OUTPUT_FORMAT(...)`,
+with nested `AS_NEEDED(...)` input lists. C-style comments, double-quoted
+filenames, whitespace/comma-separated lists, and command-ending semicolons
+are accepted. For example:
+
+```text
+OUTPUT_FORMAT(elf64-x86-64)
+GROUP ( libc.so.6 libc_nonshared.a AS_NEEDED ( ld-linux-x86-64.so.2 ) )
+```
+
+`INPUT`, `GROUP`, and `AS_NEEDED` contribute ordered import providers; only
+selected exports become runtime imports. They do not introduce native ELF
+output, native archive rescanning, or `DT_NEEDED` retention semantics.
+Script references ending in `.a` are skipped with a warning, without inspecting
+their members. Symbols available only in those archives remain unresolved;
+chilink cannot convert native static code to IL. Explicit command-line archives
+still use normal COFF archive handling.
+
+Absolute script filenames are opened directly. Other filenames are searched
+first relative to the script, then cwd, then explicit `-L` and built-in
+directories. Script `-lname`/`-l:filename` references use the normal library
+search paths. Referenced scripts are expanded in place, with cycle and nesting
+checks. Missing inputs, malformed syntax, and unsupported commands are errors,
+even for unused providers. `INCLUDE`, `SEARCH_DIR`, `SECTIONS`, symbol
+assignments and sysroot paths are not supported. `OUTPUT_FORMAT` arguments
+are ignored; the ELF reader still validates each library's actual format and
+target. The directive does not change chilink's managed PE output.
+
+Runtime identities come from the referenced ELF libraries, never the script.
+SONAME takes precedence; without it, script file references use their resolved
+absolute path and script `-l` references use the searched filename. Explicit
+`-l:libc.so.6`/`-l:libm.so.6` remain available to bypass scripts. Dependencies
+named by `DT_NEEDED` are not scanned for additional import providers.
+
+The linker reads ELF metadata without loading or executing the native library.
+It still emits a managed PE assembly, not ELF. `-L` affects link-time discovery
+only: it neither deploys libraries nor configures runtime loading. Deploy the
+native library under its runtime identity where .NET/the OS loader can find it.
+
+For example, create `native.c` and `main.c`:
+
+```c
+/* native.c */
+int answer(void) { return 42; }
+```
+
+```c
+/* main.c */
+int answer(void);
+int main(void) { return answer(); }
+```
+
+Then build and run on Linux with .NET 10 and a native C compiler:
+
+```sh
+cc -shared -fPIC native.c -Wl,-soname,libanswer.so.1 -o libanswer.so.1
+ln -s libanswer.so.1 libanswer.so
+dotnet run --project chibil/Chibil.csproj -- --target=x86_64-dotnet-linux -c main.c -o main.obj
+dotnet run --project chilink/Chilink.csproj -- -e main -o answer.dll main.obj -L. -lanswer
+printf '%s\n' '{"runtimeOptions":{"tfm":"net10.0","framework":{"name":"Microsoft.NETCore.App","version":"10.0.0"}}}' > answer.runtimeconfig.json
+dotnet answer.dll
+echo $? # 42
+```
+
+### Native function addresses
 
 For native function addresses, compile with `-fnetcore -fuco-entrypoints`.
 Retained deferred slots are initialized with actual native export addresses,
@@ -530,9 +643,14 @@ for Framework, without retrying a failed link. Native function-pointer tests
 use this helper when Framework still needs IJW; cases supported on both targets
 use `Link` directly. New coverage prefers compile/link/run behavior over
 generated IL or metadata assertions.
-Native-import fixtures use cl.exe/link.exe to produce their DLL/import library;
-automated tests do not invoke lib.exe. Managed archive extraction is checked
-manually with libraries containing used, unused, transitive and conflicting
+Shared native-import coverage uses `NativeLibrary(source, exports)`, which
+selects cl.exe/link.exe on Windows and `cc -shared -fPIC` on Linux, honoring
+the same plain-name export list on both. `NativeRuntimePath` identifies the
+runtime library when a test needs to remove or replace it. Use
+`NativeWindowsLibrary` for Windows-specific export directives or import-archive
+details and `NativeLinuxLibrary` for ELF-specific filenames, SONAME, visibility,
+or symbol versions. Automated tests do not invoke lib.exe. Managed archive
+extraction is checked manually with libraries containing used, unused, transitive and conflicting
 members, including a resolver supplied as an archive member.
 The compilation helper enables `-ffixed-address-statics`; tests for unannotated
 inputs override it with `-fno-fixed-address-statics`.
@@ -540,7 +658,12 @@ Modern-.NET test compilation also enables `-fuco-entrypoints` by default.
 Disabled-mode and genuinely legacy fixtures explicitly override it with
 `-fno-uco-entrypoints`.
 
-Run `tests\Chibil.Tests\Chibil.Tests.csproj` in a vcvarsall x64 environment,
+On Linux, run `dotnet test tests/Chibil.Tests/Chibil.Tests.csproj` with .NET 10
+and `cc` available. Modern-.NET tests are selected automatically; Windows-only
+fixtures are skipped. Default, field-backed aggregate, and optimized
+configurations run in Linux CI.
+
+On Windows, run `tests\Chibil.Tests\Chibil.Tests.csproj` in a vcvarsall x64 environment,
 locating Visual Studio with vswhere. The existing default, field-backed
 aggregate and optimized configurations cover both supported chilink cases and
 the retained MSVC cases:

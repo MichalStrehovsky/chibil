@@ -32,12 +32,13 @@ public sealed class ChilinkLibraryTests : ChibiTestBase
             .NativeLibrary("int target(void) { return 42; }", "target");
         string directory = Path.Combine(builder._tempDir, "libraries with spaces");
         Directory.CreateDirectory(directory);
-        File.Move(builder._objFiles[1], Path.Combine(directory, "native.lib"));
+        string filename = Path.GetFileName(builder._objFiles[1]);
+        File.Move(builder._objFiles[1], Path.Combine(directory, filename));
         string output = Path.Combine(builder._tempDir, "output.dll");
         string response = Path.Combine(builder._tempDir, "arguments.rsp");
         File.WriteAllText(response, $"""
             --entry=main --output="{output}"
-            "{builder._objFiles[0]}" -l:native.lib
+            "{builder._objFiles[0]}" -l:{filename}
             -L "{directory}"
             """);
         var result = await ChilinkCommandLineTests.RunDriver(builder, ["@" + response]);

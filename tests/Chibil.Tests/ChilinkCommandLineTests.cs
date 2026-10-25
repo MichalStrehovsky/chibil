@@ -6,6 +6,17 @@ namespace Chibil.Tests;
 
 public sealed class ChilinkCommandLineTests : ChibiTestBase
 {
+    [Fact]
+    public void ObjectNamesContainingSoRemainManagedObjects()
+    {
+        using var builder = new CompilationBuilder(true);
+        builder.Compile("int main(void) { return 42; }");
+        string path = Path.Combine(builder._tempDir, "module.so.named.obj");
+        File.Move(builder._objFiles[0], path);
+        builder._objFiles[0] = path;
+        builder.Link().RunAndCheck(42);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
@@ -144,7 +155,7 @@ public sealed class ChilinkCommandLineTests : ChibiTestBase
     {
         using var builder = new CompilationBuilder(true);
         builder.Compile("int target(void); int main(void) { return target(); }")
-            .NativeLibrary("int target(void) { return 42; }", "target");
+            .NativeWindowsLibrary("int target(void) { return 42; }", "target");
         string directory = Path.Combine(builder._tempDir, "libraries with spaces");
         Directory.CreateDirectory(directory);
         File.Move(builder._objFiles[1], Path.Combine(directory, filename));
@@ -171,8 +182,8 @@ public sealed class ChilinkCommandLineTests : ChibiTestBase
     {
         using var builder = new CompilationBuilder(true);
         builder.Compile("int target(void); int main(void) { return target(); }")
-            .NativeLibrary("int target(void) { return 42; }", "target", "winning.dll", "winning.lib")
-            .NativeLibrary("int target(void) { return 17; }", "target", "losing.dll", "losing.lib");
+            .NativeWindowsLibrary("int target(void) { return 42; }", "target", "winning.dll", "winning.lib")
+            .NativeWindowsLibrary("int target(void) { return 17; }", "target", "losing.dll", "losing.lib");
         string first = Path.Combine(builder._tempDir, "first");
         string second = Path.Combine(builder._tempDir, "second");
         Directory.CreateDirectory(first);
@@ -381,7 +392,7 @@ public sealed class ChilinkCommandLineTests : ChibiTestBase
     public async Task CompilerLibraryOptionsWorkWithBothLinkers(bool msvc, bool separated)
     {
         using var builder = new CompilationBuilder(false);
-        builder.NativeLibrary("int target(void) { return 42; }", "target");
+        builder.NativeWindowsLibrary("int target(void) { return 42; }", "target");
         string source = Path.Combine(builder._tempDir, "source with spaces.c");
         string output = Path.Combine(builder._tempDir, "program with spaces.exe");
         File.WriteAllText(source, "int target(void); int main(void) { return target(); }");
@@ -426,7 +437,7 @@ public sealed class ChilinkCommandLineTests : ChibiTestBase
         CompilationBuilder builder, string[] args, string libraryEnvironment = null)
         => RunTool(builder, "chilink", args, libraryEnvironment);
 
-    private static async Task<(int ExitCode, string Diagnostics)> RunTool(
+    internal static async Task<(int ExitCode, string Diagnostics)> RunTool(
         CompilationBuilder builder, string tool, string[] args, string libraryEnvironment = null)
     {
         string tools = Path.GetDirectoryName(typeof(Chilink.Driver).Assembly.Location);

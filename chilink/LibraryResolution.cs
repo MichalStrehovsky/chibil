@@ -9,21 +9,108 @@ internal sealed partial class Linker
 
     private readonly List<InputLibrary> _libraries = new();
     private readonly Dictionary<string, NativeImport> _nativeImports = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _libraryWarnings = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _expandedScripts = new(LinkOptions.PathComparer);
 
-    private string ResolveLibraryPath(string name)
+    private static readonly string[] LinuxLibraryPaths =
+    [
+        "/usr/local/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu",
+        "/usr/local/lib64", "/lib64", "/usr/lib64", "/usr/local/lib", "/lib", "/usr/lib",
+    ];
+
+    private (string Path, string RuntimeName) ResolveLibraryPath(string name)
     {
         string[] filenames = name.StartsWith(':') ? [name[1..]] :
+            OperatingSystem.IsLinux() ?
+            [$"lib{name}.so", $"lib{name}.a", $"lib{name}.dll.a", $"{name}.dll.a", $"{name}.lib", $"lib{name}.lib"] :
             [$"lib{name}.dll.a", $"{name}.dll.a", $"lib{name}.a", $"{name}.lib", $"lib{name}.lib"];
-        foreach (string directory in _options.LibraryPaths)
+        var directories = _options.LibraryPaths.Concat(OperatingSystem.IsLinux() ? LinuxLibraryPaths : []);
+        foreach (string directory in directories)
         {
             foreach (string filename in filenames)
             {
                 string candidate = Path.GetFullPath(Path.Combine(directory, filename));
                 if (File.Exists(candidate))
-                    return candidate;
+                    return (candidate, filename);
             }
         }
-        throw new LinkException($"cannot find library '{name}' in the -L search directories");
+        throw new LinkException($"cannot find library '{name}' in the " +
+            (OperatingSystem.IsLinux() ? "-L or built-in Linux search directories" : "-L search directories"));
+    }
+
+    private (string Path, string RuntimeName) ResolveScriptInput(string script, string name)
+    {
+        if (name.StartsWith('=') || name.StartsWith("$SYSROOT", StringComparison.Ordinal))
+            throw new LinkException($"{script}: linker script: sysroot paths are not supported ('{name}')");
+        if (name.StartsWith("-l", StringComparison.Ordinal) && name.Length > 2)
+        {
+            try
+            {
+                return ResolveLibraryPath(name[2..]);
+            }
+            catch (LinkException ex)
+            {
+                throw new LinkException($"{script}: linker script: {ex.Message}");
+            }
+        }
+        if (name.StartsWith('-'))
+            throw new LinkException($"{script}: linker script: unsupported input option '{name}'");
+        if (Path.IsPathRooted(name))
+        {
+            if (File.Exists(name))
+                return (Path.GetFullPath(name), name);
+        }
+        else
+        {
+            var directories = new[] { Path.GetDirectoryName(script), Directory.GetCurrentDirectory() }
+                .Concat(_options.LibraryPaths).Concat(OperatingSystem.IsLinux() ? LinuxLibraryPaths : []);
+            foreach (string directory in directories)
+            {
+                string candidate = Path.GetFullPath(Path.Combine(directory, name));
+                if (File.Exists(candidate))
+                    return (candidate, candidate);
+            }
+        }
+        throw new LinkException($"{script}: linker script: cannot find input '{name}'");
+    }
+
+    private void AddLibrary(string path, string runtimeName, HashSet<string> resolvedPaths,
+        HashSet<string> activeScripts)
+    {
+        if (activeScripts.Contains(path))
+            throw new LinkException($"{path}: linker script cycle detected");
+        resolvedPaths.Add(path);
+        if (_expandedScripts.Contains(path) || _libraries.Any(l => LinkOptions.PathComparer.Equals(l.Path, path)))
+            return;
+        var library = new InputLibrary(path, runtimeName);
+        if (library.ScriptInputs is { } inputs)
+        {
+            if (activeScripts.Count >= 64)
+                throw new LinkException($"{path}: linker script nesting limit exceeded");
+            activeScripts.Add(path);
+            try
+            {
+                foreach (string name in inputs)
+                {
+                    var (resolved, identity) = ResolveScriptInput(path, name);
+                    if (Path.GetExtension(resolved).Equals(".a", StringComparison.OrdinalIgnoreCase))
+                    {
+                        resolvedPaths.Add(resolved);
+                        _libraryWarnings.Add($"{path}: ignoring linker-script static archive '{resolved}'; " +
+                            "native static linking is not supported");
+                    }
+                    else
+                        AddLibrary(resolved, identity, resolvedPaths, activeScripts);
+                }
+                _expandedScripts.Add(path);
+            }
+            finally
+            {
+                activeScripts.Remove(path);
+            }
+        }
+        else
+            _libraries.Add(library);
     }
 
     private void AddInput(InputFile input) => _inputs.Add(input);
@@ -73,7 +160,8 @@ internal sealed partial class Linker
             AddInput(input);
         else
         {
-            foreach (string name in new[] { import.Symbol, "__imp_" + import.Symbol })
+            foreach (string name in import.PointerSymbol == null ? new[] { import.Symbol } :
+                new[] { import.Symbol, import.PointerSymbol })
             {
                 if (_nativeImports.TryGetValue(name, out var previous) && previous != import)
                     throw new LinkException($"conflicting native providers for '{name}' in {previous.Source} and {import.Source}");

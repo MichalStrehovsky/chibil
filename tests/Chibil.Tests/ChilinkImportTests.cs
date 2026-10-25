@@ -29,7 +29,7 @@ public sealed class ChilinkImportTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void NativeFunctionImportsUseCallerSignaturesAndActualDllName(bool netCore)
+    public void NativeFunctionImportsUseCallerSignaturesAndRuntimeLibraryName(bool netCore)
     {
         using var builder = new CompilationBuilder(netCore);
         builder.Compile("""
@@ -39,7 +39,7 @@ public sealed class ChilinkImportTests
             """).NativeLibrary("""
             int add(int a, int b) { return a + b; }
             int read(const char *p) { return p[0] == 'x' && p[1] == 'x' ? 2 : 0; }
-            """, "add\nread", "actual-library.dll", "unrelated-name.lib")
+            """, "add\nread", name: "actual-library")
             .Link(gcSections: true).RunAndCheck(42);
     }
 
@@ -101,7 +101,7 @@ public sealed class ChilinkImportTests
             int main(void) { return 42; }
             """, ["-ffunction-sections", "-fdata-sections"])
             .NativeLibrary("int target(int value) { return value; }", "target");
-        File.Delete(Path.Combine(builder._tempDir, "native.dll"));
+        File.Delete(builder.NativeRuntimePath);
         builder.Link(gcSections: true).RunAndCheck(42);
     }
 
@@ -136,7 +136,7 @@ public sealed class ChilinkImportTests
         string source = symbol == "data"
             ? "extern int data; int main(void) { return data; }"
             : "int ordinal(void); int main(void) { return ordinal(); }";
-        builder.Compile(source).NativeLibrary("int data = 42; int ordinal(void) { return 42; }", export);
+        builder.Compile(source).NativeWindowsLibrary("int data = 42; int ordinal(void) { return 42; }", export);
         var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains(diagnostic, error.Message);
         Assert.False(File.Exists(Path.Combine(builder._tempDir, "output.dll")));
@@ -147,7 +147,7 @@ public sealed class ChilinkImportTests
     {
         using var builder = new CompilationBuilder(true);
         builder.Compile("int target(void); int main(void) { return target(); }")
-            .NativeLibrary("int data = 1; int ordinal(void) { return 1; } int target(void) { return 42; }",
+            .NativeWindowsLibrary("int data = 1; int ordinal(void) { return 1; } int target(void) { return 42; }",
                 "data DATA\nordinal @1 NONAME\ntarget")
             .Link().RunAndCheck(42);
     }
@@ -182,7 +182,7 @@ public sealed class ChilinkImportTests
         builder.NativeLibrary("int target(void) { return 17; }", "target")
             .Compile("int target(void); int main(void) { return target(); }")
             .Compile("int target(void) { return 42; }");
-        File.Delete(Path.Combine(builder._tempDir, "native.dll"));
+        File.Delete(builder.NativeRuntimePath);
         builder.Link().RunAndCheck(42);
     }
 
@@ -192,7 +192,7 @@ public sealed class ChilinkImportTests
         using var builder = new CompilationBuilder(true);
         builder.Compile("int target(void); int main(void) { return target(); }")
             .NativeLibrary("int target(void) { return 42; }", "target");
-        File.Delete(Path.Combine(builder._tempDir, "native.dll"));
+        File.Delete(builder.NativeRuntimePath);
         var result = builder.Link();
         var error = Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => result.RunAndCheck(42));
         Assert.Contains("DllNotFoundException", error.Message);
@@ -211,7 +211,7 @@ public sealed class ChilinkImportTests
                 if ((void *)pointer != native_address() || pointer != _actual) return 1;
                 return _actual(20) + pointer(20);
             }
-            """).NativeLibrary(provider, "actual\n_actual=actual\nnative_address", libraryName: "aliases.lib");
+            """).NativeWindowsLibrary(provider, "actual\n_actual=actual\nnative_address", libraryName: "aliases.lib");
         string path = builder._objFiles[1];
         byte[] bytes = File.ReadAllBytes(path);
         bool changed = false;
@@ -235,7 +235,7 @@ public sealed class ChilinkImportTests
         Assert.True(changed, "The fixture must contain the aliased short import.");
         File.WriteAllBytes(path, bytes);
         // Replace the DLL with one that exports actual, but not the COFF alias _actual.
-        builder.NativeLibrary(provider, "actual\nnative_address", libraryName: "unused.lib")
+        builder.NativeWindowsLibrary(provider, "actual\nnative_address", libraryName: "unused.lib")
             .AddCrt()
             .Link(gcSections: true).RunAndCheck(42);
     }
@@ -244,10 +244,10 @@ public sealed class ChilinkImportTests
     public void MissingNativeExportSurfacesFromAddressInitialization()
     {
         using var builder = new CompilationBuilder(true);
-        builder.Compile(AddressConsumer).NativeLibrary(AddressProvider, "target\nnative_address", libraryName: "original.lib")
-            .NativeLibrary("void *native_address(void) { return 0; }", "native_address", libraryName: "replacement.lib")
+        builder.Compile(AddressConsumer).NativeLibrary(AddressProvider, "target\nnative_address")
             .AddCrt();
         var result = builder.Link(gcSections: true);
+        builder.NativeLibrary("void *native_address(void) { return 0; }", "native_address");
         var error = Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => result.RunAndCheck(42));
         Assert.Contains("EntryPointNotFoundException", error.Message);
     }
