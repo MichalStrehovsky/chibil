@@ -21,6 +21,7 @@ public sealed class CompilationBuilder : IDisposable
     internal readonly bool _netCore;
     internal readonly string _tempDir;
     internal readonly List<string> _objFiles = new();
+    internal string NativeRuntimePath { get; private set; }
     private int _fileCounter;
     private bool _disposed;
 
@@ -256,7 +257,53 @@ public sealed class CompilationBuilder : IDisposable
     public LinkResult LinkOnNetCoreOrMsvcLinkOnFramework(string entryPoint = "main")
         => _netCore ? Link(entryPoint) : MsvcLink(entryPoint: entryPoint);
 
-    public CompilationBuilder NativeLibrary(string source, string exports,
+    /// <summary>Build a native library exporting the supplied plain symbol names on the current OS.</summary>
+    public CompilationBuilder NativeLibrary(string source, string exports, string name = "native")
+    {
+        if (OperatingSystem.IsWindows())
+            return NativeWindowsLibrary(source, exports, dllName: name + ".dll");
+        if (OperatingSystem.IsLinux())
+            return NativeLinuxLibrary(source, soname: "lib" + name + ".so.1", exports: exports);
+        throw Xunit.Sdk.SkipException.ForSkip("Native library fixtures require Windows or Linux.");
+    }
+
+    public CompilationBuilder NativeLinuxLibrary(string source, string filename = "libnative.so",
+        string soname = "libnative.so.1", string[] extraArgs = null, string exports = null)
+    {
+        if (!OperatingSystem.IsLinux())
+            throw Xunit.Sdk.SkipException.ForSkip("Building ELF shared libraries requires Linux.");
+        string sourcePath = Path.Combine(_tempDir, $"native{_fileCounter++}.c");
+        string libraryPath = Path.Combine(_tempDir, filename);
+        File.WriteAllText(sourcePath, source);
+        var psi = new ProcessStartInfo("cc")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (string argument in new[] { "-shared", "-fPIC", sourcePath, "-o", libraryPath })
+            psi.ArgumentList.Add(argument);
+        if (soname != null)
+            psi.ArgumentList.Add("-Wl,-soname," + soname);
+        if (extraArgs != null)
+            foreach (string argument in extraArgs)
+                psi.ArgumentList.Add(argument);
+        if (exports != null)
+        {
+            string mapPath = Path.ChangeExtension(sourcePath, ".map");
+            string[] names = exports.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            File.WriteAllText(mapPath, "{ global: " + string.Join("; ", names) + "; local: *; };");
+            psi.ArgumentList.Add("-Wl,--version-script=" + mapPath);
+        }
+        RunNativeCompiler(psi);
+        if (soname != null && soname != filename)
+            File.Copy(libraryPath, Path.Combine(_tempDir, soname), overwrite: true);
+        NativeRuntimePath = soname == null ? libraryPath : Path.Combine(_tempDir, soname);
+        _objFiles.Add(libraryPath);
+        return this;
+    }
+
+    public CompilationBuilder NativeWindowsLibrary(string source, string exports,
         string dllName = "native.dll", string libraryName = "native.lib")
     {
         if (!OperatingSystem.IsWindows())
@@ -278,17 +325,23 @@ public sealed class CompilationBuilder : IDisposable
             sourcePath, "/link", "/NOENTRY", "/NODEFAULTLIB", "/OUT:" + Path.Combine(_tempDir, dllName),
             "/IMPLIB:" + Path.Combine(_tempDir, libraryName), "/DEF:" + definitionPath })
             psi.ArgumentList.Add(argument);
+        RunNativeCompiler(psi);
+        NativeRuntimePath = Path.Combine(_tempDir, dllName);
+        _objFiles.Add(Path.Combine(_tempDir, libraryName));
+        return this;
+    }
+
+    private static void RunNativeCompiler(ProcessStartInfo psi)
+    {
         using var proc = Process.Start(psi);
-        var stderrTask = proc.StandardError.ReadToEndAsync();
-        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
         proc.WaitForExit();
         var stderr = stderrTask.Result;
         var stdout = stdoutTask.Result;
         if (proc.ExitCode != 0)
             throw new InvalidOperationException(
-                $"cl.exe failed with exit code {proc.ExitCode}.\nstdout:\n{stdout}\nstderr:\n{stderr}");
-        _objFiles.Add(Path.Combine(_tempDir, libraryName));
-        return this;
+                $"{psi.FileName} failed with exit code {proc.ExitCode}.\nstdout:\n{stdout}\nstderr:\n{stderr}");
     }
 
     public void Dispose()
@@ -321,7 +374,7 @@ public sealed class LinkResult
     /// <summary>
     /// Run the linked executable and assert that it exits with the expected code.
     /// </summary>
-    public void RunAndCheck(int exitCode)
+    public void RunAndCheck(int exitCode, string workingDirectory = null)
     {
         if (!_netCore && !OperatingSystem.IsWindows())
             throw Xunit.Sdk.SkipException.ForSkip(".NET Framework execution requires Windows.");
@@ -345,6 +398,8 @@ public sealed class LinkResult
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
+        if (workingDirectory != null)
+            psi.WorkingDirectory = workingDirectory;
         if (_netCore)
             psi.ArgumentList.Add(_exePath);
 

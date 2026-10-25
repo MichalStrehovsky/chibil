@@ -22,6 +22,14 @@ internal sealed class LinkOptions
     public bool Debug => !StripDebug || Pdb != null;
     public bool EmbeddedPdb => !StripDebug && Pdb == null;
     public Subsystem Subsystem = Subsystem.WindowsCui;
+
+    internal static bool IsSharedLibraryPath(string path)
+    {
+        string name = Path.GetFileName(path);
+        int version = name.LastIndexOf(".so.", StringComparison.Ordinal);
+        return name.EndsWith(".so", StringComparison.Ordinal) ||
+            version >= 0 && name[(version + 4)..].Split('.').All(p => p.Length > 0 && p.All(char.IsAsciiDigit));
+    }
 }
 
 internal readonly record struct LinkInput(string Name, bool SearchLibrary = false);
@@ -81,8 +89,9 @@ public sealed class Driver
             if (positional || !arg.StartsWith('-') || arg == "-")
             {
                 string extension = Path.GetExtension(arg);
-                if (!new[] { ".obj", ".o", ".lib", ".a" }.Contains(extension, StringComparer.OrdinalIgnoreCase))
-                    throw new LinkException($"unsupported input '{arg}'; expected a managed COFF object or library");
+                if (!new[] { ".obj", ".o", ".lib", ".a" }.Contains(extension, StringComparer.OrdinalIgnoreCase) &&
+                    !LinkOptions.IsSharedLibraryPath(arg))
+                    throw new LinkException($"unsupported input '{arg}'; expected a managed COFF object, archive or ELF shared library");
                 options.Inputs.Add(new(arg));
                 continue;
             }

@@ -31,19 +31,20 @@ internal sealed partial class Linker
             var resolvedPaths = new HashSet<string>(LinkOptions.PathComparer);
             foreach (LinkInput input in _options.Inputs)
             {
-                string resolved = input.SearchLibrary ? ResolveLibraryPath(input.Name) : Path.GetFullPath(input.Name);
+                var (resolved, runtimeName) = input.SearchLibrary ? ResolveLibraryPath(input.Name) :
+                    (Path.GetFullPath(input.Name), input.Name);
                 string extension = Path.GetExtension(resolved);
                 bool library = input.SearchLibrary ||
                     extension.Equals(".lib", StringComparison.OrdinalIgnoreCase) ||
-                    extension.Equals(".a", StringComparison.OrdinalIgnoreCase);
-                resolvedPaths.Add(resolved);
+                    extension.Equals(".a", StringComparison.OrdinalIgnoreCase) ||
+                    LinkOptions.IsSharedLibraryPath(resolved);
                 if (library)
-                {
-                    if (!_libraries.Any(l => LinkOptions.PathComparer.Equals(l.Path, resolved)))
-                        _libraries.Add(new InputLibrary(resolved));
-                }
+                    AddLibrary(resolved, runtimeName, resolvedPaths, new HashSet<string>(LinkOptions.PathComparer));
                 else
+                {
+                    resolvedPaths.Add(resolved);
                     AddInput(new InputFile(resolved, _inputs.Count));
+                }
             }
             while (true)
             {
@@ -403,7 +404,7 @@ internal sealed partial class Linker
                 ? checked(d.Section.OutputDataOffset + d.Offset) : -1, initialization,
             _options.Debug ? token => _definitions.GetValueOrDefault(token)?.Token : null);
         var entryHandle = _options.Dll ? default : (MethodDefinitionHandle)_merger.Map(entry.Input, entry.Handle);
-        var warnings = new HashSet<string>(StringComparer.Ordinal);
+        var warnings = new HashSet<string>(_libraryWarnings, StringComparer.Ordinal);
         PortablePdb pdb = _options.Debug
             ? PortablePdbEmitter.Emit(md, _merger.OutputMethods, ReadDebugInformation(warnings), entryHandle, _merger)
             : null;

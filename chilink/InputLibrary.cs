@@ -7,15 +7,38 @@ namespace Chilink;
 internal sealed class InputLibrary : IDisposable
 {
     public readonly string Path;
+    public IReadOnlyList<string> ScriptInputs { get; }
     private readonly CoffArchiveReader _reader;
     private readonly CoffArchiveSymbolTableReader _symbols;
     private readonly CoffArchiveMemberTableReader _members;
     private readonly CoffArchiveStringTableReader _strings;
     private readonly HashSet<CoffArchiveMemberHandle> _selected = new();
+    private readonly ElfSharedLibrary _elf;
 
-    public InputLibrary(string path)
+    public InputLibrary(string path, string runtimeName)
     {
         Path = path;
+        using (var probe = File.OpenRead(path))
+        {
+            Span<byte> header = stackalloc byte[256];
+            int count = probe.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
+            if (header[..count].StartsWith("\u007fELF"u8))
+            {
+                _elf = new ElfSharedLibrary(path, runtimeName);
+                return;
+            }
+            if (!header[..count].StartsWith("!<arch>\n"u8))
+            {
+                string prefix = Encoding.ASCII.GetString(header[..count]).TrimStart();
+                if (LinkOptions.IsSharedLibraryPath(path) ||
+                    new[] { "/*", "INPUT", "GROUP", "OUTPUT_FORMAT" }.Any(p => prefix.StartsWith(p, StringComparison.Ordinal)))
+                {
+                    probe.Position = 0;
+                    ScriptInputs = ElfLinkerScript.Read(path, probe);
+                    return;
+                }
+            }
+        }
         _reader = new CoffArchiveReader(File.OpenRead(path));
         try
         {
@@ -41,6 +64,8 @@ internal sealed class InputLibrary : IDisposable
     {
         input = null;
         import = null;
+        if (_elf != null)
+            return _elf.TrySelect(symbol, out import);
         foreach (var handle in _symbols.FindSymbols(Encoding.UTF8.GetBytes(symbol)))
         {
             var memberHandle = _symbols.GetCoffArchiveSymbol(handle).Member;
@@ -67,8 +92,9 @@ internal sealed class InputLibrary : IDisposable
                     throw new LinkException($"{path}: imported data/const symbol '{symbol}' is not supported");
                 if (record.NameType == CoffImportNameType.Ordinal)
                     throw new LinkException($"{path}: ordinal import '{symbol}' is not supported");
-                import = new(_strings.GetString(record.SymbolName), _strings.GetString(record.DllName),
-                    _strings.GetString(record.ImportName), path);
+                string name = _strings.GetString(record.SymbolName);
+                import = new(name, _strings.GetString(record.DllName),
+                    _strings.GetString(record.ImportName), path, "__imp_" + name);
                 if (import.Library.Length == 0 || import.EntryPoint.Length == 0)
                     throw new LinkException($"{path}: import DLL and entrypoint names must not be empty");
             }
@@ -77,5 +103,5 @@ internal sealed class InputLibrary : IDisposable
         return false;
     }
 
-    public void Dispose() => _reader.Dispose();
+    public void Dispose() => _reader?.Dispose();
 }

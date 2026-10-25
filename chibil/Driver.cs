@@ -296,7 +296,11 @@ public class Driver
     {
         if (_optX != FileType.None) return _optX;
         if (filename.EndsWith(".a") || filename.EndsWith(".lib")) return FileType.Ar;
-        if (filename.EndsWith(".so") || filename.EndsWith(".dll")) return FileType.Dso;
+        string name = Path.GetFileName(filename);
+        int version = name.LastIndexOf(".so.", StringComparison.Ordinal);
+        if (filename.EndsWith(".so") || filename.EndsWith(".dll") ||
+            version >= 0 && name[(version + 4)..].Split('.').All(p => p.Length > 0 && p.All(char.IsAsciiDigit)))
+            return FileType.Dso;
         if (filename.EndsWith(".o") || filename.EndsWith(".obj")) return FileType.Obj;
         if (filename.EndsWith(".c")) return FileType.C;
         if (filename.EndsWith(".s")) return FileType.Asm;

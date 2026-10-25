@@ -4,7 +4,8 @@ using System.Reflection.Metadata.Ecma335;
 
 namespace Chilink;
 
-internal sealed record NativeImport(string Symbol, string Library, string EntryPoint, string Source);
+internal sealed record NativeImport(string Symbol, string Library, string EntryPoint, string Source,
+    string PointerSymbol = null);
 internal sealed record GlobalReference(SourceToken Token, string Name, string Symbol, BlobHandle Signature, bool Method);
 internal sealed record ImportedMethod(GlobalReference Reference, NativeImport Import, MethodImportAttributes Convention);
 
