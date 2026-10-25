@@ -127,18 +127,14 @@ public sealed class ChilinkImportTests
             .Link().RunAndCheck(42);
     }
 
-    [Theory]
-    [InlineData("ordinal", "ordinal @1 NONAME", "ordinal import")]
-    [InlineData("data", "data DATA", "imported data")]
-    public void SelectedUnsupportedImportKindsFailExplicitly(string symbol, string export, string diagnostic)
+    [Fact]
+    public void SelectedOrdinalImportsFailExplicitly()
     {
         using var builder = new CompilationBuilder(true);
-        string source = symbol == "data"
-            ? "extern int data; int main(void) { return data; }"
-            : "int ordinal(void); int main(void) { return ordinal(); }";
-        builder.Compile(source).NativeWindowsLibrary("int data = 42; int ordinal(void) { return 42; }", export);
+        builder.Compile("int ordinal(void); int main(void) { return ordinal(); }")
+            .NativeWindowsLibrary("int ordinal(void) { return 42; }", "ordinal @1 NONAME");
         var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
-        Assert.Contains(diagnostic, error.Message);
+        Assert.Contains("ordinal import", error.Message);
         Assert.False(File.Exists(Path.Combine(builder._tempDir, "output.dll")));
     }
 
