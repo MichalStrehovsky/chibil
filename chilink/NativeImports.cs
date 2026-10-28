@@ -108,7 +108,8 @@ internal sealed partial class MetadataMerger
             return null;
         var signature = Reader(reference.Token).GetBlobReader(reference.Signature);
         var header = signature.ReadSignatureHeader();
-        if (header.IsInstance || header.IsGeneric || header.CallingConvention != SignatureCallingConvention.Default)
+        if (header.IsInstance || header.IsGeneric ||
+            header.CallingConvention is not (SignatureCallingConvention.Default or SignatureCallingConvention.VarArgs))
             return null;
         signature.ReadCompressedInteger();
         MethodImportAttributes? convention = null;
@@ -146,6 +147,9 @@ internal sealed partial class MetadataMerger
             yield return reference.Name;
     }
 
+    private bool IsVararg(GlobalReference reference) => reference.Method &&
+        (Reader(reference.Token).GetBlobReader(reference.Signature).ReadByte() & 15) == (int)SignatureCallingConvention.VarArgs;
+
     public void BindImport(GlobalReference reference, NativeImport import)
     {
         if (reference.Method != (import.Kind == NativeImportKind.Function))
@@ -166,7 +170,7 @@ internal sealed partial class MetadataMerger
                 (method.Attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.PrivateScope)
                 throw Failure(reference.Token, "native import cannot bind a private-scope or instance method");
         }
-        string signature = SignatureKey(reference.Token.Input, reference.Signature);
+        string signature = SignatureKey(reference.Token.Input, reference.Signature, fixedOnly: IsVararg(reference));
         if (_importSignatures.TryGetValue(import, out string previous) && previous != signature)
             throw Failure(reference.Token, $"incompatible signatures for native import '{import.Symbol}'");
         _importSignatures[import] = signature;

@@ -19,6 +19,7 @@ public abstract class BclBinder
     public TypeReferenceHandle GetIsVolatileRef() => GetLazyTypeRef(GetSystemRef(), "System.Runtime.CompilerServices", "IsVolatile");
     public TypeReferenceHandle GetIsLongRef() => GetLazyTypeRef(GetVisualCRef(), "System.Runtime.CompilerServices", "IsLong");
     public TypeReferenceHandle GetValueTypeRef() => GetLazyTypeRef(GetSystemRef(), "System", "ValueType");
+    public TypeReferenceHandle GetArgIteratorRef() => GetLazyTypeRef(GetSystemRef(), "System", "ArgIterator");
     private TypeReferenceHandle GetInterlockedRef() => GetLazyTypeRef(GetThreadingRef(), "System.Threading", "Interlocked");
 
     private static readonly byte[] Instance_String_RetVoid =

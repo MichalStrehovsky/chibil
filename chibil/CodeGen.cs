@@ -613,7 +613,7 @@ public class CodeGen
     /// <summary>Push a callable function address onto the evaluation stack.</summary>
     private void EmitFunctionAddress(Obj fn)
     {
-        VariadicAbi.ValidateAddress(fn.Ty, fn.Ty.Name, _emit.Options);
+        VariadicAbi.ValidateAddress(fn, fn.Ty.Name);
         CType funcTy = fn.Ty;
         if (funcTy.CallConv == CallConv.Clrcall)
         {
@@ -802,7 +802,7 @@ public class CodeGen
                 return;
 
             case NodeKind.VaStart:
-                _enc.LoadArgument(VariadicAbi.FixedParameterCount(_currentFn.Ty));
+                GenVaStart(node);
                 return;
 
             case NodeKind.VaArg:
@@ -977,49 +977,30 @@ public class CodeGen
             return;
         }
 
-        int area = -1;
-        if (funcTy.IsVariadic)
-        {
-            int remaining = VariadicAbi.FixedParameterCount(funcTy);
-            int size = 0, alignment = 1;
-            for (Node arg = node.Args; arg != null; arg = arg.Next)
-            {
-                if (remaining-- > 0) continue;
-                CType ty = VariadicAbi.ArgumentType(arg.Ty);
-                size = VariadicAbi.Advance(size, ty, arg.Tok, out _);
-                alignment = Math.Max(alignment, ty.Align);
-            }
-            area = AllocateArgumentArea(size, alignment);
-        }
-
-        // Push named arguments and pack the optional portion.
+        // Variadic calls use CLR vararg call sites: optional arguments are pushed after the
+        // fixed ones and their promoted types follow the sentinel in the call-site signature.
+        // chilink lowers each call site for its target.
+        var optionalArguments = funcTy.IsVariadic ? new List<CType>() : null;
         int argCount = 0;
-        int cursor = 0;
         CType paramTy = funcTy.Params;
         for (Node arg = node.Args; arg != null; arg = arg.Next)
         {
             if (funcTy.IsVariadic && paramTy == null)
             {
                 CType ty = VariadicAbi.ArgumentType(arg.Ty);
-                cursor = VariadicAbi.Advance(cursor, ty, arg.Tok, out int offset);
+                VariadicAbi.ValidateObjectType(ty, arg.Tok);
                 if (ty.Size == 0)
                 {
                     GenExprDiscard(arg);
                     continue;
                 }
-                _enc.LoadLocal(area);
-                AddPointerOffset(offset);
                 GenByValueOperand(arg, ty);
-                Store(ty);
+                optionalArguments.Add(ty);
+                argCount++;
                 continue;
             }
             GenByValueOperand(arg, paramTy);
             paramTy = paramTy?.Next;
-            argCount++;
-        }
-        if (funcTy.IsVariadic)
-        {
-            _enc.LoadLocal(area);
             argCount++;
         }
 
@@ -1031,7 +1012,10 @@ public class CodeGen
 
             // Build standalone signature for calli
             var calliSig = new BlobBuilder();
-            _emit.EncodeFnPtrSignature(calliSig, funcTy);
+            if (funcTy.IsVariadic)
+                _emit.EncodeCallSiteSignature(calliSig, funcTy, optionalArguments);
+            else
+                _emit.EncodeFnPtrSignature(calliSig, funcTy);
 
             var calliSigHandle = _emit.AddStandaloneSignature(calliSig);
             _enc.CallIndirect(calliSigHandle, retPush - (argCount + 1));
@@ -1039,7 +1023,10 @@ public class CodeGen
         else
         {
             // Direct call
-            _enc.Call(_emit.GetFunctionToken(node.Lhs.Var), retPush - argCount);
+            EntityHandle target = funcTy.IsVariadic
+                ? _emit.GetVariadicCallSiteToken(node.Lhs.Var, optionalArguments)
+                : _emit.GetFunctionToken(node.Lhs.Var);
+            _enc.Call(target, retPush - argCount);
         }
     }
 
@@ -1079,9 +1066,59 @@ public class CodeGen
         return address;
     }
 
+    // SysV x86-64 __va_list_tag field offsets and register save area limits.
+    private const int VaGpOffset = 0, VaFpOffset = 4, VaOverflowArgArea = 8, VaRegSaveArea = 16;
+    private const int VaGpLimit = 48, VaFpLimit = 176;
+
+    private void GenVaStart(Node node)
+    {
+        if (node.Lhs == null)
+        {
+            _enc.LoadArgument(VariadicAbi.FixedParameterCount(_currentFn.Ty));
+            return;
+        }
+
+        // Lists built by chilink thunks keep every argument in the overflow area.
+        int tag = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
+        GenExpr(node.Lhs);
+        _enc.StoreLocal(tag);
+        _enc.LoadLocal(tag);
+        EmitConstI4(VaGpLimit);
+        _enc.OpCode(ILOpCode.Stind_i4);
+        _enc.LoadLocal(tag);
+        AddPointerOffset(VaFpOffset);
+        EmitConstI4(VaFpLimit);
+        _enc.OpCode(ILOpCode.Stind_i4);
+        _enc.LoadLocal(tag);
+        AddPointerOffset(VaOverflowArgArea);
+        _enc.LoadArgument(VariadicAbi.FixedParameterCount(_currentFn.Ty));
+        _enc.OpCode(ILOpCode.Stind_i);
+        _enc.LoadLocal(tag);
+        AddPointerOffset(VaRegSaveArea);
+        EmitConstI4(0);
+        _enc.OpCode(ILOpCode.Conv_u);
+        _enc.OpCode(ILOpCode.Stind_i);
+    }
+
     private void GenVaArg(Node node)
     {
         CType ty = VariadicAbi.ArgumentType(node.Ty);
+        if (ty.Size == 0)
+        {
+            // Zero-sized arguments are not passed.
+            GenExpr(node.Lhs);
+            _enc.OpCode(ILOpCode.Pop);
+            int empty = AllocateArgumentArea(1, ty.Align);
+            _enc.LoadLocal(empty);
+            Load(ty);
+            return;
+        }
+        if (node.Lhs.Ty.Kind == TypeKind.Ptr && IsStructOrUnion(node.Lhs.Ty.Base))
+        {
+            GenSysVVaArg(node.Lhs, ty);
+            return;
+        }
+
         int cursorAddress = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
         int valueAddress = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
         GenAddr(node.Lhs);
@@ -1089,24 +1126,19 @@ public class CodeGen
         _enc.StoreLocal(cursorAddress);
         _enc.LoadLocal(cursorAddress);
         Load(node.Lhs.Ty);
-        AlignPointer(ty.Align);
+        if (VariadicAbi.IsPassedByReferenceOnWindows(ty))
+            _enc.OpCode(ILOpCode.Ldind_i);
         _enc.StoreLocal(valueAddress);
         _enc.LoadLocal(cursorAddress);
-        _enc.LoadLocal(valueAddress);
-        AddPointerOffset(ty.Size);
+        _enc.LoadLocal(cursorAddress);
+        Load(node.Lhs.Ty);
+        AddPointerOffset(8);
         Store(node.Lhs.Ty);
 
         if (IsStructOrUnion(ty))
         {
-            int snapshot = AllocateArgumentArea(Math.Max(1, ty.Size), ty.Align);
-            if (ty.Size != 0)
-            {
-                _enc.LoadLocal(snapshot);
-                _enc.LoadLocal(valueAddress);
-                EmitConstI4(ty.Size);
-                _enc.OpCode(ILOpCode.Unaligned); _enc.WriteByte(1);
-                _enc.OpCode(ILOpCode.Cpblk);
-            }
+            int snapshot = AllocateArgumentArea(ty.Size, ty.Align);
+            EmitCopyBlock(snapshot, valueAddress, ty.Size);
             _enc.LoadLocal(snapshot);
         }
         else
@@ -1114,6 +1146,96 @@ public class CodeGen
             _enc.LoadLocal(valueAddress);
         }
         Load(ty);
+    }
+
+    private void EmitCopyBlock(int destinationLocal, int sourceLocal, int size, int sourceOffset = 0)
+    {
+        _enc.LoadLocal(destinationLocal);
+        _enc.LoadLocal(sourceLocal);
+        AddPointerOffset(sourceOffset);
+        EmitConstI4(size);
+        _enc.OpCode(ILOpCode.Unaligned); _enc.WriteByte(1);
+        _enc.OpCode(ILOpCode.Cpblk);
+    }
+
+    /// <summary>
+    /// SysV x86-64 va_arg: register-class arguments come from the register save area while
+    /// enough registers remain, everything else from the 8-byte aligned overflow area.
+    /// </summary>
+    private void GenSysVVaArg(Node list, CType ty)
+    {
+        int tag = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
+        int value = AllocateArgumentArea((ty.Size + 7) & ~7, Math.Max(8, ty.Align));
+        GenExpr(list);
+        _enc.StoreLocal(tag);
+
+        var done = _enc.DefineLabel();
+        bool[] classes = VariadicAbi.ClassifySysV(ty);
+        if (classes != null)
+        {
+            int gpCount = classes.Count(sse => !sse), fpCount = classes.Length - gpCount;
+            var overflow = _enc.DefineLabel();
+            if (gpCount != 0)
+            {
+                LoadVaField(tag, VaGpOffset, _types.TyUint);
+                EmitConstI4(VaGpLimit - gpCount * 8);
+                _enc.Branch(ILOpCode.Bgt_un, overflow);
+            }
+            if (fpCount != 0)
+            {
+                LoadVaField(tag, VaFpOffset, _types.TyUint);
+                EmitConstI4(VaFpLimit - fpCount * 16);
+                _enc.Branch(ILOpCode.Bgt_un, overflow);
+            }
+
+            int source = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
+            for (int i = 0; i < classes.Length; i++)
+            {
+                int fieldOffset = classes[i] ? VaFpOffset : VaGpOffset;
+                LoadVaField(tag, VaRegSaveArea, _types.PointerTo(_types.TyVoid));
+                LoadVaField(tag, fieldOffset, _types.TyUint);
+                _enc.OpCode(ILOpCode.Conv_u);
+                _enc.OpCode(ILOpCode.Add);
+                _enc.StoreLocal(source);
+                _enc.LoadLocal(value);
+                AddPointerOffset(i * 8);
+                _enc.LoadLocal(source);
+                EmitConstI4(Math.Min(8, ty.Size - i * 8));
+                _enc.OpCode(ILOpCode.Unaligned); _enc.WriteByte(1);
+                _enc.OpCode(ILOpCode.Cpblk);
+
+                _enc.LoadLocal(tag);
+                AddPointerOffset(fieldOffset);
+                LoadVaField(tag, fieldOffset, _types.TyUint);
+                EmitConstI4(classes[i] ? 16 : 8);
+                _enc.OpCode(ILOpCode.Add);
+                _enc.OpCode(ILOpCode.Stind_i4);
+            }
+            _enc.Branch(ILOpCode.Br, done);
+            _enc.MarkLabel(overflow);
+        }
+
+        int area = AddFreshScratchLocal(_types.PointerTo(_types.TyVoid));
+        LoadVaField(tag, VaOverflowArgArea, _types.PointerTo(_types.TyVoid));
+        AlignPointer(ty.Align > 8 ? 16 : 8);
+        _enc.StoreLocal(area);
+        EmitCopyBlock(value, area, ty.Size);
+        _enc.LoadLocal(tag);
+        AddPointerOffset(VaOverflowArgArea);
+        _enc.LoadLocal(area);
+        AddPointerOffset((ty.Size + 7) & ~7);
+        _enc.OpCode(ILOpCode.Stind_i);
+
+        _enc.MarkLabel(done);
+        _enc.LoadLocal(value);
+        Load(ty);
+    }
+
+    private void LoadVaField(int tag, int offset, CType type)
+    {
+        _enc.LoadLocal(tag);
+        AddPointerOffset(offset);
+        Load(type);
     }
 
     // ─── Atomic operations ───────────────────────────────────────

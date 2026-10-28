@@ -58,7 +58,7 @@ internal sealed partial class MetadataMerger
 
     public void Build(MetadataBuilder output, IReadOnlySet<SourceToken> live,
         Func<SourceToken, int> bodyOffset, Func<SourceToken, int> fieldOffset, DataInitialization initialization,
-        Func<SourceToken, SourceToken?> selectedMethod = null)
+        IReadOnlyList<VarargThunk> varargThunks, Func<SourceToken, SourceToken?> selectedMethod = null)
     {
         if (_output != null)
             throw new LinkException("Metadata merger can only be built once.");
@@ -95,7 +95,7 @@ internal sealed partial class MetadataMerger
             .Select(Resolve).Where(retained.Contains).Distinct()
             .OrderBy(p => Reader(p).GetParameter((ParameterHandle)p.Handle).SequenceNumber).ToArray());
         var parameters = methods.SelectMany(t => parametersByMethod[t]).ToArray();
-        int syntheticMethods = initialization.HasInitializer ? 1 : 0;
+        int syntheticMethods = (initialization.HasInitializer ? 1 : 0) + VarargThunkMethodCount(varargThunks);
         int syntheticFields = initialization.Copies.Count + initialization.Slots.Count;
         OutputMethods = [.. Enumerable.Repeat<SourceToken?>(null, syntheticMethods), .. methods.Select(t => (SourceToken?)t)];
         var parameterNames = new Dictionary<SourceToken, string>();
@@ -261,6 +261,7 @@ internal sealed partial class MetadataMerger
                 MethodImplAttributes.IL, output.GetOrAddString(".cctor"),
                 output.GetOrAddBlob(new byte[] { 0, 0, 1 }), initialization.CodeOffset, MetadataTokens.ParameterHandle(1));
         }
+        AddVarargThunkMethods(output, varargThunks, nativeModules);
         foreach (var token in fields)
         {
             var field = Reader(token).GetFieldDefinition((FieldDefinitionHandle)token.Handle);
@@ -326,6 +327,7 @@ internal sealed partial class MetadataMerger
         foreach (var token in RowsOf(HandleKind.StandaloneSignature))
             Check(token, output.AddStandaloneSignature(Signature(token,
                 Reader(token).GetStandaloneSignature((StandaloneSignatureHandle)token.Handle).Signature)));
+        AddVarargThunkSignatures(output, varargThunks);
         foreach (var token in RowsOf(HandleKind.MethodSpecification))
         {
             var specification = Reader(token).GetMethodSpecification((MethodSpecificationHandle)token.Handle);

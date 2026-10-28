@@ -22,6 +22,15 @@ internal sealed class LinkOptions
     public bool Debug => !StripDebug || Pdb != null;
     public bool EmbeddedPdb => !StripDebug && Pdb == null;
     public Subsystem Subsystem = Subsystem.WindowsCui;
+    public bool TargetLinux = OperatingSystem.IsLinux();
+
+    internal static bool ParseTargetLinux(string target) => target switch
+    {
+        "x86_64-netfx-windows" or "x86_64-netfx-windows-msvc" or "x86_64-netfx-windows-chibil" or
+        "x86_64-dotnet-windows" or "x86_64-dotnet-windows-chibil" or "x86_64-dotnet-windows-msvc" => false,
+        "x86_64-dotnet-linux" or "x86_64-dotnet-linux-chibil" => true,
+        _ => throw new LinkException($"unsupported target '{target}'"),
+    };
 
     internal static bool IsSharedLibraryPath(string path)
     {
@@ -148,6 +157,7 @@ public sealed class Driver
                           --subsystem=console|windows Set the PE subsystem (default: console)
                           -s, -S, --strip-all, --strip-debug  Omit embedded debug information
                           --pdb=FILE                  Emit an external PDB (empty FILE uses default name)
+                          --target=TRIPLE             Target cpu-runtime-os[-abi] (default: host OS)
                           @FILE                       Read a response file
                           --                          End options
                         """);
@@ -184,6 +194,7 @@ public sealed class Driver
                     options.StripDebug = true;
                     break;
                 case "pdb": options.Pdb = RequiredValue(allowEmpty: true); break;
+                case "target": options.TargetLinux = LinkOptions.ParseTargetLinux(RequiredValue()); break;
                 default: throw new LinkException($"unsupported linker option '{arg}'");
             }
         }

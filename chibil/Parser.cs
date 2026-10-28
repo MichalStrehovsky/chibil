@@ -21,6 +21,7 @@ public class Parser
     private int _contLabel;
     private Node _currentSwitch;
     private Obj _builtinAlloca;
+    private CType _vaListTag;
     private int _uniqueId;
     private int _labelCount;
     private bool _inGvarInitializer;
@@ -1132,13 +1133,6 @@ public class Parser
         if (fn.Ty.Kind != TypeKind.Func && (fn.Ty.Kind != TypeKind.Ptr || fn.Ty.Base.Kind != TypeKind.Func))
             Util.ErrorTok(fn.Tok, "not a function");
         CType ty = fn.Ty.Kind == TypeKind.Func ? fn.Ty : fn.Ty.Base;
-        if (ty.IsVariadic)
-        {
-            if (!_options.EmulatedVarargs)
-                Util.ErrorTok(fn.Tok, "variadic calls require -femulated-varargs");
-            if (!(fn.Kind == NodeKind.Var && fn.Var.IsFunction) && ty.CallConv != CallConv.Clrcall)
-                Util.ErrorTok(fn.Tok, "variadic indirect calls require __clrcall");
-        }
         CType paramTy = ty.Params;
         Node head = new(), cur = head;
         while (!Util.Equal(tok, ")"))
@@ -1229,13 +1223,7 @@ public class Parser
         if (!_options.EmulatedVarargs)
             Util.ErrorTok(tok, "variadic intrinsics require -femulated-varargs");
         tok = Util.Skip(tok.Next, "(");
-        Node ap = Assign(ref tok, tok);
-        _types.AddType(ap);
-        bool isVaList = ap.Ty.Kind == TypeKind.Ptr && ap.Ty.Base.Kind == TypeKind.Char &&
-            !ap.Ty.Base.IsUnsigned && !ap.Ty.Base.IsConst;
-        if (!isVaList || ap.Ty.IsConst ||
-            ap.Kind is not (NodeKind.Var or NodeKind.Member or NodeKind.Deref))
-            Util.ErrorTok(ap.Tok, "variadic intrinsic requires a modifiable va_list lvalue");
+        Node ap = VaListOperand(ref tok, tok);
 
         Node result;
         if (name == "__builtin_va_arg")
@@ -1256,18 +1244,37 @@ public class Parser
             while (parameter?.Next != null) parameter = parameter.Next;
             if (last.Kind != NodeKind.Var || !ReferenceEquals(last.Var, parameter))
                 Util.ErrorTok(last.Tok, "va_start requires the last named parameter");
-            Node area = NewNode(NodeKind.VaStart, start);
-            area.Ty = _types.PointerTo(_types.TyChar);
-            result = _types.NewCast(NewBinary(NodeKind.Assign, ap, area, start), _types.TyVoid);
+            if (SystemVVaList)
+            {
+                // The hidden parameter points at the overflow area; register save areas are empty.
+                result = NewUnary(NodeKind.VaStart, ap, start);
+                result.Ty = _types.TyVoid;
+            }
+            else
+            {
+                Node area = NewNode(NodeKind.VaStart, start);
+                area.Ty = _types.PointerTo(_types.TyChar);
+                result = _types.NewCast(NewBinary(NodeKind.Assign, ap, area, start), _types.TyVoid);
+            }
         }
         else if (name == "__builtin_va_copy")
         {
             tok = Util.Skip(tok, ",");
-            Node source = Assign(ref tok, tok);
-            _types.AddType(source);
-            if (!TypeSystem.IsCompatible(ap.Ty, source.Ty))
-                Util.ErrorTok(source.Tok, "va_copy requires a va_list source");
-            result = _types.NewCast(NewBinary(NodeKind.Assign, ap, source, start), _types.TyVoid);
+            if (SystemVVaList)
+            {
+                Node source = VaListOperand(ref tok, tok, requireModifiable: false);
+                Node copy = NewBinary(NodeKind.Assign, NewUnary(NodeKind.Deref, ap, start),
+                    NewUnary(NodeKind.Deref, source, start), start);
+                result = _types.NewCast(copy, _types.TyVoid);
+            }
+            else
+            {
+                Node source = Assign(ref tok, tok);
+                _types.AddType(source);
+                if (!TypeSystem.IsCompatible(ap.Ty, source.Ty))
+                    Util.ErrorTok(source.Tok, "va_copy requires a va_list source");
+                result = _types.NewCast(NewBinary(NodeKind.Assign, ap, source, start), _types.TyVoid);
+            }
         }
         else
         {
@@ -1275,6 +1282,42 @@ public class Parser
         }
         rest = Util.Skip(tok, ")");
         return result;
+    }
+
+    /// <summary>
+    /// Parses the va_list operand of a variadic intrinsic. SysV lists are arrays of one
+    /// __va_list_tag (pointers to it after parameter decay); they are returned as a pointer
+    /// to the tag. Other lists are char* lvalues.
+    /// </summary>
+    private Node VaListOperand(ref Token rest, Token tok, bool requireModifiable = true)
+    {
+        Node ap = Assign(ref rest, tok);
+        _types.AddType(ap);
+        if (SystemVVaList)
+        {
+            CType tag = ap.Ty.Kind is TypeKind.Array or TypeKind.Ptr ? ap.Ty.Base : null;
+            bool isVaList = tag != null && tag.Kind == TypeKind.Struct &&
+                ReferenceEquals(tag.Canonicalize(), _vaListTag.Canonicalize()) &&
+                (ap.Ty.Kind == TypeKind.Ptr || ap.Ty.ArrayLen == 1);
+            bool isConst = isVaList && (tag.IsConst || (ap.Ty.Kind == TypeKind.Array && ap.Ty.IsConst));
+            if (!isVaList || (requireModifiable && isConst))
+                Util.ErrorTok(ap.Tok, requireModifiable
+                    ? "variadic intrinsic requires a modifiable va_list lvalue"
+                    : "va_copy requires a va_list source");
+            if (ap.Ty.Kind == TypeKind.Array)
+            {
+                ap = NewUnary(NodeKind.Addr, ap, ap.Tok);
+                _types.AddType(ap);
+            }
+            return ap;
+        }
+
+        bool isCharList = ap.Ty.Kind == TypeKind.Ptr && ap.Ty.Base.Kind == TypeKind.Char &&
+            !ap.Ty.Base.IsUnsigned && !ap.Ty.Base.IsConst;
+        if (!isCharList || ap.Ty.IsConst ||
+            ap.Kind is not (NodeKind.Var or NodeKind.Member or NodeKind.Deref))
+            Util.ErrorTok(ap.Tok, "variadic intrinsic requires a modifiable va_list lvalue");
+        return ap;
     }
 
     private Node GenericSelection(ref Token rest, Token tok)
@@ -2118,9 +2161,24 @@ public class Parser
         return parameter;
     }
 
+    private bool SystemVVaList => _options.Target.OS == TargetOS.Linux;
+
     private void DeclareBuiltinFunctions()
     {
-        PushScope("__builtin_va_list").TypeDef = _types.PointerTo(_types.TyChar);
+        if (SystemVVaList)
+        {
+            byte[] source = "typedef struct __va_list_tag { unsigned int gp_offset; unsigned int fp_offset; void *overflow_arg_area; void *reg_save_area; } __builtin_va_list[1];\n\0"u8.ToArray();
+            Token tok = _tokenizer.Tokenize(_tokenizer.NewFile("<built-in>", 1, source));
+            _tokenizer.ConvertPpTokens(tok);
+            VarAttr attr = new();
+            CType basety = Declspec(ref tok, tok, attr);
+            ParseTypedef(tok, basety, attr.PendingCallConv);
+            _vaListTag = basety;
+        }
+        else
+        {
+            PushScope("__builtin_va_list").TypeDef = _types.PointerTo(_types.TyChar);
+        }
         CType ty = TypeSystem.FuncType(_types.PointerTo(_types.TyVoid));
         ty.Params = TypeSystem.CopyType(_types.TyInt);
         _builtinAlloca = NewGvar("alloca", ty);

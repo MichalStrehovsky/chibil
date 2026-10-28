@@ -87,7 +87,9 @@ Both `chibil` runtimes enable `-ffixed-address-statics` and
 `-fuco-entrypoints` and `-femulated-varargs`. MSVC presets leave all four
 features disabled and only select the requested runtime binding.
 Emulated varargs use a private argument-buffer ABI, not native varargs;
-variadic function pointers still require `__clrcall`.
+their `va_list` layout follows the target OS. Native variadic imports and
+function-pointer calls are lowered separately; only pointers to emulated
+definitions require `__clrcall`. See [variadic calls](#variadic-calls).
 
 The last `--target` wins, but every supplied target must be valid.
 Explicit low-level switches override preset defaults regardless of position;
@@ -161,6 +163,7 @@ explicitly with `-I`/`-idirafter`. There is no SDK or sysroot discovery.
 | `--subsystem=console`, `--subsystem=windows` | Set the PE subsystem; default console. |
 | `-s`, `--strip-all`, `-S`, `--strip-debug` | Omit embedded PDB information; an explicitly requested external PDB is still generated. |
 | `--pdb=file` | Generate an external Portable PDB instead of embedding it. An empty filename (`--pdb=`) uses the output path with a `.pdb` extension. |
+| `--target=TRIPLE` | Select Windows or Linux varargs lowering using a target spelling from the table above; default follows the host OS. |
 | `--gc-sections`, `--no-gc-sections` | Remove unreferenced COMDATs, or retain them; disabled by default. |
 | `-u symbol`, `--undefined=symbol` | Retain a managed symbol and its dependencies. |
 | `-L directory`, `--library-path=directory` | Add a library search directory; repeat for additional directories. |
@@ -188,6 +191,13 @@ complete GNU response-file lexer.
 File-path comparisons follow the host: case-insensitive on Windows and
 case-sensitive on Linux, including response-file cycle detection, archive
 deduplication, and output/PDB collision checks.
+
+Chibil forwards its selected target to chilink. When linking separately, pass
+the same `--target` used for compilation, especially when cross-compiling.
+Chilink accepts the compiler's supported target spellings, but uses only their
+OS component to select varargs lowering; it does not change input runtime
+bindings, library search paths, the PE subsystem, or the output format.
+The last `--target` wins; invalid targets are errors.
 
 Object `.drectve` sections are ignored entirely, including embedded
 default-library, entry and root instructions. Supply required libraries and
@@ -308,7 +318,8 @@ also supported. Purely managed `__clrcall` declarations are not native imports.
 Conflicting declarations of an imported symbol are errors. The caller is
 responsible for native ABI/layout compatibility and the runtime's marshalling
 behavior; import libraries contain no signature information with which to
-verify those assumptions. No ABI adapters are synthesized.
+verify those assumptions. Apart from the varargs lowering described below,
+no ABI adapters are synthesized.
 
 Direct imports work on .NET Framework and modern .NET for signatures supported
 by that runtime. Selected ordinal and data/const imports are errors; unused
@@ -339,7 +350,8 @@ or default-version exports are matched by plain name; explicit symbol-version
 imports are not supported. Data exports of kind `STT_OBJECT` or `STT_COMMON`
 are supported through the protocol below. Selected TLS or other unsupported
 export kinds are errors; unused such exports are harmless. Signatures and calling conventions
-still come from the managed caller, and no native ABI/layout adapters are added.
+still come from the managed caller; only the varargs-specific adaptations
+described below are added, not general native ABI/layout adapters.
 ELF export names are exact and do not acquire COFF `__imp_` aliases.
 
 #### Data-export access protocol
@@ -499,8 +511,9 @@ dotnet run --project .\tools\asm2obj\Asm2Obj.csproj -- .\crt\bin\Debug\net10.0\c
 chilink -e main -o process.dll process.obj crt.obj -L .\libs -lkernel32
 ```
 
-The resolver is needed only for retained native-address slots; direct calls and
-discarded address slots need no resolver. An address-only import need not emit
+The resolver is needed for retained native-address slots and direct native
+variadic calls on Linux. Ordinary direct calls and discarded address slots
+need no resolver. An address-only import need not emit
 a DllImport method. Missing or incorrectly typed resolvers fail during linking.
 Legacy/MSVC IJW and Framework native-address paths remain unsupported.
 The existing module-initializer conflict rule also applies to native-address
@@ -517,6 +530,130 @@ Public managed types remain assembly roots in both EXEs and DLLs.
 With `--gc-sections`, unreferenced global C functions in individual COMDATs can
 disappear from a library; use `--undefined` roots or `--no-gc-sections` when they
 must remain available through reflection.
+
+### Variadic calls
+
+Chibil emits CLR vararg call-site metadata rather than packing optional
+arguments in the caller. Chilink lowers retained sites into ordinary,
+fixed-signature IL thunks, selecting the implementation from the resolved
+callee and the linker's target OS. Calls and external declarations do not
+require `-femulated-varargs`; C variadic definitions and the `va_*` intrinsics
+do. Modern .NET `chibil` presets enable that switch; Framework inputs can
+enable it explicitly.
+
+#### Object-file contract
+
+A direct variadic `call` has a TOKEN relocation to a MemberRef with the CLR
+`VARARG` calling convention (`0x05`). Its signature lists the fixed parameters,
+then a sentinel (`0x41`) and the actual optional argument types after C default
+promotions, including `float` to `double` and integer promotions. With no
+optional arguments, there is no sentinel. Each distinct call-site signature
+has its own MemberRef carrying the callee's `DecoratedName` COFF identity,
+even for a definition in the same object. An indirect variadic `calli` instead relocates a
+StandAloneSig with the same signature shape; its function address is pushed
+after all arguments. Native conventions are identified by return-type
+`modopt(System.Runtime.CompilerServices.CallConv*)` modifiers; `__clrcall`
+sites have no native convention modifier.
+
+An emulated definition is not a CLR vararg MethodDef. It is an ordinary static
+managed method with its fixed parameters followed by
+`modopt(System.ArgIterator) void*`. The modifier marks the hidden argument-area
+parameter for chilink; it does not request CLR `ArgIterator` behavior. The
+linker matches a vararg reference to this definition by name, return type and
+fixed parameter types, excluding the hidden parameter and optional call-site
+arguments.
+
+For a site resolving to an emulated definition or a native import, and for
+variadic `calli` sites, chilink synthesizes a private static
+`__chilink_vararg@...` method accepting the exact call-site arguments.
+An indirect site's thunk also takes a final native-int function address.
+The linker patches the original instruction to `call` and replaces its token
+with the thunk's MethodDef. Both `call` and `calli` occupy one opcode byte and
+four token bytes, so this preserves input IL offsets, branches, exception
+regions and PDB sequence points without decoding/re-encoding method bodies.
+Thunk dependencies participate in retention; discarded sites need no thunk
+or runtime resolver.
+
+#### Emulated definitions and managed pointers
+
+For an emulated definition or an indirect `__clrcall` call, the thunk allocates
+an argument area with `localloc`, copies the optional arguments into it, then
+passes the fixed arguments and its address to the implementation. Indirect
+calls use an ordinary managed `calli` signature with a trailing `void*`.
+The area lives only until the thunk returns and has at least eight bytes even
+when there are no optional arguments.
+
+On Windows x64, each optional argument occupies an eight-byte slot.
+Aggregates of size 1, 2, 4 or 8 bytes are stored inline; other aggregates use
+a slot pointing to the thunk's by-value argument copy. `va_list` is `char*`;
+`va_start` points it at the hidden area, `va_arg` advances it by eight bytes
+and dereferences aggregate-copy pointers when required, and `va_copy` copies
+the cursor.
+
+On Linux x64, arguments are stored inline in order, with each size rounded
+up to eight bytes. Aggregates need explicit size metadata; over-aligned
+aggregates with metadata packing greater than eight are rejected.
+`va_list` is the SysV array of one 24-byte `__va_list_tag`:
+
+```c
+typedef struct __va_list_tag {
+    unsigned int gp_offset;  /* offset 0 */
+    unsigned int fp_offset;  /* offset 4 */
+    void *overflow_arg_area; /* offset 8 */
+    void *reg_save_area;     /* offset 16 */
+} va_list[1];
+```
+
+`va_start` sets `gp_offset = 48`, `fp_offset = 176`,
+`overflow_arg_area` to the hidden area and `reg_save_area` to null: all
+emulated arguments are overflow arguments. `va_arg` also understands native
+SysV lists, reading INTEGER/SSE register-save slots when available and falling
+back to the overflow area for exhausted registers or memory-class aggregates.
+`va_copy` copies the entire tag, giving an independent cursor; `va_end` is a
+no-op on both targets. These target-native list representations allow lists
+to be passed to native `vprintf`-style functions, and native lists to be read,
+copied and forwarded by chibil code, subject to matching C layouts.
+
+Emulated definitions have no native variadic entrypoint or UCO wrapper.
+Taking their address requires `__clrcall`, including across translation units;
+chilink rejects native-address references that resolve to such definitions.
+External native variadic addresses are allowed and use the existing native
+export-address protocol when materialized by chibil.
+
+#### Native variadic calls
+
+Native imports still come from explicit COFF import libraries or ELF shared
+libraries. Declarations for the same import must agree on the return and fixed
+parameter types; optional argument types may differ between call sites.
+
+On Windows x64, chilink emits a fixed-signature P/Invoke per direct call site,
+or an unmanaged cdecl `calli` for a native pointer. The thunk reinterprets
+optional floating-point values as integer bits so they use integer
+registers/stack slots rather than an XMM-only calling sequence. Optional
+aggregates of size 1, 2, 4 or 8 are lowered to integer values; other sizes
+are passed by address to a copy. This supports direct and indirect native
+varargs on Framework and modern .NET without a CRT vararg resolver.
+
+On Linux x64, the thunk uses an exact-signature unmanaged cdecl `calli`.
+Direct imports first obtain the export address through
+`__chilink_get_native_export`; both direct and indirect calls then pass the
+address through `__chilink_get_vararg_stub`. Supply the asm2obj-converted
+modern-.NET CRT explicitly, as an object or an explicit archive member.
+The stub resolver must be a static managed `native int(native int)` method;
+missing or incorrectly typed resolvers are link errors. An indirect call
+does not need the export resolver unless address materialization needs it.
+
+The CRT caches a runtime-generated executable stub per native target. It sets
+`eax = 8` and tail-jumps to the target, preserving argument registers and the
+stack while supplying SysV's `AL` upper bound on vector-register arguments.
+Stub memory is allocated writable, then made read/execute, and retained for
+process lifetime. Thus the linked assembly remains IL-only, but native Linux
+varargs require executable-memory support at runtime. Native SysV aggregate
+argument passing is not supported; reading aggregates from native `va_list`
+values and forwarding emulated lists are separate supported operations.
+General native ABI adapters, native variadic entrypoints for managed
+definitions, and link.exe compatibility for this private lowering protocol
+are not provided.
 
 ## Supported boundary
 
@@ -551,6 +688,8 @@ must remain available through reflection.
   same managed TOKEN-fixup lowering.
 - ELF OBJECT/COMMON data imports through fixed-address-global access rewriting,
   with native-address slots initialized by the modern-.NET CRT resolver.
+- Retained CLR vararg call sites lowered to fixed-signature thunks for emulated
+  definitions, managed variadic pointers, and supported native variadic calls.
 - Function COMDAT selection and section-granularity stripping. A shared section
   retains all its functions; `-ffunction-sections` permits separate removal.
   Chibil scopes static function metadata names to their translation unit using
@@ -563,10 +702,13 @@ must remain available through reflection.
 Retained IL sections are copied and their COFF TOKEN relocations are
 patched with merged metadata tokens. Native-data accesses additionally replace
 `ldsflda` with the same-width `ldsfld` instruction as described above.
+Variadic sites replace their `call`/`calli` and token with a same-width `call`
+to a synthesized thunk.
 Method bodies are not decoded or re-encoded;
 method RVAs come from the output section location plus the COFF symbol offset.
-The generated module initializer is appended as a new method. It is emitted only
-when retained globals need copied initialization data, pointer relocations, or
+Vararg thunks and the generated module initializer are appended as new methods.
+The initializer is emitted only when retained globals need copied
+initialization data, pointer relocations, or
 native-data slots; BSS/common globals themselves rely on CLR zero initialization.
 Dead COMDAT initializers do not retain their dependencies.
 
@@ -724,8 +866,9 @@ the same plain-name export list on both. `NativeRuntimePath` identifies the
 runtime library when a test needs to remove or replace it. Use
 `NativeWindowsLibrary` for Windows-specific export directives or import-archive
 details and `NativeLinuxLibrary` for ELF-specific filenames, SONAME, visibility,
-or symbol versions. Automated tests do not invoke lib.exe. The ELF data tests
-build small managed COFF archives to cover member selection and an archived
+or symbol versions. The Windows system-CRT varargs test uses lib.exe to create
+an import library. The ELF data tests build small managed COFF archives to
+cover member selection and an archived
 resolver. They also host a linked managed application in a native executable
 with a verified `R_X86_64_COPY` relocation to check global-scope data lookup.
 Broader archive extraction is checked manually with libraries containing
