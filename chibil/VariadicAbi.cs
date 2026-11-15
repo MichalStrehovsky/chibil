@@ -39,6 +39,17 @@ internal static class VariadicAbi
     }
 
     /// <summary>
+    /// Linux vararg lowering stores optional arguments in eight-byte slots, which cannot
+    /// satisfy the 16-byte overflow-area alignment SysV va_arg uses for over-aligned types.
+    /// </summary>
+    public static void ValidateOptionalArgument(CType type, Token token, CompilerOptions options)
+    {
+        ValidateObjectType(type, token);
+        if (options.Target.OS == TargetOS.Linux && type.Align > 8)
+            Util.ErrorTok(token, "over-aligned variadic arguments are not supported on Linux targets");
+    }
+
+    /// <summary>
     /// Windows x64 passes aggregates whose size is not 1, 2, 4 or 8 bytes as a pointer to a copy.
     /// </summary>
     public static bool IsPassedByReferenceOnWindows(CType type) =>

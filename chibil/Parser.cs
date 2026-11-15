@@ -1147,7 +1147,7 @@ public class Parser
                     Util.ErrorTok(arg.Tok, "too many arguments");
                 arg = _types.DefaultArgumentPromotion(arg);
                 if (ty.IsVariadic)
-                    VariadicAbi.ValidateObjectType(VariadicAbi.ArgumentType(arg.Ty), arg.Tok);
+                    VariadicAbi.ValidateOptionalArgument(VariadicAbi.ArgumentType(arg.Ty), arg.Tok, _options);
             }
             cur = cur.Next = arg;
         }

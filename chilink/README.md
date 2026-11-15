@@ -592,7 +592,9 @@ the cursor.
 
 On Linux x64, arguments are stored inline in order, with each size rounded
 up to eight bytes. Aggregates need explicit size metadata; over-aligned
-aggregates with metadata packing greater than eight are rejected.
+aggregates with metadata packing greater than eight are rejected. Because
+chibil does not record `_Alignas`/`aligned` in metadata packing, it rejects
+optional arguments with alignment greater than eight when compiling for Linux.
 `va_list` is the SysV array of one 24-byte `__va_list_tag`:
 
 ```c

@@ -500,6 +500,8 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     [Fact]
     public void OverAlignedAreasUseAnAlignedInteriorPointer()
     {
+        if (!OperatingSystem.IsWindows())
+            throw Xunit.Sdk.SkipException.ForSkip("Linux rejects over-aligned variadic arguments.");
         Compile("""
             struct __attribute__((aligned(32))) Value { long long value; };
             int read(int named, ...) {
@@ -515,6 +517,18 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 return read(0, 1, value, 22);
             }
             """, [.. Enabled, "-fno-managed-aggregate-fields"]).Link().RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData("struct __attribute__((aligned(16))) Value { long long value; }; struct Value value;")]
+    [InlineData("union Value { _Alignas(32) char value; }; union Value value;")]
+    public void LinuxRejectsOverAlignedOptionalArguments(string declarations)
+    {
+        CompileExpectingError($$"""
+            {{declarations}}
+            int target(int, ...);
+            int main(void) { return target(0, value); }
+            """, ["--target=x86_64-dotnet-linux", "-fno-managed-aggregate-fields"]).AssertErrorContains("over-aligned");
     }
 
     [Theory]
