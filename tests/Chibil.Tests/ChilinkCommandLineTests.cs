@@ -77,6 +77,8 @@ public sealed class ChilinkCommandLineTests : ChibiTestBase
     [InlineData("-u")]
     [InlineData("--pdb")]
     [InlineData("--debug=bogus")]
+    [InlineData("--target=bogus")]
+    [InlineData("--target")]
     [InlineData("--GC-SECTIONS")]
     [InlineData("-entry:main")]
     [InlineData("/entry:main")]

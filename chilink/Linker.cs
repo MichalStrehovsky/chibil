@@ -163,7 +163,8 @@ internal sealed partial class Linker
         {
             bool marked = false;
             if (_nativeResolver.Handle.IsNil &&
-                _dataRelocations.Any(r => r.Import?.Kind == NativeImportKind.Function))
+                (_dataRelocations.Any(r => r.Import?.Kind == NativeImportKind.Function) ||
+                 _varargThunkList.Any(t => t.Kind == VarargThunkKind.LinuxNative)))
             {
                 if (!HasSymbol(NativeResolverSymbol) && SelectLibrarySymbol(NativeResolverSymbol, null))
                     return true;
@@ -186,6 +187,12 @@ internal sealed partial class Linker
                 ValidateNativeResolver(_nativeDataResolver, NativeDataResolverSymbol);
                 Mark(_nativeDataResolver);
                 marked = true;
+            }
+            if (_varargStubResolver.Handle.IsNil && _varargThunkList.Any(t => t.IsLinuxNative))
+            {
+                if (!HasSymbol(VarargStubSymbol) && SelectLibrarySymbol(VarargStubSymbol, null))
+                    return true;
+                marked |= MarkVarargStubResolver();
             }
             if (!marked)
                 return false;
@@ -383,6 +390,8 @@ internal sealed partial class Linker
                 throw section.Input.Error("nonzero TOKEN relocation addends are not supported");
             if (symbol.Token.Kind != HandleKind.UserString)
             {
+                if (TryMarkVarargSite(section, relocation, data, symbol))
+                    continue;
                 var token = _merger.Resolve(new SourceToken(section.Input.Index, (EntityHandle)symbol.Token));
                 if (_merger.GetDataImport(token) is { } import)
                 {
@@ -435,7 +444,7 @@ internal sealed partial class Linker
             data.WriteBytes(section.GetData());
         }
         var initialization = PlanInitialization(data);
-        initialization.CodeOffset = Align(ilSize, 4);
+        initialization.CodeOffset = Align(LayoutVarargThunks(ilSize), 4);
         var md = new MetadataBuilder();
         md.AddModule(0, md.GetOrAddString(Path.GetFileName(_options.Output)), md.GetOrAddGuid(Guid.NewGuid()), default, default);
         md.AddAssembly(md.GetOrAddString(Path.GetFileNameWithoutExtension(_options.Output)),
@@ -444,7 +453,7 @@ internal sealed partial class Linker
             token => _definitions.TryGetValue(_merger.Resolve(token), out Definition method) && method.Section?.OutputCodeOffset >= 0
                 ? checked(method.Section.OutputCodeOffset + method.Offset) : -1,
             token => _definitions.TryGetValue(_merger.Resolve(token), out Definition d) && d.Section?.OutputDataOffset >= 0
-                ? checked(d.Section.OutputDataOffset + d.Offset) : -1, initialization,
+                ? checked(d.Section.OutputDataOffset + d.Offset) : -1, initialization, _varargThunkList,
             _options.Debug ? token => _definitions.GetValueOrDefault(token)?.Token : null);
         var entryHandle = _options.Dll ? default : (MethodDefinitionHandle)_merger.Map(entry.Input, entry.Handle);
         var warnings = new HashSet<string>(_libraryWarnings, StringComparer.Ordinal);
@@ -479,7 +488,12 @@ internal sealed partial class Linker
                 int mapped;
                 var import = token.Kind == HandleKind.MemberReference
                     ? _merger.GetDataImport(new(section.Input.Index, (EntityHandle)token)) : null;
-                if (import != null)
+                if (_varargSites.TryGetValue((section, relocation.Offset), out var thunk))
+                {
+                    bytes[relocation.Offset - 1] = (byte)ILOpCode.Call;
+                    mapped = MetadataTokens.GetToken(thunk.Method);
+                }
+                else if (import != null)
                 {
                     bytes[relocation.Offset - 1] = (byte)ILOpCode.Ldsfld;
                     mapped = MetadataTokens.GetToken(_dataSlots[import].Field);
@@ -490,6 +504,7 @@ internal sealed partial class Linker
             }
             il.WriteBytes(bytes);
         }
+        EmitVarargThunks(il);
         if (initialization.HasInitializer)
             initialization.Emit(il, _merger);
         ilSize = il.Count;

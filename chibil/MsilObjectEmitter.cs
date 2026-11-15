@@ -41,6 +41,7 @@ public class MsilObjectEmitter
     // Metadata references and emitted definitions
     private readonly Dictionary<Obj, MemberReferenceHandle> _objectRefs = new();
     private readonly Dictionary<Obj, MemberReferenceHandle> _ucoRefs = new();
+    private readonly Dictionary<(Obj, BlobHandle), MemberReferenceHandle> _callSiteRefs = new();
     private readonly Dictionary<Obj, string> _globalFieldNames = new();
     private readonly List<Obj> _globalsWithRelocations = new();
 
@@ -294,39 +295,74 @@ public class MsilObjectEmitter
 
     /// <summary>Encode an inline function pointer signature for FNPTR in method/local signatures.</summary>
     public void EncodeFnPtrSignature(BlobBuilder sig, CType funcTy)
+        => EncodeFunctionSignature(sig, funcTy, FnPtrCallingConvention(funcTy));
+
+    /// <summary>
+    /// Encode a calli signature. Variadic call sites use the CLR vararg form, listing the
+    /// promoted optional argument types after a sentinel; chilink lowers them.
+    /// </summary>
+    public void EncodeCallSiteSignature(BlobBuilder sig, CType funcTy, IReadOnlyList<CType> optionalArguments)
+        => EncodeFunctionSignature(sig, funcTy, FnPtrCallingConvention(funcTy), optionalArguments);
+
+    private static byte FnPtrCallingConvention(CType funcTy) => funcTy.CallConv switch
     {
-        EncodeFunctionSignature(sig, funcTy, funcTy.IsVariadic ? (byte)SignatureCallingConvention.Default : funcTy.CallConv switch
-        {
-            CallConv.Clrcall => (byte)SignatureCallingConvention.Default,
-            CallConv.Stdcall => (byte)SignatureCallingConvention.StdCall,
-            _ => (byte)SignatureCallingConvention.CDecl,
-        });
+        CallConv.Clrcall => (byte)SignatureCallingConvention.Default,
+        CallConv.Stdcall => (byte)SignatureCallingConvention.StdCall,
+        _ => (byte)SignatureCallingConvention.CDecl,
+    };
+
+    /// <summary>
+    /// Encode a reference signature. Variadic functions use the CLR vararg calling convention;
+    /// without optional arguments this is the fixed-parameter declaration form.
+    /// </summary>
+    private void EncodeFunctionSignature(BlobBuilder sig, CType funcTy, byte callConv = 0,
+        IReadOnlyList<CType> optionalArguments = null)
+    {
+        sig.WriteByte(funcTy.IsVariadic ? (byte)SignatureCallingConvention.VarArgs : callConv);
+        int optionalCount = optionalArguments?.Count ?? 0;
+        sig.WriteCompressedInteger(VariadicAbi.FixedParameterCount(funcTy) + optionalCount);
+        EncodeReturnType(sig, funcTy);
+        for (CType p = funcTy.Params; p != null; p = p.Next)
+            EncodeType(sig, p);
+        if (optionalCount == 0)
+            return;
+        sig.WriteByte((byte)SignatureTypeCode.Sentinel);
+        foreach (CType argument in optionalArguments)
+            EncodeType(sig, argument);
     }
 
-    private void EncodeFunctionSignature(BlobBuilder sig, CType funcTy, byte callConv = 0)
+    /// <summary>
+    /// Encode a method definition signature. Variadic definitions receive the optional
+    /// arguments through a trailing <c>modopt(System.ArgIterator) void*</c> list parameter,
+    /// which chilink recognizes when it lowers vararg call sites to them.
+    /// </summary>
+    private void EncodeDefinitionSignature(BlobBuilder sig, CType funcTy)
     {
-        sig.WriteByte(callConv);
-
-        // Count parameters
-        int paramCount = VariadicAbi.FixedParameterCount(funcTy) + (funcTy.IsVariadic ? 1 : 0);
-        sig.WriteCompressedInteger(paramCount);
-
-        // Return type
+        if (!funcTy.IsVariadic)
+        {
+            EncodeFunctionSignature(sig, funcTy);
+            return;
+        }
+        sig.WriteByte((byte)SignatureCallingConvention.Default);
+        sig.WriteCompressedInteger(VariadicAbi.FixedParameterCount(funcTy) + 1);
         EncodeReturnType(sig, funcTy);
-
-        // Parameters
-        foreach (CType p in VariadicAbi.Parameters(funcTy, _types))
+        for (CType p = funcTy.Params; p != null; p = p.Next)
             EncodeType(sig, p);
+        sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
+        sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(_binder.GetArgIteratorRef()));
+        sig.WriteByte((byte)SignatureTypeCode.Pointer);
+        sig.WriteByte((byte)SignatureTypeCode.Void);
     }
 
     /// <summary>Encode the return type for a function, with modopt(CallConvCdecl) for unmanaged calling conventions.</summary>
     private void EncodeReturnType(BlobBuilder sig, CType funcTy)
     {
-        if (funcTy.CallConv != CallConv.Clrcall && !funcTy.IsVariadic)
+        if (funcTy.CallConv != CallConv.Clrcall)
         {
             sig.WriteByte((byte)SignatureTypeCode.OptionalModifier);
             sig.WriteCompressedInteger(CodedIndex.TypeDefOrRefOrSpec(funcTy.CallConv switch
             {
+                _ when funcTy.IsVariadic => _binder.GetCallConvCdeclRef(),
                 CallConv.Cdecl => _binder.GetCallConvCdeclRef(),
                 CallConv.Stdcall => _binder.GetCallConvStdcallRef(),
                 _ => throw new UnreachableException()
@@ -355,7 +391,7 @@ public class MsilObjectEmitter
 
         // Build method signature
         var sig = new BlobBuilder();
-        EncodeFunctionSignature(sig, funcTy);
+        EncodeDefinitionSignature(sig, funcTy);
 
         var methodDef = _md.AddMethodDefinition(
             MethodAttributes.Assembly | MethodAttributes.Static,
@@ -417,6 +453,27 @@ public class MsilObjectEmitter
 
     public EntityHandle GetFunctionToken(Obj fn)
         => GetObjectReference(fn);
+
+    /// <summary>
+    /// Get a CLR vararg call-site reference to a variadic function. Like MSVC, every distinct
+    /// call-site signature gets its own decorated MemberRef next to the declaration reference.
+    /// </summary>
+    public EntityHandle GetVariadicCallSiteToken(Obj fn, IReadOnlyList<CType> optionalArguments)
+    {
+        Debug.Assert(fn.Ty.IsVariadic);
+        GetObjectReference(fn);
+        var signature = new BlobBuilder();
+        EncodeFunctionSignature(signature, fn.Ty, optionalArguments: optionalArguments);
+        BlobHandle blob = _md.GetOrAddBlob(signature);
+        if (_callSiteRefs.TryGetValue((fn, blob), out MemberReferenceHandle reference))
+            return reference;
+        reference = _md.AddMemberReference(_moduleTypeDef,
+            _md.GetOrAddString(_nameMangler.MangleFunctionMetadataName(fn)), blob);
+        _callSiteRefs.Add((fn, blob), reference);
+        AddDecoratedNameAttribute(reference, _nameMangler.MangleFunctionName(fn));
+        EnsureMemberRefTokenSymbol(reference, isFunction: true);
+        return reference;
+    }
 
     public EntityHandle GetFunctionAddressToken(Obj fn)
     {
@@ -917,7 +974,7 @@ public class MsilObjectEmitter
                 string targetName = rel.Label;
                 CoffSymbolHandle targetSym;
                 if (_functions.TryGetValue(targetName, out Obj function))
-                    VariadicAbi.ValidateAddress(function.Ty, rel.Tok, _options);
+                    VariadicAbi.ValidateAddress(function, rel.Tok);
 
                 if (_dataCoffSymbols.TryGetValue(targetName, out targetSym))
                 {

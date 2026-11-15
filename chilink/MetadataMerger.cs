@@ -23,6 +23,7 @@ internal sealed partial class MetadataMerger
     private readonly Dictionary<SourceToken, int> _signatureTypes = new();
     private readonly Dictionary<SourceToken, string> _errors = new();
     private readonly HashSet<SourceToken> _resolving = new();
+    private readonly HashSet<SourceToken> _emulatedVarargs = new();
     private readonly Dictionary<SourceToken, EntityHandle> _outputHandles = new();
     private readonly Dictionary<(int Input, UserStringHandle Handle), UserStringHandle> _userStrings = new();
     private readonly List<SourceToken> _typeOrder = new();
@@ -205,6 +206,13 @@ internal sealed partial class MetadataMerger
                 _members.Add(key, canonical = token);
         }
         Alias(token, canonical);
+        if (token.Handle.Kind == HandleKind.MethodDefinition && !privateScope &&
+            EmulatedVarargKey(token.Input, signature) is string varargKey)
+        {
+            // Vararg call sites match the emulated definition by their fixed arguments.
+            _members.TryAdd((key.Item1, name, varargKey), canonical);
+            _emulatedVarargs.Add(canonical);
+        }
         if (token.Handle.Kind == HandleKind.MethodDefinition)
         {
             var method = reader.GetMethodDefinition((MethodDefinitionHandle)token.Handle);
@@ -223,17 +231,61 @@ internal sealed partial class MetadataMerger
         }
     }
 
-    private string SignatureKey(int input, BlobHandle signature, bool type = false, bool fixedOnly = false)
+    private string SignatureKey(int input, BlobHandle signature, bool type = false, bool fixedOnly = false) =>
+        Convert.ToHexString(EcmaSignature.Rewrite(_inputs[input].GetBlobReader(signature), SignatureIdentity(input),
+            type, fixedOnly).ToArray());
+
+    private Func<EntityHandle, EntityHandle> SignatureIdentity(int input) => handle =>
     {
-        return Convert.ToHexString(EcmaSignature.Rewrite(_inputs[input].GetBlobReader(signature), handle =>
-        {
-            var canonical = Resolve(new(input, handle));
-            // Comparison identities are independent of retained/output row numbers.
-            if (!_signatureTypes.TryGetValue(canonical, out int id))
-                _signatureTypes.Add(canonical, id = _signatureTypes.Count + 1);
-            return MetadataTokens.TypeDefinitionHandle(id);
-        }, type, fixedOnly).ToArray());
+        var canonical = Resolve(new(input, handle));
+        // Comparison identities are independent of retained/output row numbers.
+        if (!_signatureTypes.TryGetValue(canonical, out int id))
+            _signatureTypes.Add(canonical, id = _signatureTypes.Count + 1);
+        return MetadataTokens.TypeDefinitionHandle(id);
+    };
+
+    /// <summary>
+    /// Returns the fixed-argument vararg key of a chibil emulated variadic definition, whose
+    /// trailing parameter is the argument area marked with modopt(System.ArgIterator).
+    /// </summary>
+    private string EmulatedVarargKey(int input, BlobHandle signature)
+    {
+        var blob = _inputs[input].GetBlobReader(signature);
+        if (blob.Length < 3 || blob.ReadByte() != 0)
+            return null;
+        var parts = EcmaSignature.SplitMethod(_inputs[input].GetBlobReader(signature), SignatureIdentity(input));
+        if (parts.Parameters.Length == 0 || !IsVarargAreaMarker(input, parts.Parameters[^1]))
+            return null;
+        var key = new BlobBuilder();
+        key.WriteByte((byte)SignatureCallingConvention.VarArgs);
+        key.WriteCompressedInteger(parts.Parameters.Length - 1);
+        key.WriteBytes(parts.Return.Bytes);
+        foreach (var parameter in parts.Parameters[..^1])
+            key.WriteBytes(parameter.Bytes);
+        return Convert.ToHexString(key.ToArray());
     }
+
+    private bool IsVarargAreaMarker(int input, EcmaSignature.Element parameter) =>
+        parameter.Code == (byte)SignatureTypeCode.Pointer && parameter.Modifiers.Length == 1 &&
+        IsType(input, parameter.Modifiers[0], "System", "ArgIterator");
+
+    internal bool IsType(int input, EntityHandle handle, string ns, string name)
+    {
+        var reader = _inputs[input];
+        return handle.Kind switch
+        {
+            HandleKind.TypeReference => reader.GetTypeReference((TypeReferenceHandle)handle) is var r &&
+                reader.StringComparer.Equals(r.Namespace, ns) && reader.StringComparer.Equals(r.Name, name),
+            HandleKind.TypeDefinition => reader.GetTypeDefinition((TypeDefinitionHandle)handle) is var d &&
+                reader.StringComparer.Equals(d.Namespace, ns) && reader.StringComparer.Equals(d.Name, name),
+            _ => false,
+        };
+    }
+
+    public bool IsEmulatedVararg(SourceToken token) => _emulatedVarargs.Contains(Resolve(token));
+
+    private bool IsEmulatedVarargName(string name) => _emulatedVarargs.Any(m =>
+        Reader(m).StringComparer.Equals(Reader(m).GetMethodDefinition((MethodDefinitionHandle)m.Handle).Name, name));
 
     public SourceToken Resolve(SourceToken token)
     {
@@ -336,7 +388,7 @@ internal sealed partial class MetadataMerger
                 throw Failure(token, "cyclic type inheritance");
             if (_members.TryGetValue((parent, name, signature), out var member))
             {
-                if (!vararg)
+                if (!vararg || _emulatedVarargs.Contains(member))
                     return Alias(token, member);
                 parent = member;
                 break;
@@ -514,7 +566,13 @@ internal sealed partial class MetadataMerger
                         (method.Attributes & MethodAttributes.PinvokeImpl) == 0;
                 }
                 if (unresolved)
-                    throw Failure(token, $"unresolved managed global '{_inputs[input].GetString(reference.Name)}'");
+                {
+                    string name = _inputs[input].GetString(reference.Name);
+                    if (name.StartsWith("__uco@", StringComparison.Ordinal) && IsEmulatedVarargName(name["__uco@".Length..]))
+                        throw Failure(token, $"the address of emulated variadic function '{name["__uco@".Length..]}' " +
+                            "cannot be used as a native function pointer");
+                    throw Failure(token, $"unresolved managed global '{name}'");
+                }
             }
     }
 }

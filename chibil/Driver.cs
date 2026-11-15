@@ -418,7 +418,7 @@ public class Driver
         }
         else
         {
-            arr.AddRange(["-o", output]);
+            arr.AddRange(["-o", output, "--target=" + Options.Target.Triple]);
             if (_optShared)
                 arr.Add("-shared");
             foreach (string directory in LibraryPaths)

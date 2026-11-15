@@ -6,15 +6,34 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
 {
     private static readonly string[] Enabled = ["-femulated-varargs"];
 
-    [Theory]
-    [InlineData("target(1)")]
-    [InlineData("target(1, 2)")]
-    public void CallsRequireTheFlag(string expression)
+    [Fact]
+    public void DefinitionsRequireTheFlag()
     {
-        CompileExpectingError($$"""
-            int target(int, ...);
-            int main(void) { return {{expression}}; }
-            """).AssertErrorContains("variadic");
+        CompileExpectingError("int target(int value, ...) { return value; }")
+            .AssertErrorContains("-femulated-varargs");
+    }
+
+    [Theory]
+    [InlineData("target(42)")]
+    [InlineData("target(40, 1, 1)")]
+    [InlineData("pointer(40, 1, 1)")]
+    public void CallsDoNotRequireTheFlag(string expression)
+    {
+        Compile($$"""
+            int __clrcall target(int, ...);
+            int main(void) {
+                int (__clrcall *pointer)(int, ...) = target;
+                return {{expression}};
+            }
+            """).Compile("""
+            int __clrcall target(int value, ...) {
+                __builtin_va_list ap;
+                __builtin_va_start(ap, value);
+                if (value != 42) value += __builtin_va_arg(ap, int) + __builtin_va_arg(ap, int);
+                __builtin_va_end(ap);
+                return value;
+            }
+            """, Enabled).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -30,27 +49,40 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     }
 
     [Theory]
-    [InlineData("int (*pointer)(int, ...) = target;", false)]
     [InlineData("int (*pointer)(int, ...) = target;", true)]
-    [InlineData("void *pointer = (void *)&target;", false)]
+    [InlineData("int (*pointer)(int, ...) = target;", false)]
     [InlineData("void *pointer = (void *)&target;", true)]
-    public void UnmanagedAddressesAreRejected(string declaration, bool enabled)
+    [InlineData("void *pointer = (void *)&target;", false)]
+    [InlineData("int other(void) { int (*pointer)(int, ...) = target; return pointer(1); }", true)]
+    [InlineData("int other(void) { int (*pointer)(int, ...) = target; return pointer(1); }", false)]
+    public void UnmanagedAddressesOfDefinitionsAreRejected(string declaration, bool definedFirst)
     {
+        string definition = "int target(int value, ...) { return value; }";
         CompileExpectingError($$"""
             int target(int, ...);
+            {{(definedFirst ? definition : "")}}
             {{declaration}}
+            {{(definedFirst ? "" : definition)}}
             int main(void) { return 0; }
-            """, enabled ? Enabled : null).AssertErrorContains("variadic");
+            """, Enabled).AssertErrorContains("variadic");
     }
 
     [Fact]
-    public void ManagedAddressesInStaticDataRequireTheFlag()
+    public void ManagedAddressesInStaticDataDoNotRequireTheFlag()
     {
-        CompileExpectingError("""
+        Compile("""
             int __clrcall target(int, ...);
             int (__clrcall *pointer)(int, ...) = target;
-            int main(void) { return 0; }
-            """).AssertErrorContains("-femulated-varargs");
+            int main(void) { return pointer(40, 2); }
+            """).Compile("""
+            int __clrcall target(int value, ...) {
+                __builtin_va_list ap;
+                __builtin_va_start(ap, value);
+                value += __builtin_va_arg(ap, int);
+                __builtin_va_end(ap);
+                return value;
+            }
+            """, Enabled).Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -317,8 +349,6 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     }
 
     [Theory]
-    [InlineData("int (*pointer)(int, ...) = 0; int main(void) { return pointer(0, 1); }", "__clrcall")]
-    [InlineData("int target(int, ...); int main(void) { void *p = target; return 0; }", "__clrcall")]
     [InlineData("int target(int value, ...) { return 0; } int main(void) { return 0; }", null)]
     [InlineData("int main(int value, ...) { return 0; }", "main")]
     [InlineData("int target(void); int main(void) { return target(1); }", "too many")]
@@ -334,7 +364,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     [InlineData("int f(int named, ...) { __builtin_va_list ap; __builtin_va_start(ap, named); return __builtin_va_arg(ap, void); }", "complete object")]
     [InlineData("int f(int named, ...) { __builtin_va_list ap; { int named; __builtin_va_start(ap, named); } return 0; }", "last named")]
     [InlineData("int f(int named) { __builtin_va_list ap; __builtin_va_start(ap, named); return 0; }", "variadic function")]
-    [InlineData("int f(int named, ...) { const __builtin_va_list ap = 0; __builtin_va_start(ap, named); return 0; }", "modifiable")]
+    [InlineData("int f(int named, ...) { const __builtin_va_list ap; __builtin_va_start(ap, named); return 0; }", "modifiable")]
     [InlineData("int f(int named, ...) { int ap; __builtin_va_end(ap); return 0; }", "va_list")]
     public void InvalidBuiltinOperandsAreDiagnosed(string source, string diagnostic)
     {
@@ -358,7 +388,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     [Fact]
     public void FeatureFlagUsesTheLastOption()
     {
-        CompileExpectingError("int target(int, ...); int main(void) { return target(1); }",
+        CompileExpectingError("int target(int named, ...) { return named; }",
             ["-femulated-varargs", "-fno-emulated-varargs"]).AssertErrorContains("variadic");
         Compile("""
             int target(int named, ...) { return named; }
@@ -367,15 +397,16 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     }
 
     [Fact]
-    public void NativeImportsCannotSatisfyTheCustomAbi()
+    public void NativeImportsSatisfyVariadicCalls()
     {
         var builder = Compile("""
             int target(int, ...);
             int main(void) { return target(42, 1); }
             """, Enabled)
             .NativeLibrary("int target(int value, ...) { return value; }", "target");
-        Assert.Contains("unresolved managed global 'target'", Assert.Throws<InvalidOperationException>(
-            () => builder.Link()).Message);
+        if (OperatingSystem.IsLinux())
+            builder.AddCrt();
+        builder.Link().RunAndCheck(42);
     }
 
     [Theory]
@@ -420,7 +451,8 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     [Fact]
     public void OptionalFunctionPointersEnumsAndBooleanValues()
     {
-        Compile("""
+        using var builder = new CompilationBuilder(true);
+        builder.Compile("""
             enum Value { answer = 20 };
             typedef int (*Callback)(int);
             int increment(int value) { return value + 1; }
@@ -434,7 +466,7 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 return callback(value + flag + named);
             }
             int main(void) { return read(20, answer, (_Bool)1, increment); }
-            """, Enabled).LinkOnNetCoreOrMsvcLinkOnFramework().RunAndCheck(42);
+            """, Enabled).Link().RunAndCheck(42);
     }
 
     [Fact]
@@ -468,13 +500,14 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     [Fact]
     public void OverAlignedAreasUseAnAlignedInteriorPointer()
     {
+        if (!OperatingSystem.IsWindows())
+            throw Xunit.Sdk.SkipException.ForSkip("Linux rejects over-aligned variadic arguments.");
         Compile("""
             struct __attribute__((aligned(32))) Value { long long value; };
             int read(int named, ...) {
                 __builtin_va_list ap; __builtin_va_start(ap, named);
                 if (__builtin_va_arg(ap, int) != 1) return 1;
                 struct Value value = __builtin_va_arg(ap, struct Value);
-                if ((unsigned long long)ap & 31) return 2;
                 int result = __builtin_va_arg(ap, int);
                 __builtin_va_end(ap);
                 return value.value + result;
@@ -484,6 +517,18 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
                 return read(0, 1, value, 22);
             }
             """, [.. Enabled, "-fno-managed-aggregate-fields"]).Link().RunAndCheck(42);
+    }
+
+    [Theory]
+    [InlineData("struct __attribute__((aligned(16))) Value { long long value; }; struct Value value;")]
+    [InlineData("union Value { _Alignas(32) char value; }; union Value value;")]
+    public void LinuxRejectsOverAlignedOptionalArguments(string declarations)
+    {
+        CompileExpectingError($$"""
+            {{declarations}}
+            int target(int, ...);
+            int main(void) { return target(0, value); }
+            """, ["--target=x86_64-dotnet-linux", "-fno-managed-aggregate-fields"]).AssertErrorContains("over-aligned");
     }
 
     [Theory]
@@ -511,7 +556,8 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     [Fact]
     public void OrdinaryCallbacksWithVariadicPointerParametersKeepTheirNativeEntry()
     {
-        Compile("""
+        using var builder = new CompilationBuilder(true);
+        builder.Compile("""
             typedef int __clrcall Variable(int, ...);
             int __clrcall sum(int named, ...) {
                 __builtin_va_list ap; __builtin_va_start(ap, named);
@@ -521,6 +567,6 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
             int invoke(Variable *function, int value) { return function(1, value); }
             int (*pointer)(Variable *, int) = invoke;
             int main(void) { return pointer(sum, 41); }
-            """, Enabled).LinkOnNetCoreOrMsvcLinkOnFramework().RunAndCheck(42);
+            """, Enabled).Link().RunAndCheck(42);
     }
 }

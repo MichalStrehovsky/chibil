@@ -21,6 +21,54 @@ public static class EcmaSignature
         return result;
     }
 
+    /// <summary>One method-signature element with mapped bytes and its unmapped shape.</summary>
+    public sealed record Element(byte[] Bytes, byte Code, EntityHandle Type, EntityHandle[] Modifiers);
+
+    /// <summary>A non-generic method signature split around the vararg sentinel.</summary>
+    public sealed record MethodParts(byte Header, Element Return, Element[] Parameters, int FixedCount);
+
+    public static MethodParts SplitMethod(BlobReader reader, Func<EntityHandle, EntityHandle> map)
+    {
+        var walker = new Walker(reader, map);
+        SignatureHeader header = walker.Reader.ReadSignatureHeader();
+        if (header.Kind != SignatureKind.Method || header.IsGeneric || header.IsInstance)
+            throw new BadImageFormatException("Expected a static non-generic method signature.");
+        int count = walker.Reader.ReadCompressedInteger();
+        if (count < 0 || count > walker.Reader.RemainingBytes)
+            throw new BadImageFormatException("Invalid metadata signature count.");
+        Element Next()
+        {
+            BlobReader peek = walker.Reader;
+            var modifiers = new System.Collections.Generic.List<EntityHandle>();
+            byte code;
+            while ((code = peek.ReadByte()) is (byte)SignatureTypeCode.RequiredModifier or (byte)SignatureTypeCode.OptionalModifier)
+                modifiers.Add(peek.ReadTypeHandle());
+            EntityHandle type = code is (byte)SignatureTypeKind.ValueType or (byte)SignatureTypeKind.Class
+                ? peek.ReadTypeHandle() : default;
+            var bytes = new BlobBuilder();
+            walker.Type(bytes, 1);
+            return new Element(bytes.ToArray(), code, type, modifiers.ToArray());
+        }
+        Element result = Next();
+        var parameters = new Element[count];
+        int fixedCount = count;
+        for (int i = 0; i < count; i++)
+        {
+            BlobReader peek = walker.Reader;
+            if (peek.ReadByte() == (byte)SignatureTypeCode.Sentinel)
+            {
+                if (fixedCount != count || header.CallingConvention != SignatureCallingConvention.VarArgs)
+                    throw new BadImageFormatException("Invalid vararg sentinel.");
+                fixedCount = i;
+                walker.Reader.ReadByte();
+            }
+            parameters[i] = Next();
+        }
+        if (walker.Reader.RemainingBytes != 0)
+            throw new BadImageFormatException("Trailing bytes in metadata signature.");
+        return new MethodParts(header.RawValue, result, parameters, fixedCount);
+    }
+
     private struct Walker
     {
         private const int MaxNestingDepth = 128;

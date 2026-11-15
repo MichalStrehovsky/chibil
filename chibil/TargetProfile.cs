@@ -18,6 +18,9 @@ public sealed record TargetProfile(TargetCpu Cpu, TargetRuntime Runtime, TargetO
 
     public string DefaultLinker => Abi == TargetAbi.Chibil ? "chilink" : "link";
 
+    public string Triple =>
+        $"x86_64-{(Runtime == TargetRuntime.DotNet ? "dotnet" : "netfx")}-{OS.ToString().ToLowerInvariant()}-{Abi.ToString().ToLowerInvariant()}";
+
     public static TargetProfile Parse(string value)
     {
         if (string.IsNullOrEmpty(value))

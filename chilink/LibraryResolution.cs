@@ -128,6 +128,7 @@ internal sealed partial class Linker
         _dataSlots.Clear();
         _nativeResolver = default;
         _nativeDataResolver = default;
+        ResetVarargThunks();
         foreach (InputSection section in _inputs.SelectMany(i => i.Sections))
         {
             section.Winner = section;
