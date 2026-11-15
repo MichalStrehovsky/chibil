@@ -91,6 +91,8 @@ public sealed class NativeVarargsTests
 
     private static CompilationBuilder Native(bool netCore, string source, string[] extraArgs = null)
     {
+        if (!netCore && !OperatingSystem.IsWindows())
+            throw Xunit.Sdk.SkipException.ForSkip(".NET Framework execution requires Windows.");
         var builder = new CompilationBuilder(netCore);
         builder.Compile(source, extraArgs).NativeLibrary(NativeSource, NativeExports);
         if (OperatingSystem.IsLinux())
@@ -353,7 +355,12 @@ public sealed class NativeVarargsTests
             throw Xunit.Sdk.SkipException.ForSkip("Linux native imports require ELF shared libraries.");
         using var builder = new CompilationBuilder(true);
         builder.Compile(Prelude + """
-            int main(void) { char buffer[8]; return format(buffer, "i", 1); }
+            typedef int (*Format)(char *, const char *, ...);
+            int main(void) {
+                char buffer[8];
+                Format pointer = (Format)get_format();
+                return pointer(buffer, "i", 1);
+            }
             """).NativeLibrary(NativeSource, NativeExports);
         var error = Assert.Throws<InvalidOperationException>(() => builder.Link());
         Assert.Contains("__chilink_get_vararg_stub", error.Message);

@@ -451,7 +451,8 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     [Fact]
     public void OptionalFunctionPointersEnumsAndBooleanValues()
     {
-        Compile("""
+        using var builder = new CompilationBuilder(true);
+        builder.Compile("""
             enum Value { answer = 20 };
             typedef int (*Callback)(int);
             int increment(int value) { return value + 1; }
@@ -541,7 +542,8 @@ public sealed class EmulatedVarargsTests : ChibiTestBase
     [Fact]
     public void OrdinaryCallbacksWithVariadicPointerParametersKeepTheirNativeEntry()
     {
-        Compile("""
+        using var builder = new CompilationBuilder(true);
+        builder.Compile("""
             typedef int __clrcall Variable(int, ...);
             int __clrcall sum(int named, ...) {
                 __builtin_va_list ap; __builtin_va_start(ap, named);
